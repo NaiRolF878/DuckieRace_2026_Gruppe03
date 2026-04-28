@@ -17,21 +17,36 @@ class ControlLaneNode:
         self._vehicle_name = os.environ['VEHICLE_NAME']
         util.init_parameters(node_name, self.cbUpdateParameters)
 
+        # Publisher für Fahrbefehle
         twist_topic = f"/{self._vehicle_name}/car_cmd_switch_node/cmd"
         self.pub_cmd_vel = rospy.Publisher(twist_topic, Twist2DStamped, queue_size = 1)
 
+        # Subscriber: bekommt Fehler von detect_lane_node (Spurversatz [-1,+1]
         detect_lane_topic = f"/{self._vehicle_name}/detect/lane"
         self.sub_lane = rospy.Subscriber(detect_lane_topic, Float64, self.cbFollowLane, queue_size = 1)
 
+        # Subscriber: bekommt Info welcher Controller aktive ist (Steuerungsmodus)
         control_change_topic = f"/{self._vehicle_name}/switch/control"
         self.sub_control = rospy.Subscriber(control_change_topic, Int32, self.cbControl , queue_size = 1)
  
-        self.lastError = 0
-        self.v = 0
-        self.a = 0
+        # PID Variablen
+        self.lastError = 0       # Fehler vom letzten Schritt (für D-Anteil)
+        self.integral = 0        # aufsummierter Fehler (für I-Anteil)
+        self.dt = 0.1            # Zeit zwischen zwei Schritten (~10 Hz)
+
+        # Steuerwerte
+        self.v = 0               # Geschwindigkeit
+        self.a = 0               # Winkelgeschwindigkeit (Lenkung)
+        
         rospy.on_shutdown(self.fnShutDown)
+        rospy.loginfo(f"[{node_name}] Bereit. Warte auf Spurversatz ...")
+
+#-------------------------------
+# Callbacks
+#-------------------------------
 
     def cbControl(self,msg):
+        # entscheidet ob Lane Following aktiv ist
         if msg.data == ControlType.Lane.value:
             self.enable = True
         
@@ -39,19 +54,45 @@ class ControlLaneNode:
             self.enable = False
 
     def cbUpdateParameters(self,parameters):
+        #Prüfung was ankommt
+        print("PARAMETER EMPFANGEN:")
+        print(parameters)
+        
+        # PID Parameter aus config laden
         self.kp = parameters["pid"]["p"]["default"]
         self.ki = parameters["pid"]["i"]["default"]
         self.kd = parameters["pid"]["d"]["default"]
         self.MAX_VEL = parameters["pid"]["max_vel"]["default"]
-
+ 
     # error between 1 and -1
     def cbFollowLane(self, error):
         print(f'received message. enabled : {self.enable}')
         error = error.data
 
-        #Todo Write own code for PID controller here
-        self.v = 0
-        self.a = 0                
+        # PID REGELUNG 
+        
+        # P-Anteil: reagiert auf aktuellen Fehler
+        P = self.kp * error
+
+        # I-Anteil: summiert Fehler über Zeit
+        self.integral += error * self.dt
+        I = self.ki * self.integral
+
+        # D-Anteil: reagiert auf Änderung des Fehlers
+        derivative = (error - self.lastError) / self.dt
+        D = self.kd * derivative
+
+        # Gesamte Lenkung
+        self.a = P + I + D
+
+        # Begrenzung → verhindert „Durchdrehen“
+        self.a = max(min(self.a, 3), -3)
+
+        # Bei großer Geschwindigkeit wird der Bot automatisch langsamer
+        self.v = self.MAX_VEL * (1-abs(error))
+
+        # Fehler speichern für nächsten Schritt
+        self.lastError = error                   
         
 
     def fnShutDown(self):
@@ -67,6 +108,7 @@ class ControlLaneNode:
                 twist = Twist2DStamped()
                 twist.header.stamp = rospy.Time.now()
                 
+                # sende Steuerwerte
                 twist.v = self.v
                 twist.omega = self.a
                 self.pub_cmd_vel.publish(twist)
