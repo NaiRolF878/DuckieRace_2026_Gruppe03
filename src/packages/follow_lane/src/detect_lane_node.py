@@ -134,7 +134,8 @@ class DetectLaneNode:
 
         # Region of Interest: nur die untersten 20% des Bildes prüfen
         # → entspricht dem Bereich direkt vor dem Duckiebot
-        detection_row_start = int(mask_red.shape[0] * 0.8)
+        # detection_row_start = int(mask_red.shape[0] * 0.8)
+        detection_row_start = int (mask_red.shape[0] * self.red_detection_zone)
         roi = mask_red[detection_row_start:, :]
 
         # Haltelinie erkannt, wenn genug rote Pixel im ROI vorhanden sind
