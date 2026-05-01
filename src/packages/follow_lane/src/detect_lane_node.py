@@ -83,7 +83,7 @@ class DetectLaneNode:
         self.lightness_red_h  = parameters["red"]["vh"]["default"]
         # Mindestanzahl roter Pixel im ROI, ab der eine Haltelinie gemeldet wird
         self.red_pixel_threshold = parameters["red"]["pixel_threshold"]["default"]
-
+        self.red_detection_zone = parameters["red"]["detection_zone"]["default"]
 
     def crop_img(self, img):
         img = img.copy()
