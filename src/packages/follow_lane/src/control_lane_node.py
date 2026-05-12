@@ -6,8 +6,14 @@ from std_msgs.msg import Float64, Int32, String, Bool
 from duckietown_msgs.msg import Twist2DStamped
 import os
 from switch_control_node import ControlType
+from enum import Enum
 import yaml
 import util
+
+class StopState(Enum):
+    Driving  = 1  # normales Spurfolgen
+    Stopping = 2  # rote Linie erkannt, Bot hält für STOP_DURATION Sekunden an
+    Cooldown = 3  # nach dem Anhalten kurz weiterfahren ohne erneut zu stoppen
 
 class ControlLaneNode:
     def __init__(self,node_name):
@@ -36,7 +42,7 @@ class ControlLaneNode:
         control_change_topic = f"/{self._vehicle_name}/switch/control"
         self.sub_control = rospy.Subscriber(control_change_topic, Int32, self.cbControl, queue_size = 1)
 
-        # Subscriber für rote Haltelinie von detect_lane_node
+        # NEU: Subscriber für rote Haltelinie von detect_lane_node
         stop_line_topic = f"/{self._vehicle_name}/detect/stop_line"
         self.sub_stop_line = rospy.Subscriber(stop_line_topic, Bool, self.cbStopLine, queue_size = 1)
 
@@ -49,12 +55,9 @@ class ControlLaneNode:
         self.v = 0               # Geschwindigkeit
         self.a = 0               # Winkelgeschwindigkeit (Lenkung)
 
-        # Zustandsvariablen für die Haltelinien-Logik
-        # Drei Zustände:
-        #   'driving'  → normales Spurfolgen
-        #   'stopping' → rote Linie erkannt, Bot hält für STOP_DURATION Sekunden an
-        #   'cooldown' → nach dem Anhalten kurz weiterfahren ohne erneut zu stoppen
-        self.stop_state      = 'driving'
+        # NEU: Zustandsvariablen für die Haltelinien-Logik
+        # Drei Zustände: StopState.Driving, StopState.Stopping, StopState.Cooldown
+        self.stop_state      = StopState.Driving
         self.STOP_DURATION     = 3.0  # Startwert – wird durch cbUpdateParameters aus JSON überschrieben
         self.COOLDOWN_DURATION = 3.0  # Startwert – wird durch cbUpdateParameters aus JSON überschrieben
         self.stop_start_time = None  # Zeitstempel des Stopps
@@ -85,21 +88,23 @@ class ControlLaneNode:
         self.ki      = parameters["pid"]["i"]["default"]
         self.kd      = parameters["pid"]["d"]["default"]
         self.MAX_VEL = parameters["pid"]["max_vel"]["default"]
+        # Minimalgeschwindigkeit: verhindert dass der Bot durch großen Fehler komplett stoppt
+        self.MIN_VEL = parameters["pid"]["min_vel"]["default"]
 
         # Haltelinien-Parameter aus config laden
         self.STOP_DURATION     = parameters["stop_line"]["stop_duration"]["default"]
         self.COOLDOWN_DURATION = parameters["stop_line"]["cooldown_duration"]["default"]
 
-    # Callback für rote Haltelinie
+    # NEU: Callback für rote Haltelinie
     def cbStopLine(self, msg):
         # Im Cooldown-Modus: erneutes Erkennen ignorieren
-        if self.stop_state == 'cooldown':
+        if self.stop_state == StopState.Cooldown:
             return
 
         # Wenn Linie erkannt und wir gerade normal fahren → Stopp einleiten
-        if msg.data and self.stop_state == 'driving':
+        if msg.data and self.stop_state == StopState.Driving:
             rospy.loginfo("Rote Haltelinie erkannt – halte 3 Sekunden an.")
-            self.stop_state      = 'stopping'
+            self.stop_state      = StopState.Stopping
             self.stop_start_time = rospy.Time.now()
 
     # Spurversatz error im Bereich [-1, +1]:
@@ -108,6 +113,14 @@ class ControlLaneNode:
     # error = 0 → Bot ist mittig     → geradeaus fahren
     def cbFollowLane(self, error):
         print(f'received message. enabled : {self.enable}')
+
+        # Wenn die rote Linie erkannt wurde → Geschwindigkeit auf 0 setzen und PID-Berechnung überspringen
+        # (verhindert dass der Bot während des Stopps weiter lenkt oder beschleunigt)
+        if self.stop_state == StopState.Stopping:
+            self.v = 0.0
+            self.a = 0.0
+            return
+
         error = error.data
 
         # PID REGELUNG 
@@ -133,7 +146,8 @@ class ControlLaneNode:
 
         # Geschwindigkeit abhängig vom Fehler reduzieren:
         # Je größer der Spurversatz, desto langsamer fährt der Bot (sicherer in Kurven)
-        self.v = self.MAX_VEL * (1-abs(error))
+        # MIN_VEL verhindert dass der Bot bei großem Fehler komplett stoppt und stehen bleibt
+        self.v = max(self.MIN_VEL, self.MAX_VEL * (1 - abs(error)))
 
         # Fehler speichern für nächsten Schritt (wird für D-Anteil benötigt)
         self.lastError = error
@@ -155,7 +169,7 @@ class ControlLaneNode:
 
                 # Haltelinien-Zustandsautomat:
                 # Der Zustand wird durch cbStopLine gesetzt und hier ausgewertet
-                if self.stop_state == 'stopping':
+                if self.stop_state == StopState.Stopping:
                     # Stopp-Zeit läuft → Bot anhalten
                     elapsed = (rospy.Time.now() - self.stop_start_time).to_sec()
                     if elapsed < self.STOP_DURATION:
@@ -165,20 +179,20 @@ class ControlLaneNode:
                     else:
                         # Stopp-Zeit abgelaufen → Cooldown starten und weiterfahren
                         rospy.loginfo("3 Sekunden vorbei – fahre weiter.")
-                        self.stop_state      = 'cooldown'
+                        self.stop_state      = StopState.Cooldown
                         self.stop_start_time = rospy.Time.now()
                         # Integral zurücksetzen, damit der I-Anteil keinen alten Fehler mitschleppt
                         self.integral = 0
                         twist.v     = self.v
                         twist.omega = self.a
 
-                elif self.stop_state == 'cooldown':
+                elif self.stop_state == StopState.Cooldown:
                     # Cooldown läuft → normal weiterfahren, aber keine neue Linie erkennen
                     # (verhindert direktes Wiederanhalten nach dem Losfahren)
                     elapsed = (rospy.Time.now() - self.stop_start_time).to_sec()
                     if elapsed >= self.COOLDOWN_DURATION:
                         rospy.loginfo("Cooldown beendet – Haltelinien-Erkennung wieder aktiv.")
-                        self.stop_state = 'driving'
+                        self.stop_state = StopState.Driving
                     twist.v     = self.v
                     twist.omega = self.a
 
