@@ -4,9 +4,13 @@ import os
 import rospy
 import numpy as np
 import cv2
+
 from std_msgs.msg import Float64, String, Bool
 from sensor_msgs.msg import CompressedImage
-from enum import Enum
+# unbenutzter Code - wird nur bei uns in switch_control_node.py verwendet
+# Wenn kein fehler dann löschen
+# from enum import Enum
+
 import yaml
 import util
 
@@ -16,11 +20,16 @@ class DetectLaneNode:
     def __init__(self, node_name):
         # ROS-Node initialisieren
         rospy.init_node(node_name)
-        
+
+        # Fahrzeugname aus Umgebungsvariable lesen
         self._vehicle_name = os.environ['VEHICLE_NAME']
+        # Parameter laden
         util.init_parameters(node_name, self.cbUpdateParameters)
-                
+        
+        # Kamera Topic        
         self._camera_topic = f"/{self._vehicle_name}/camera_node/image/compressed"
+
+        # Subscriber für Kamerabild
         self.sub_image_original = rospy.Subscriber(self._camera_topic, CompressedImage, self.cbFindLane, queue_size = 1)
         self.pub_lane = rospy.Publisher(f'/{self._vehicle_name}/detect/lane', Float64, queue_size = 1)
 
@@ -46,7 +55,7 @@ class DetectLaneNode:
 
 
     def cbUpdateParameters(self, parameters):
-        # Update white line parameters
+        # white line parameters
         self.hue_white_l        = parameters["white"]["hl"]["default"]
         self.hue_white_h        = parameters["white"]["hh"]["default"]
         self.saturation_white_l = parameters["white"]["sl"]["default"]
@@ -54,7 +63,7 @@ class DetectLaneNode:
         self.lightness_white_l  = parameters["white"]["vl"]["default"]
         self.lightness_white_h  = parameters["white"]["vh"]["default"]
         
-        # Update yellow line parameters
+        # yellow line parameters
         self.hue_yellow_l        = parameters["yellow"]["hl"]["default"]
         self.hue_yellow_h        = parameters["yellow"]["hh"]["default"]
         self.saturation_yellow_l = parameters["yellow"]["sl"]["default"]
@@ -62,7 +71,7 @@ class DetectLaneNode:
         self.lightness_yellow_l  = parameters["yellow"]["vl"]["default"]
         self.lightness_yellow_h  = parameters["yellow"]["vh"]["default"]
         
-        # Update perspective transform points
+        # perspective transform points
         self.top_left_x     = parameters["crop_image"]["top_left_x"]["default"]
         self.top_left_y     = parameters["crop_image"]["top_left_y"]["default"]
         self.top_right_x    = parameters["crop_image"]["top_right_x"]["default"]
