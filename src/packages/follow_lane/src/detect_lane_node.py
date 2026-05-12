@@ -31,6 +31,10 @@ class DetectLaneNode:
         self.is_running = False
         self.counter = 0
 
+        # Frame-Tracking: letzte bekannte weiße Linienposition
+        # → wird verwendet um unplausible Sprünge zwischen Frames zu erkennen
+        self.last_white_position = None
+
         # init debug channels 
         self.pub_debug_lane   = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_croped',  CompressedImage, queue_size=1)
         self.pub_debug_white  = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_white',   CompressedImage, queue_size=1)
@@ -83,7 +87,23 @@ class DetectLaneNode:
         self.lightness_red_h  = parameters["red"]["vh"]["default"]
         # Mindestanzahl roter Pixel im ROI, ab der eine Haltelinie gemeldet wird
         self.red_pixel_threshold = parameters["red"]["pixel_threshold"]["default"]
-        self.red_detection_zone = parameters["red"]["detection_zone"]["default"]
+
+        # Wo im Bild nach der roten Linie gesucht wird (vertikal)
+        # 0.85 = nur die untersten 15% prüfen → Bot hält erst kurz vor der Linie an
+        self.red_detection_zone    = parameters["red"]["detection_zone"]["default"]
+
+        # Horizontale ROI-Einschränkung für rote Linie
+        # 0.4 = nur die rechten 60% prüfen → Gegenspur-Haltelinie wird ignoriert
+        self.red_detection_x_start = parameters["red"]["detection_x_start"]["default"]
+
+        # Minimaler Pixelabstand zwischen gelber und weißer Linie
+        # → alles links davon in der weißen Maske wird ausgeblendet (Gegenspur)
+        self.min_lane_width  = parameters["white"]["min_lane_width"]["default"]
+
+        # Maximaler Pixelsprung der weißen Linie zwischen zwei Frames
+        # → größere Sprünge gelten als Fehlmessung, letzter Wert wird beibehalten
+        self.max_frame_jump  = parameters["white"]["max_frame_jump"]["default"]
+
 
     def crop_img(self, img):
         img = img.copy()
@@ -132,11 +152,15 @@ class DetectLaneNode:
         # Beide Masken kombinieren
         mask_red = cv2.bitwise_or(mask_red_lower, mask_red_upper)
 
-        # Region of Interest: nur die untersten 20% des Bildes prüfen
-        # → entspricht dem Bereich direkt vor dem Duckiebot
-        # detection_row_start = int(mask_red.shape[0] * 0.8)
-        detection_row_start = int (mask_red.shape[0] * self.red_detection_zone)
-        roi = mask_red[detection_row_start:, :]
+        # Vertikale ROI: nur den unteren Teil des Bildes prüfen
+        # → Bot erkennt Linie erst wenn sie direkt vor ihm ist
+        detection_row_start = int(mask_red.shape[0] * self.red_detection_zone)
+
+        # Horizontale ROI: nur die rechte Seite prüfen
+        # → verhindert dass die Haltelinie der Gegenspur (links) fälschlich erkannt wird
+        detection_col_start = int(mask_red.shape[1] * self.red_detection_x_start)
+
+        roi = mask_red[detection_row_start:, detection_col_start:]
 
         # Haltelinie erkannt, wenn genug rote Pixel im ROI vorhanden sind
         red_pixel_count = cv2.countNonZero(roi)
@@ -163,6 +187,15 @@ class DetectLaneNode:
         cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
         img = self.crop_img(cv_image)
 
+        # CLAHE: lokalen Helligkeitsausgleich durchführen bevor wir in HSV konvertieren
+        # → macht die Farbsegmentierung robuster gegenüber Schatten und wechselndem Licht
+        # Ablauf: BGR → LAB (trennt Helligkeit L von Farbe) → CLAHE nur auf L-Kanal → zurück zu BGR
+        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l = clahe.apply(l)
+        img = cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2BGR)
+
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
         mask_yellow = cv2.inRange(hsv, 
@@ -172,12 +205,44 @@ class DetectLaneNode:
         mask_white = cv2.inRange(hsv, 
                            (self.hue_white_l, self.saturation_white_l, self.lightness_white_l), 
                            (self.hue_white_h, self.saturation_white_h, self.lightness_white_h),)
+
+        # Morphologie: kleine Lücken in den Masken schließen die durch Schatten entstehen
+        # MORPH_CLOSE = erst Dilatation (Lücken füllen), dann Erosion (Form wiederherstellen)
+        kernel = np.ones((5, 5), np.uint8)
+        mask_white  = cv2.morphologyEx(mask_white,  cv2.MORPH_CLOSE, kernel)
+        mask_yellow = cv2.morphologyEx(mask_yellow, cv2.MORPH_CLOSE, kernel)
         
         white_alternative  = int(len(img[0]) * 0.95)
         yellow_alternative = int(len(img[0]) * 0.05)
 
-        center_white  = self.get_x_for_driving(mask_white,  int(len(img)*0.75), white_alternative,  left_line=True)
+        # Gelb zuerst bestimmen – wird für den Weißlinien-Gegenspurfilter benötigt
         center_yellow = self.get_x_for_driving(mask_yellow, int(len(img)*0.75), yellow_alternative, left_line=False)
+
+        # Spatial Filter: weiße Linie nur rechts von gelb + min_lane_width suchen
+        # → blendet die Gegenspur-Weiße aus die in engen Kurven nahe an eigener Linie liegt
+        mask_white_filtered = mask_white.copy()
+        search_start = int(center_yellow + self.min_lane_width)
+        mask_white_filtered[:, :search_start] = 0  # alles links von search_start ausblenden
+
+        # Weiße Linienposition in der gefilterten Maske bestimmen
+        center_white_raw = self.get_x_for_driving(mask_white_filtered, int(len(img)*0.75), white_alternative, left_line=True)
+
+        # Frame-Tracking: Plausibilität des Sprungs prüfen
+        # → verhindert dass einzelne Fehlmessungen den Bot abrupt auslenken
+        if self.last_white_position is not None:
+            jump = abs(center_white_raw - self.last_white_position)
+            if jump > self.max_frame_jump:
+                # Sprung zu groß → Fehlmessung → letzten bekannten Wert beibehalten
+                print(f"White jump too large ({jump:.0f}px > {self.max_frame_jump}px) – keeping last position")
+                center_white = self.last_white_position
+            else:
+                # Sprung plausibel → neuen Wert übernehmen
+                center_white = center_white_raw
+                self.last_white_position = center_white
+        else:
+            # Erster Frame: Wert direkt übernehmen (kein Vergleich möglich)
+            center_white = center_white_raw
+            self.last_white_position = center_white
 
         if center_white <= center_yellow:
             if center_white > int(len(img[0]) * 0.4):
