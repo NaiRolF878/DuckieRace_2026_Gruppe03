@@ -169,7 +169,7 @@
                 "max": 5000
             },
             "detection_zone": {
-                "default": 0.85,
+                "default": 0.90,
                 "min": 0.0,
                 "max": 1.0
             },
