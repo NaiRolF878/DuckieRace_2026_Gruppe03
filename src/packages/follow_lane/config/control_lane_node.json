@@ -1,43 +1,235 @@
 {
     "debug_image_topics": [],
     "parameters": {
-        "pid": {
-            "p": {
-                "default": 8.0,
-                "min": 0.0,
-                "max": 10.0
+        "default": {
+            "pid": {
+                "p": {
+                    "default": 8.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "i": {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "d": {
+                    "default": 6.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "max_vel": {
+                    "default": 0.5,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "min_vel": {
+                    "default": 0.1,
+                    "min": 0.0,
+                    "max": 1.0
+                }
             },
-            "i": {
-                "default": 0.0,
-                "min": 0.0,
-                "max": 10.0
-            },
-            "d": {
-                "default": 6.0,
-                "min": 0.0,
-                "max": 10.0
-            },
-            "max_vel": {
-                "default": 0.3,
-                "min": 0.0,
-                "max": 10.0
-            },
-            "min_vel": {
-                "default": 0.1,
-                "min": 0.0,
-                "max": 1.0
+            "stop_line": {
+                "stop_duration": {
+                    "default": 3.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "cooldown_duration": {
+                    "default": 3.0,
+                    "min": 0.0,
+                    "max": 10.0
+                }
             }
         },
-        "stop_line": {
-            "stop_duration": {
-                "default": 3.0,
-                "min": 0.0,
-                "max": 10.0
-            },
-            "cooldown_duration": {
-                "default": 3.0,
-                "min": 0.0,
-                "max": 10.0
+        "donald": {
+            "pid": {
+                "p": {
+                    "default": 8.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "i": {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "d": {
+                    "default": 6.0,
+                    "min": 0.0,
+                    "max": 10.0
+                }
+            }
+        },
+        "daisy": {
+            "pid": {
+                "p": {
+                    "default": 8.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "i": {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "d": {
+                    "default": 6.0,
+                    "min": 0.0,
+                    "max": 10.0
+                }
+            }
+        },
+        "tick": {
+            "pid": {
+                "p": {
+                    "default": 8.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "i": {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "d": {
+                    "default": 6.0,
+                    "min": 0.0,
+                    "max": 10.0
+                }
+            }
+        },
+        "tack": {
+            "pid": {
+                "p": {
+                    "default": 8.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "i": {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "d": {
+                    "default": 6.0,
+                    "min": 0.0,
+                    "max": 10.0
+                }
+            }
+        },
+        "trick": {
+            "pid": {
+                "p": {
+                    "default": 8.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "i": {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "d": {
+                    "default": 6.0,
+                    "min": 0.0,
+                    "max": 10.0
+                }
+            }
+        },
+        "gustav": {
+            "pid": {
+                "p": {
+                    "default": 8.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "i": {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "d": {
+                    "default": 6.0,
+                    "min": 0.0,
+                    "max": 10.0
+                }
+            }
+        },
+        "dorette": {
+            "pid": {
+                "p": {
+                    "default": 8.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "i": {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "d": {
+                    "default": 6.0,
+                    "min": 0.0,
+                    "max": 10.0
+                }
+            }
+        },
+        "dagobert": {
+            "pid": {
+                "p": {
+                    "default": 8.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "i": {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "d": {
+                    "default": 6.0,
+                    "min": 0.0,
+                    "max": 10.0
+                }
+            }
+        },
+        "daffy": {
+            "pid": {
+                "p": {
+                    "default": 8.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "i": {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "d": {
+                    "default": 6.0,
+                    "min": 0.0,
+                    "max": 10.0
+                }
+            }
+        },
+        "gundel": {
+            "pid": {
+                "p": {
+                    "default": 8.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "i": {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 10.0
+                },
+                "d": {
+                    "default": 6.0,
+                    "min": 0.0,
+                    "max": 10.0
+                }
             }
         }
     }
