@@ -1,0 +1,36 @@
+{
+    "debug_image_topics": [],
+    "parameters": {
+        "approach": {
+            "v":              {"default": 0.2, "min": 0.0, "max": 1.0},
+            "extra_duration": {"default": 0.5, "min": 0.0, "max": 3.0},
+            "timeout":        {"default": 4.0, "min": 0.0, "max": 10.0}
+        },
+        "left": {
+            "v":     {"default":  0.2, "min": 0.0,  "max": 1.0},
+            "omega": {"default":  2.0, "min": -3.0, "max": 3.0}
+        },
+        "right": {
+            "v":     {"default":  0.2, "min": 0.0,  "max": 1.0},
+            "omega": {"default": -2.0, "min": -3.0, "max": 3.0}
+        },
+        "straight": {
+            "v":     {"default":  0.3, "min": 0.0,  "max": 1.0},
+            "omega": {"default":  0.0, "min": -3.0, "max": 3.0}
+        },
+        "turning": {
+            "timeout": {"default": 6.0, "min": 0.0, "max": 15.0}
+        },
+        "handover": {
+            "lane_threshold": {"default": 0.4, "min": 0.0, "max": 1.0},
+            "stable_frames":  {"default": 5,   "min": 1,   "max": 30},
+            "timeout":        {"default": 3.0, "min": 0.0, "max": 10.0}
+        },
+        "tag_directions": {
+            "1": {"default": "left,straight",       "min": 0, "max": 1},
+            "2": {"default": "right,straight",      "min": 0, "max": 1},
+            "3": {"default": "left,right,straight", "min": 0, "max": 1},
+            "4": {"default": "left,right",          "min": 0, "max": 1}
+        }
+    }
+}
