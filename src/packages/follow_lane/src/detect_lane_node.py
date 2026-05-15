@@ -4,13 +4,9 @@ import os
 import rospy
 import numpy as np
 import cv2
-
 from std_msgs.msg import Float64, String, Bool
 from sensor_msgs.msg import CompressedImage
-# unbenutzter Code - wird nur bei uns in switch_control_node.py verwendet
-# Wenn kein fehler dann löschen
-# from enum import Enum
-
+from enum import Enum
 import yaml
 import util
 
@@ -20,21 +16,22 @@ class DetectLaneNode:
     def __init__(self, node_name):
         # ROS-Node initialisieren
         rospy.init_node(node_name)
-
-        # Fahrzeugname aus Umgebungsvariable lesen
-        self._vehicle_name = os.environ['VEHICLE_NAME']
-        # Parameter laden
-        util.init_parameters(node_name, self.cbUpdateParameters)
         
-        # Kamera Topic        
+        self._vehicle_name = os.environ['VEHICLE_NAME']
+        util.init_parameters(node_name, self.cbUpdateParameters)
+                
         self._camera_topic = f"/{self._vehicle_name}/camera_node/image/compressed"
-
-        # Subscriber für Kamerabild
         self.sub_image_original = rospy.Subscriber(self._camera_topic, CompressedImage, self.cbFindLane, queue_size = 1)
         self.pub_lane = rospy.Publisher(f'/{self._vehicle_name}/detect/lane', Float64, queue_size = 1)
 
         # NEU: Publisher für rote Haltelinie (True = Linie erkannt)
-        self.pub_stop_line = rospy.Publisher(f'/{self._vehicle_name}/detect/stop_line', Bool, queue_size = 1)
+        self.pub_stop_line      = rospy.Publisher(f'/{self._vehicle_name}/detect/stop_line',      Bool,   queue_size=1)
+        # Publisher für die Seite der roten Linie ('none', 'left', 'right', 'both')
+        # → wird von control_intersection_node für Abbiegeorientierung genutzt
+        self.pub_stop_line_side = rospy.Publisher(f'/{self._vehicle_name}/detect/stop_line_side', String, queue_size=1)
+        # Publisher für Spurpositionen → detect_duck_node benötigt diese für ROI
+        self.pub_lane_yellow_x = rospy.Publisher(f'/{self._vehicle_name}/detect/lane_yellow_x', Float64, queue_size=1)
+        self.pub_lane_white_x  = rospy.Publisher(f'/{self._vehicle_name}/detect/lane_white_x',  Float64, queue_size=1)
 
         self._crop_im_size = 400
         self.is_running = False
@@ -45,6 +42,9 @@ class DetectLaneNode:
         self.last_white_position = None
 
         # init debug channels 
+        # Publisher für Original- und Bird's-Eye-View Bild (für camera_dashboard_node)
+        self.pub_debug_original = rospy.Publisher(f'/{self._vehicle_name}/debug/original',   CompressedImage, queue_size=1)
+        self.pub_debug_bird     = rospy.Publisher(f'/{self._vehicle_name}/debug/bird_view', CompressedImage, queue_size=1)
         self.pub_debug_lane   = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_croped',  CompressedImage, queue_size=1)
         self.pub_debug_white  = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_white',   CompressedImage, queue_size=1)
         self.pub_debug_yellow = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_yellow',  CompressedImage, queue_size=1)
@@ -55,7 +55,7 @@ class DetectLaneNode:
 
 
     def cbUpdateParameters(self, parameters):
-        # white line parameters
+        # Update white line parameters
         self.hue_white_l        = parameters["white"]["hl"]["default"]
         self.hue_white_h        = parameters["white"]["hh"]["default"]
         self.saturation_white_l = parameters["white"]["sl"]["default"]
@@ -63,7 +63,7 @@ class DetectLaneNode:
         self.lightness_white_l  = parameters["white"]["vl"]["default"]
         self.lightness_white_h  = parameters["white"]["vh"]["default"]
         
-        # yellow line parameters
+        # Update yellow line parameters
         self.hue_yellow_l        = parameters["yellow"]["hl"]["default"]
         self.hue_yellow_h        = parameters["yellow"]["hh"]["default"]
         self.saturation_yellow_l = parameters["yellow"]["sl"]["default"]
@@ -71,7 +71,7 @@ class DetectLaneNode:
         self.lightness_yellow_l  = parameters["yellow"]["vl"]["default"]
         self.lightness_yellow_h  = parameters["yellow"]["vh"]["default"]
         
-        # perspective transform points
+        # Update perspective transform points
         self.top_left_x     = parameters["crop_image"]["top_left_x"]["default"]
         self.top_left_y     = parameters["crop_image"]["top_left_y"]["default"]
         self.top_right_x    = parameters["crop_image"]["top_right_x"]["default"]
@@ -150,7 +150,7 @@ class DetectLaneNode:
 
 
     # NEU: Rote Haltelinie im Bird's-Eye-View-Bild erkennen
-    def detect_stop_line(self, hsv):
+    def detect_stop_line(self, hsv, cv_image):
         # Zwei HSV-Masken für den unteren und oberen Rot-Bereich erzeugen
         mask_red_lower = cv2.inRange(hsv,
                             (self.hue_red_l,  self.saturation_red_l, self.lightness_red_l),
@@ -158,27 +158,63 @@ class DetectLaneNode:
         mask_red_upper = cv2.inRange(hsv,
                             (self.hue_red_l2, self.saturation_red_l, self.lightness_red_l),
                             (self.hue_red_h2, self.saturation_red_h, self.lightness_red_h))
-        # Beide Masken kombinieren
         mask_red = cv2.bitwise_or(mask_red_lower, mask_red_upper)
 
+        # ── Eigene Haltelinie erkennen (bestehende ROI) ───────────────────────
         # Vertikale ROI: nur den unteren Teil des Bildes prüfen
-        # → Bot erkennt Linie erst wenn sie direkt vor ihm ist
         detection_row_start = int(mask_red.shape[0] * self.red_detection_zone)
-
-        # Horizontale ROI: nur die rechte Seite prüfen
-        # → verhindert dass die Haltelinie der Gegenspur (links) fälschlich erkannt wird
+        # Horizontale ROI: nur die rechte Seite prüfen (eigene Spur)
         detection_col_start = int(mask_red.shape[1] * self.red_detection_x_start)
+        roi_own = mask_red[detection_row_start:, detection_col_start:]
 
-        roi = mask_red[detection_row_start:, detection_col_start:]
-
-        # Haltelinie erkannt, wenn genug rote Pixel im ROI vorhanden sind
-        red_pixel_count = cv2.countNonZero(roi)
+        red_pixel_count    = cv2.countNonZero(roi_own)
         stop_line_detected = red_pixel_count > self.red_pixel_threshold
 
-        print(f"Red pixels in ROI: {red_pixel_count} | threshold: {self.red_pixel_threshold} | detected: {stop_line_detected}")
+        print(f"Red pixels (own): {red_pixel_count} | threshold: {self.red_pixel_threshold} | detected: {stop_line_detected}")
 
-        return stop_line_detected, mask_red
+        # ── Seitenerkennung: auf welcher Seite ist rote Linie sichtbar? ──────
+        # Wird von control_intersection_node verwendet um beim Abbiegen zu wissen
+        # wann der Bot korrekt ausgerichtet ist:
+        #   Links abbiegen  → warte bis rote Linie RECHTS erscheint
+        #   Rechts abbiegen → warte bis rote Linie LINKS erscheint
+        #   Geradeaus       → warte bis rote Linie unten aus dem Bild verschwindet
+        #
+        # WICHTIG: Seitenerkennung auf dem ORIGINALBILD (nicht Bird's-Eye-View)
+        # → Bird's-Eye-View ist auf eigene Spur kalibriert, Gegenspur liegt
+        #   oft am Rand oder außerhalb des transformierten Bereichs
+        # → Im Originalbild ist die gesamte Kreuzung inkl. Gegenspur sichtbar
+        hsv_original = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
+        mask_orig_lower = cv2.inRange(hsv_original,
+                            (self.hue_red_l,  self.saturation_red_l, self.lightness_red_l),
+                            (self.hue_red_h,  self.saturation_red_h, self.lightness_red_h))
+        mask_orig_upper = cv2.inRange(hsv_original,
+                            (self.hue_red_l2, self.saturation_red_l, self.lightness_red_l),
+                            (self.hue_red_h2, self.saturation_red_h, self.lightness_red_h))
+        mask_orig_red = cv2.bitwise_or(mask_orig_lower, mask_orig_upper)
 
+        # Nur den unteren Teil des Originalbildes prüfen (Kreuzungsbereich)
+        orig_h, orig_w = mask_orig_red.shape[:2]
+        mid            = orig_w // 2
+        row_start      = int(orig_h * self.red_detection_zone)
+
+        left_count  = cv2.countNonZero(mask_orig_red[row_start:, :mid])
+        right_count = cv2.countNonZero(mask_orig_red[row_start:, mid:])
+
+        left_detected  = left_count  > self.red_pixel_threshold
+        right_detected = right_count > self.red_pixel_threshold
+
+        if left_detected and right_detected:
+            side = 'both'   # Bot steht direkt auf/vor der Linie
+        elif left_detected:
+            side = 'left'   # rote Linie auf linker Seite (Gegenspur)
+        elif right_detected:
+            side = 'right'  # rote Linie auf rechter Seite (eigene Spur)
+        else:
+            side = 'none'   # keine rote Linie sichtbar
+
+        print(f"Red line side: {side} (left={left_count}, right={right_count})")
+
+        return stop_line_detected, side, mask_red
 
     def cbFindLane(self, image_msg):
         
@@ -195,6 +231,22 @@ class DetectLaneNode:
         np_arr = np.frombuffer(image_msg.data, np.uint8)
         cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
         img = self.crop_img(cv_image)
+
+        # Originalbild fuer Dashboard publizieren (vor jeder Verarbeitung)
+        if self.pub_debug_original.get_num_connections() > 0:
+            orig_msg = CompressedImage()
+            orig_msg.header.stamp = rospy.Time.now()
+            orig_msg.format = "jpeg"
+            orig_msg.data = np.array(cv2.imencode('.jpg', cv_image)[1]).tobytes()
+            self.pub_debug_original.publish(orig_msg)
+
+        # Bird's-Eye-View fuer Dashboard publizieren (direkt nach Transformation)
+        if self.pub_debug_bird.get_num_connections() > 0:
+            bird_msg = CompressedImage()
+            bird_msg.header.stamp = rospy.Time.now()
+            bird_msg.format = "jpeg"
+            bird_msg.data = np.array(cv2.imencode('.jpg', img)[1]).tobytes()
+            self.pub_debug_bird.publish(bird_msg)
 
         # CLAHE: lokalen Helligkeitsausgleich durchführen bevor wir in HSV konvertieren
         # → macht die Farbsegmentierung robuster gegenüber Schatten und wechselndem Licht
@@ -264,11 +316,16 @@ class DetectLaneNode:
         msg_error = Float64()
         msg_error.data = 1-(lane_center / len(img) * 2)
         self.pub_lane.publish(msg_error)
+        # Spurpositionen für detect_duck_node publizieren
+        self.pub_lane_yellow_x.publish(Float64(data=float(center_yellow)))
+        self.pub_lane_white_x.publish(Float64(data=float(center_white)))
         print(f"Lane error: {msg_error.data} range [-1,1]")
 
         # NEU: Rote Haltelinie erkennen und Ergebnis publizieren
-        stop_line_detected, mask_red = self.detect_stop_line(hsv)
+        # cv_image = Originalbild für Seitenerkennung, hsv = Bird's-Eye-View für eigene Linie
+        stop_line_detected, stop_line_side, mask_red = self.detect_stop_line(hsv, cv_image)
         self.pub_stop_line.publish(Bool(data=stop_line_detected))
+        self.pub_stop_line_side.publish(String(data=stop_line_side))
 
         # saving for debug
         self.img             = img
@@ -290,19 +347,20 @@ class DetectLaneNode:
         image = cv2.circle(image, (int(center_white), int(len(img) * 0.75)),  5,(255,255,255))
         image = cv2.circle(image, (int(center_yellow), int(len(img) * 0.75)), 5,(0,255,255))
 
-        # NEU: ROI-Grenzlinie der Haltelinien-Erkennung einzeichnen (rot, untere 20%)
-        stop_line_row = int(len(img) * 0.8)
-        image = cv2.line(image, (0, stop_line_row), (len(img[0]), stop_line_row), color=(0, 0, 255))
+        # ROI-Kasten der Haltelinien-Erkennung einzeichnen (rot)
+        # zeigt exakt den Bereich in dem nach roter Linie gesucht wird
+        # vertikal:    detection_zone    → obere Kante
+        # horizontal:  detection_x_start → linke Kante
+        roi_top  = int(len(img)    * self.red_detection_zone)
+        roi_left = int(len(img[0]) * self.red_detection_x_start)
+        image = cv2.rectangle(image, (roi_left, roi_top), (self._crop_im_size - 1, self._crop_im_size - 1), (0, 0, 255), 2)
         # NEU: Bei erkannter Haltelinie → roter Rahmen ums gesamte Bild
         if stop_line_detected:
             image = cv2.rectangle(image, (0, 0), (self._crop_im_size - 1, self._crop_im_size - 1), (0, 0, 255), 5)
 
-        cv2.imshow('lane detection', image)
+        # cv2.imshow entfernt → Darstellung erfolgt im camera_dashboard_node
         self.is_running = False
         
-        #cv2.imshow('white', mask_white)
-        #cv2.imshow('yellow', mask_yellow)
-        cv2.waitKey(1)
             
     def run_debug(self):
         rate = rospy.Rate(10)
@@ -319,9 +377,10 @@ class DetectLaneNode:
                 debug_img = cv2.line(debug_img,(int(len(debug_img[0])/2),0),(int(len(debug_img[0])/2),len(debug_img)),(0,255,0))
                 debug_img = cv2.circle(debug_img, (int(self.center_white), int(len(debug_img) * 0.75)),  5,(255,255,255))
                 debug_img = cv2.circle(debug_img, (int(self.center_yellow), int(len(debug_img) * 0.75)), 5,(0,255,255))
-                # NEU: ROI-Grenzlinie einzeichnen
-                stop_line_row = int(len(debug_img) * 0.8)
-                debug_img = cv2.line(debug_img, (0, stop_line_row), (len(debug_img[0]), stop_line_row), color=(0, 0, 255))
+                # ROI-Kasten der Haltelinien-Erkennung einzeichnen (rot)
+                roi_top  = int(len(debug_img)    * self.red_detection_zone)
+                roi_left = int(len(debug_img[0]) * self.red_detection_x_start)
+                debug_img = cv2.rectangle(debug_img, (roi_left, roi_top), (self._crop_im_size - 1, self._crop_im_size - 1), (0, 0, 255), 2)
 
                 debug_msg = CompressedImage()
                 debug_msg.header.stamp = rospy.Time.now()
