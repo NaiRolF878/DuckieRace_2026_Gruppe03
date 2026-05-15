@@ -1,0 +1,56 @@
+{
+    "debug_image_topics": [
+        "/debug/apriltag"
+    ],
+    "parameters": {
+        "detection": {
+            "min_tag_area": {
+                "default": 1000,
+                "min": 0,
+                "max": 50000
+            },
+            "camera_fx": {
+                "default": 320,
+                "min": 100,
+                "max": 1000
+            },
+            "camera_fy": {
+                "default": 320,
+                "min": 100,
+                "max": 1000
+            },
+            "camera_cx": {
+                "default": 320,
+                "min": 0,
+                "max": 640
+            },
+            "camera_cy": {
+                "default": 240,
+                "min": 0,
+                "max": 480
+            }
+        },
+        "tag_directions": {
+            "tag_id_1_directions": {
+                "default": "left,straight",
+                "min": 0,
+                "max": 1
+            },
+            "tag_id_2_directions": {
+                "default": "right,straight",
+                "min": 0,
+                "max": 1
+            },
+            "tag_id_3_directions": {
+                "default": "left,right,straight",
+                "min": 0,
+                "max": 1
+            },
+            "tag_id_4_directions": {
+                "default": "left,right",
+                "min": 0,
+                "max": 1
+            }
+        }
+    }
+}
