@@ -177,18 +177,35 @@ class ConfigurationNode:
         self.save_parameters()
 
     def save_parameters(self):
-        # Aktuelle Parameter (inkl. debug_image_topics) in die JSON-Datei schreiben
-        node_name = self.selected_node.get()
-        path = os.path.join(self.config_dir, f'{node_name}.json')
+        # Aktuelle Parameter in die JSON-Datei zurückschreiben.
+        # Unterscheidet zwischen alter Struktur (flach) und neuer Struktur (default + bot-spezifisch):
+        #
+        #   Alte Struktur: config['parameters'] = { "pid": {...}, ... }
+        #     → self.parameters direkt überschreiben
+        #
+        #   Neue Struktur: config['parameters'] = { "default": {...}, "dorette": {...}, ... }
+        #     → nur den bot-spezifischen Block aktualisieren
+        #     → default und andere Bots bleiben unverändert
+        node_name    = self.selected_node.get()
+        vehicle_name = self._vehicle_name
+        path         = os.path.join(self.config_dir, f'{node_name}.json')
         try:
-            # Bestehende Datei lesen um debug_image_topics zu erhalten
             with open(path, 'r') as f:
                 config = json.load(f)
-            # Nur den parameters-Block aktualisieren, rest bleibt unverändert
-            config['parameters'] = self.parameters
+
+            if 'default' in config['parameters']:
+                # Neue Struktur: nur bot-spezifischen Block aktualisieren
+                # → default und andere Bots bleiben unverändert
+                config['parameters'][vehicle_name] = self.parameters
+                print(f"Saved bot-specific parameters for '{vehicle_name}' to {path}")
+            else:
+                # Alte Struktur: parameters direkt überschreiben
+                config['parameters'] = self.parameters
+                print(f"Saved parameters to {path}")
+
             with open(path, 'w') as f:
                 json.dump(config, f, indent=4)
-            print(f"Saved parameters to {path}")
+
         except Exception as e:
             rospy.logwarn(f"Could not save parameters to {path}: {e}")
 
