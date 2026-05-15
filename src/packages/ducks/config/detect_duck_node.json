@@ -1,0 +1,33 @@
+{
+    "debug_image_topics": [
+        "/debug/duck_detection"
+    ],
+    "parameters": {
+        "crop_image": {
+            "bottom_left_x":  {"default": 606, "min": -100, "max": 1000},
+            "bottom_left_y":  {"default": 382, "min": -100, "max": 1000},
+            "bottom_right_x": {"default": -29, "min": -100, "max": 1000},
+            "bottom_right_y": {"default": 382, "min": -100, "max": 1000},
+            "top_left_x":     {"default": 159, "min": -100, "max": 1000},
+            "top_left_y":     {"default": 218, "min": -100, "max": 1000},
+            "top_right_x":    {"default": 441, "min": -100, "max": 1000},
+            "top_right_y":    {"default": 218, "min": -100, "max": 1000}
+        },
+        "detection": {
+            "brightness_threshold": {"default": 60,   "min": 0,   "max": 255},
+            "brightness_ratio":     {"default": 0.15, "min": 0.0, "max": 1.0},
+            "min_side_space":       {"default": 40,   "min": 0,   "max": 400},
+            "roi_start":            {"default": 0.5,  "min": 0.0, "max": 1.0},
+            "roi_end":              {"default": 1.0,  "min": 0.0, "max": 1.0}
+        },
+        "hough": {
+            "dp":         {"default": 1.0, "min": 1.0, "max": 3.0},
+            "min_dist":   {"default": 30,  "min": 5,   "max": 200},
+            "param1":     {"default": 50,  "min": 10,  "max": 200},
+            "param2":     {"default": 30,  "min": 5,   "max": 100},
+            "min_radius": {"default": 10,  "min": 1,   "max": 200},
+            "max_radius": {"default": 80,  "min": 10,  "max": 400},
+            "roi_start":  {"default": 0.4, "min": 0.0, "max": 1.0}
+        }
+    }
+}
