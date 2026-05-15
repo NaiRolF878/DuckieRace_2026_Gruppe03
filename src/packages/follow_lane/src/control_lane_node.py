@@ -5,7 +5,7 @@ from std_msgs.msg import Float64, Int32, String, Bool
 
 from duckietown_msgs.msg import Twist2DStamped
 import os
-from switch_control_node import ControlType
+from switch_control_node import ControlType  # Lane=1, Obstacle=2, Intersection=3
 from enum import Enum
 import yaml
 import util
@@ -34,9 +34,14 @@ class ControlLaneNode:
         twist_topic = f"/{self._vehicle_name}/car_cmd_switch_node/cmd"
         self.pub_cmd_vel = rospy.Publisher(twist_topic, Twist2DStamped, queue_size = 1)
 
-        # Subscriber: bekommt Fehler von detect_lane_node (Spurversatz [-1,+1])
+        # Subscriber: bekommt Spurversatz
+        # Im Obstacle-Modus liefert control_obstacle_node den korrigierten Wert
+        # Im Lane-Modus direkt von detect_lane_node
         detect_lane_topic = f"/{self._vehicle_name}/detect/lane"
-        self.sub_lane = rospy.Subscriber(detect_lane_topic, Float64, self.cbFollowLane, queue_size = 1)
+        self.sub_lane = rospy.Subscriber(detect_lane_topic, Float64, self.cbFollowLane, queue_size=1)
+        # Korrigierter Spurversatz von control_obstacle_node (Ausweich-Offset addiert)
+        detect_lane_corrected_topic = f"/{self._vehicle_name}/detect/lane_corrected"
+        self.sub_lane_corrected = rospy.Subscriber(detect_lane_corrected_topic, Float64, self.cbFollowLaneCorrected, queue_size=1)
 
         # Subscriber: bekommt Info welcher Controller aktiv ist (Steuerungsmodus)
         control_change_topic = f"/{self._vehicle_name}/switch/control"
@@ -45,6 +50,14 @@ class ControlLaneNode:
         # NEU: Subscriber für rote Haltelinie von detect_lane_node
         stop_line_topic = f"/{self._vehicle_name}/detect/stop_line"
         self.sub_stop_line = rospy.Subscriber(stop_line_topic, Bool, self.cbStopLine, queue_size = 1)
+
+        # Subscriber: Ausweich-Offset von control_obstacle_node
+        # → wird zum PID-Fehler addiert damit der Bot ausweicht
+        obstacle_offset_topic = f"/{self._vehicle_name}/obstacle/error_offset"
+        self.sub_error_offset = rospy.Subscriber(obstacle_offset_topic, Float64, self.cbErrorOffset, queue_size=1)
+
+        # Aktueller Ausweich-Offset (0.0 = kein Ausweichen)
+        self.error_offset = 0.0
 
         # PID Variablen
         self.lastError = 0       # Fehler vom letzten Schritt (für D-Anteil)
@@ -75,7 +88,8 @@ class ControlLaneNode:
         if msg.data == ControlType.Lane.value:
             self.enable = True
         else:
-            # Bei anderem Modus (z.B. Obstacle) → keine Fahrbefehle senden
+            # Bei Intersection- oder Obstacle-Modus → keine Fahrbefehle senden
+            # control_intersection_node bzw. control_obstacle_node übernehmen
             self.enable = False
 
     def cbUpdateParameters(self, parameters):
@@ -123,6 +137,12 @@ class ControlLaneNode:
 
         error = error.data
 
+        # Ausweich-Offset von control_obstacle_node addieren
+        # → verschiebt die wahrgenommene Spurmitte für Ausweichmanöver
+        error = error + self.error_offset
+        # Begrenzung damit PID nicht übersteuert
+        error = max(min(error, 2.0), -2.0)
+
         # PID REGELUNG 
         
         # P-Anteil: reagiert auf aktuellen Fehler
@@ -152,6 +172,18 @@ class ControlLaneNode:
         # Fehler speichern für nächsten Schritt (wird für D-Anteil benötigt)
         self.lastError = error
 
+
+    def cbErrorOffset(self, msg):
+        # Ausweich-Offset von control_obstacle_node empfangen
+        self.error_offset = msg.data
+
+    def cbFollowLaneCorrected(self, error):
+        # Empfängt den korrigierten Spurversatz von control_obstacle_node
+        # Nur im Obstacle-Modus aktiv → sonst wird cbFollowLane genutzt
+        if not self.enable:
+            return
+        if hasattr(self, '_control_mode') and self._control_mode != ControlType.Lane:
+            self.cbFollowLane(error)
 
     def fnShutDown(self):
         # Beim Beenden der Node sicherstellen, dass der Bot sofort stoppt
