@@ -8,6 +8,7 @@ trap "kill 0" EXIT
 # --- perception + system ---
 rosrun follow_lane detect_lane_node.py &
 rosrun follow_lane switch_control_node.py &
+rosrun follow_lane camera_dashboard_node.py &
 rosrun intersection_handling detect_apriltag_node.py &
 
 sleep 5
