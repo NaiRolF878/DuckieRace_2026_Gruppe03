@@ -8,6 +8,7 @@ trap "kill 0" EXIT
 # --- core lane system (immer aktiv, damit der Duckiebot fährt) ---
 rosrun follow_lane detect_lane_node.py &
 rosrun follow_lane switch_control_node.py &
+rosrun follow_lane camera_dashboard_node.py &
 # Nur für die Entwicklungszeit - gezieltes Debugging
 rosrun rostopic echo /detect/duck &
 
