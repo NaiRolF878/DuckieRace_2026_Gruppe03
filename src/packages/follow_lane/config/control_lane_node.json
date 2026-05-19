@@ -121,12 +121,12 @@
         "trick": {
             "pid": {
                 "p": {
-                    "default": 4.0,
+                    "default": 6.0,
                     "min": 0.0,
                     "max": 10.0
                 },
                 "i": {
-                    "default": 0.0,
+                    "default": 0.04,
                     "min": 0.0,
                     "max": 10.0
                 },
