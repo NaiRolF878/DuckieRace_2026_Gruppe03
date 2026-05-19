@@ -64,7 +64,7 @@
         "daisy": {
             "pid": {
                 "p": {
-                    "default": 8.0,
+                    "default": 5.0,
                     "min": 0.0,
                     "max": 10.0
                 },
@@ -74,7 +74,7 @@
                     "max": 10.0
                 },
                 "d": {
-                    "default": 6.0,
+                    "default": 0.8,
                     "min": 0.0,
                     "max": 10.0
                 }
@@ -83,7 +83,7 @@
         "tick": {
             "pid": {
                 "p": {
-                    "default": 8.0,
+                    "default": 4.0,
                     "min": 0.0,
                     "max": 10.0
                 },
@@ -93,7 +93,7 @@
                     "max": 10.0
                 },
                 "d": {
-                    "default": 6.0,
+                    "default": 1.0,
                     "min": 0.0,
                     "max": 10.0
                 }
@@ -121,7 +121,7 @@
         "trick": {
             "pid": {
                 "p": {
-                    "default": 8.0,
+                    "default": 4.0,
                     "min": 0.0,
                     "max": 10.0
                 },
@@ -131,7 +131,7 @@
                     "max": 10.0
                 },
                 "d": {
-                    "default": 6.0,
+                    "default": 1.0,
                     "min": 0.0,
                     "max": 10.0
                 }
@@ -140,7 +140,7 @@
         "gustav": {
             "pid": {
                 "p": {
-                    "default": 8.0,
+                    "default": 4.0,
                     "min": 0.0,
                     "max": 10.0
                 },
@@ -150,7 +150,7 @@
                     "max": 10.0
                 },
                 "d": {
-                    "default": 6.0,
+                    "default": 0.8,
                     "min": 0.0,
                     "max": 10.0
                 }
@@ -159,7 +159,7 @@
         "dorette": {
             "pid": {
                 "p": {
-                    "default": 8.0,
+                    "default": 5.0,
                     "min": 0.0,
                     "max": 10.0
                 },
@@ -169,7 +169,7 @@
                     "max": 10.0
                 },
                 "d": {
-                    "default": 6.0,
+                    "default": 0.8,
                     "min": 0.0,
                     "max": 10.0
                 }
@@ -216,7 +216,7 @@
         "gundel": {
             "pid": {
                 "p": {
-                    "default": 8.0,
+                    "default": 6.8,
                     "min": 0.0,
                     "max": 10.0
                 },
@@ -226,7 +226,7 @@
                     "max": 10.0
                 },
                 "d": {
-                    "default": 6.0,
+                    "default": 0.8,
                     "min": 0.0,
                     "max": 10.0
                 }
