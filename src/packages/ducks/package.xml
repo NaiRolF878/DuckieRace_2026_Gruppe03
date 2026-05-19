@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>ducks</name>
+  <version>0.0.1</version>
+  <description>
+  Duck detection and obstacle avoidance for Duckietown Challenge 3.
+  </description>
+  <maintainer email="duckie.town@web.de">duckie town</maintainer>
+  <license>None</license>
+  <buildtool_depend>catkin</buildtool_depend>
+</package>
