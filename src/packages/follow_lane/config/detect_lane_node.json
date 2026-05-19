@@ -460,7 +460,7 @@
                     "max": 255
                 },
                 "sh": {
-                    "default": 50,
+                    "default": 63,
                     "min": 0,
                     "max": 255
                 },
@@ -475,19 +475,19 @@
                     "max": 255
                 },
                 "vl": {
-                    "default": 175,
+                    "default": 173,
                     "min": 0,
                     "max": 255
                 }
             },
             "yellow": {
                 "hh": {
-                    "default": 60,
+                    "default": 35,
                     "min": 0,
                     "max": 255
                 },
                 "hl": {
-                    "default": 15,
+                    "default": 20,
                     "min": 0,
                     "max": 255
                 },
@@ -497,7 +497,7 @@
                     "max": 255
                 },
                 "sl": {
-                    "default": 60,
+                    "default": 100,
                     "min": 0,
                     "max": 255
                 },
@@ -507,7 +507,7 @@
                     "max": 255
                 },
                 "vl": {
-                    "default": 120,
+                    "default": 100,
                     "min": 0,
                     "max": 255
                 }
