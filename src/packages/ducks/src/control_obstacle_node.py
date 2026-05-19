@@ -32,7 +32,6 @@ import os
 import rospy
 from std_msgs.msg import Float64, Int32
 from enum import Enum
-from switch_control_node import ControlType
 import util
 
 
@@ -49,11 +48,14 @@ class ControlObstacleNode:
         util.init_parameters(node_name, self.cbUpdateParameters)
 
         # Publisher: korrigierter Spurversatz
-        # control_lane_node abonniert dieses Topic statt /detect/lane direkt
         self.pub_lane_corrected = rospy.Publisher(
             f'/{self._vehicle_name}/detect/lane_corrected',
-            Float64,
-            queue_size=1
+            Float64, queue_size=1
+        )
+        # Publisher: meldet switch_control_node wenn Ausweichen abgeschlossen
+        self.pub_obstacle_done = rospy.Publisher(
+            f'/{self._vehicle_name}/obstacle/done',
+            Bool, queue_size=1
         )
 
         # Subscriber
@@ -65,9 +67,10 @@ class ControlObstacleNode:
             f'/{self._vehicle_name}/detect/lane',
             Float64, self.cbLane, queue_size=1)
 
-        self.sub_control = rospy.Subscriber(
-            f'/{self._vehicle_name}/switch/control',
-            Int32, self.cbControl, queue_size=1)
+        # Subscriber: wird von switch_control_node aktiviert/deaktiviert
+        self.sub_enable = rospy.Subscriber(
+            f'/{self._vehicle_name}/enable/obstacle',
+            Bool, self.cbControl, queue_size=1)
 
         # Zustandsautomat
         self.evade_state    = EvadeState.Idle
@@ -106,14 +109,13 @@ class ControlObstacleNode:
 
 
     def cbControl(self, msg):
-        # Nur aktiv wenn Obstacle-Modus
-        if msg.data == ControlType.Obstacle.value:
-            self.enable = True
-        else:
-            self.enable = False
-            # Zustand zurücksetzen wenn deaktiviert
+        # Empfängt Enable-Signal von switch_control_node
+        # True = Obstacle-Modus aktiv, False = deaktiviert
+        if not msg.data and self.enable:
+            # Deaktiviert → Zustand zurücksetzen
             self.evade_state    = EvadeState.Idle
             self.current_offset = 0.0
+        self.enable = msg.data
 
 
     def cbLane(self, msg):
@@ -205,6 +207,8 @@ class ControlObstacleNode:
                         self.current_offset = 0.0
                         self.evade_state    = EvadeState.Idle
                         rospy.loginfo("Rückkehr in Spur abgeschlossen.")
+                        # switch_control_node informieren → zurück zu Lane-Modus
+                        self.pub_obstacle_done.publish(Bool(data=True))
 
                     corrected_error = self.last_error + self.current_offset
                     corrected_error = max(-1.0, min(1.0, corrected_error))
