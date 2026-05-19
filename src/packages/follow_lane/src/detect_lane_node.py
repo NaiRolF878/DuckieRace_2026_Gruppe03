@@ -24,7 +24,7 @@ class DetectLaneNode:
         self.sub_image_original = rospy.Subscriber(self._camera_topic, CompressedImage, self.cbFindLane, queue_size = 1)
         self.pub_lane = rospy.Publisher(f'/{self._vehicle_name}/detect/lane', Float64, queue_size = 1)
 
-        # NEU: Publisher für rote Haltelinie (True = Linie erkannt)
+        # Publisher für rote Haltelinie (True = Linie erkannt)
         self.pub_stop_line      = rospy.Publisher(f'/{self._vehicle_name}/detect/stop_line',      Bool,   queue_size=1)
         # Publisher für die Seite der roten Linie ('none', 'left', 'right', 'both')
         # → wird von control_intersection_node für Abbiegeorientierung genutzt
@@ -48,7 +48,7 @@ class DetectLaneNode:
         self.pub_debug_lane   = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_croped',  CompressedImage, queue_size=1)
         self.pub_debug_white  = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_white',   CompressedImage, queue_size=1)
         self.pub_debug_yellow = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_yellow',  CompressedImage, queue_size=1)
-        # NEU: Debug-Publisher für rote Linien-Maske
+        # Debug-Publisher für rote Linien-Maske
         self.pub_debug_red    = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_red',     CompressedImage, queue_size=1)
         # Platzhalter für Debug-Variablen – werden beim ersten Frame in cbFindLane gesetzt
         # Initialisierung verhindert AttributeError wenn run_debug vor erstem Frame läuft
@@ -92,7 +92,7 @@ class DetectLaneNode:
         self.bottom_right_x = parameters["crop_image"]["bottom_right_x"]["default"]
         self.bottom_right_y = parameters["crop_image"]["bottom_right_y"]["default"]
 
-        # NEU: Update red stop line parameters
+        # Update red stop line parameters
         # Rot liegt im HSV-Farbraum an zwei Stellen des Hue-Kreises:
         #   unterer Bereich: hl  .. hh  (z.B. 0  - 10 )
         #   oberer Bereich:  hl2 .. hh2 (z.B. 160 - 179)
@@ -160,7 +160,7 @@ class DetectLaneNode:
             return no_lane_value
 
 
-    # NEU: Rote Haltelinie im Bird's-Eye-View-Bild erkennen
+    # Rote Haltelinie im Bird's-Eye-View-Bild erkennen
     def detect_stop_line(self, hsv, cv_image):
         # Zwei HSV-Masken für den unteren und oberen Rot-Bereich erzeugen
         mask_red_lower = cv2.inRange(hsv,
@@ -332,7 +332,7 @@ class DetectLaneNode:
         self.pub_lane_white_x.publish(Float64(data=float(center_white)))
         print(f"Lane error: {msg_error.data} range [-1,1]")
 
-        # NEU: Rote Haltelinie erkennen und Ergebnis publizieren
+        # Rote Haltelinie erkennen und Ergebnis publizieren
         # cv_image = Originalbild für Seitenerkennung, hsv = Bird's-Eye-View für eigene Linie
         stop_line_detected, stop_line_side, mask_red = self.detect_stop_line(hsv, cv_image)
         self.pub_stop_line.publish(Bool(data=stop_line_detected))
@@ -365,7 +365,7 @@ class DetectLaneNode:
         roi_top  = int(len(img)    * self.red_detection_zone)
         roi_left = int(len(img[0]) * self.red_detection_x_start)
         image = cv2.rectangle(image, (roi_left, roi_top), (self._crop_im_size - 1, self._crop_im_size - 1), (0, 0, 255), 2)
-        # NEU: Bei erkannter Haltelinie → roter Rahmen ums gesamte Bild
+        # Bei erkannter Haltelinie → roter Rahmen ums gesamte Bild
         if stop_line_detected:
             image = cv2.rectangle(image, (0, 0), (self._crop_im_size - 1, self._crop_im_size - 1), (0, 0, 255), 5)
 
