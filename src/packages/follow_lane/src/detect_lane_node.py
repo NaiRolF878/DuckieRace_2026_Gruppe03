@@ -50,8 +50,19 @@ class DetectLaneNode:
         self.pub_debug_yellow = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_yellow',  CompressedImage, queue_size=1)
         # NEU: Debug-Publisher für rote Linien-Maske
         self.pub_debug_red    = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_red',     CompressedImage, queue_size=1)
-        # Speicher für Debug-Bild (wird in run_debug benötigt)
-        self.debug_img_red = None
+        # Platzhalter für Debug-Variablen – werden beim ersten Frame in cbFindLane gesetzt
+        # Initialisierung verhindert AttributeError wenn run_debug vor erstem Frame läuft
+        blank = np.zeros((self._crop_im_size, self._crop_im_size), dtype=np.uint8)
+        blank_color = np.zeros((self._crop_im_size, self._crop_im_size, 3), dtype=np.uint8)
+        self.img              = blank_color
+        self.lane_center      = self._crop_im_size / 2
+        self.white_alternative  = int(self._crop_im_size * 0.95)
+        self.yellow_alternative = int(self._crop_im_size * 0.05)
+        self.center_white     = int(self._crop_im_size * 0.95)
+        self.center_yellow    = int(self._crop_im_size * 0.05)
+        self.debug_img_white  = blank
+        self.debug_img_yellow = blank
+        self.debug_img_red    = blank
 
 
     def cbUpdateParameters(self, parameters):
@@ -358,7 +369,23 @@ class DetectLaneNode:
         if stop_line_detected:
             image = cv2.rectangle(image, (0, 0), (self._crop_im_size - 1, self._crop_im_size - 1), (0, 0, 255), 5)
 
-        # cv2.imshow entfernt → Darstellung erfolgt im camera_dashboard_node
+        # Annotiertes Bird's-Eye-View publizieren → camera_dashboard_node (oben rechts)
+        if self.pub_debug_annotated.get_num_connections() > 0:
+            ann_msg              = CompressedImage()
+            ann_msg.header.stamp = rospy.Time.now()
+            ann_msg.format       = "jpeg"
+            ann_msg.data         = np.array(cv2.imencode('.jpg', image)[1]).tobytes()
+            self.pub_debug_annotated.publish(ann_msg)
+
+        # Lokale Debug-Ansicht: auskommentiert, bei Bedarf aktivieren
+        # Einzelne Fenster direkt auf dem Notebook anzeigen:
+        # cv2.imshow('Bird\'s-Eye-View annotiert', image)   # Bird's-Eye mit Spurmarkierungen
+        # cv2.imshow('Original',        cv_image)            # Rohes Kamerabild
+        # cv2.imshow('Weiss-Maske',     mask_white)          # Weiß HSV-Maske
+        # cv2.imshow('Gelb-Maske',      mask_yellow)         # Gelb HSV-Maske
+        # cv2.imshow('Rot-Maske',       mask_red)            # Rot HSV-Maske
+        # cv2.waitKey(1)
+
         self.is_running = False
         
             
