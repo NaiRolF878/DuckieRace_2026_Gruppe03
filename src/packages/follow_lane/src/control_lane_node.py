@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 
 import rospy
-from std_msgs.msg import Float64, Int32, String, Bool
+from std_msgs.msg import Float64, Bool
 
 from duckietown_msgs.msg import Twist2DStamped
 import os
-from switch_control_node import ControlType  # Lane=1, Obstacle=2, Intersection=3
 from enum import Enum
 import yaml
 import util
@@ -43,11 +42,13 @@ class ControlLaneNode:
         detect_lane_corrected_topic = f"/{self._vehicle_name}/detect/lane_corrected"
         self.sub_lane_corrected = rospy.Subscriber(detect_lane_corrected_topic, Float64, self.cbFollowLaneCorrected, queue_size=1)
 
-        # Subscriber: bekommt Info welcher Controller aktiv ist (Steuerungsmodus)
-        control_change_topic = f"/{self._vehicle_name}/switch/control"
-        self.sub_control = rospy.Subscriber(control_change_topic, Int32, self.cbControl, queue_size = 1)
+        # Subscriber: wird von switch_control_node aktiviert/deaktiviert
+        # Bool True = diese Node ist aktiv, False = deaktiviert
+        self.sub_enable = rospy.Subscriber(
+            f'/{self._vehicle_name}/enable/lane',
+            Bool, self.cbControl, queue_size=1)
 
-        # NEU: Subscriber für rote Haltelinie von detect_lane_node
+        # Subscriber für rote Haltelinie von detect_lane_node
         stop_line_topic = f"/{self._vehicle_name}/detect/stop_line"
         self.sub_stop_line = rospy.Subscriber(stop_line_topic, Bool, self.cbStopLine, queue_size = 1)
 
@@ -68,7 +69,7 @@ class ControlLaneNode:
         self.v = 0               # Geschwindigkeit
         self.a = 0               # Winkelgeschwindigkeit (Lenkung)
 
-        # NEU: Zustandsvariablen für die Haltelinien-Logik
+        # Zustandsvariablen für die Haltelinien-Logik
         # Drei Zustände: StopState.Driving, StopState.Stopping, StopState.Cooldown
         self.stop_state      = StopState.Driving
         self.STOP_DURATION     = 3.0  # Startwert – wird durch cbUpdateParameters aus JSON überschrieben
@@ -83,17 +84,12 @@ class ControlLaneNode:
 #-------------------------------
 
     def cbControl(self, msg):
-        # Empfängt den aktiven Steuerungsmodus vom switch_control_node
-        # Nur wenn der Lane-Modus aktiv ist, sendet diese Node Fahrbefehle
-        if msg.data == ControlType.Lane.value:
-            self.enable = True
-        else:
-            # Bei Intersection- oder Obstacle-Modus → keine Fahrbefehle senden
-            # control_intersection_node bzw. control_obstacle_node übernehmen
-            self.enable = False
+        # Empfängt Enable-Signal von switch_control_node
+        # True = Lane Following aktiv, False = andere Node übernimmt
+        self.enable = msg.data
 
     def cbUpdateParameters(self, parameters):
-        #Prüfung was ankommt
+        # Prüfung was ankommt
         print("PARAMETER EMPFANGEN:")
         print(parameters)
         
@@ -109,7 +105,7 @@ class ControlLaneNode:
         self.STOP_DURATION     = parameters["stop_line"]["stop_duration"]["default"]
         self.COOLDOWN_DURATION = parameters["stop_line"]["cooldown_duration"]["default"]
 
-    # NEU: Callback für rote Haltelinie
+    # Callback für rote Haltelinie
     def cbStopLine(self, msg):
         # Im Cooldown-Modus: erneutes Erkennen ignorieren
         if self.stop_state == StopState.Cooldown:
