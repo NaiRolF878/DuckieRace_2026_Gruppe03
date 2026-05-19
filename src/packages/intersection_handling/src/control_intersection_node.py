@@ -44,10 +44,9 @@
 import os
 import random
 import rospy
-from std_msgs.msg import Float64, Int32, Bool, String
+from std_msgs.msg import Float64, Bool, String
 from duckietown_msgs.msg import Twist2DStamped
 from enum import Enum
-from switch_control_node import ControlType
 import util
 
 
@@ -108,11 +107,10 @@ class ControlIntersectionNode:
             self.cbStopLineSide,
             queue_size=1
         )
-        self.sub_control = rospy.Subscriber(
-            f'/{self._vehicle_name}/switch/control',
-            Int32,
-            self.cbControl,
-            queue_size=1
+        # Subscriber: wird von switch_control_node aktiviert/deaktiviert
+        self.sub_enable = rospy.Subscriber(
+            f'/{self._vehicle_name}/enable/intersection',
+            Bool, self.cbControl, queue_size=1
         )
 
         # ── Zustandsvariablen ─────────────────────────────────────────────────
@@ -178,16 +176,14 @@ class ControlIntersectionNode:
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
     def cbControl(self, msg):
-        # Aktivierung durch switch_control_node
-        if msg.data == ControlType.Intersection.value:
-            if not self.enable:
-                rospy.loginfo("Intersection-Modus aktiviert.")
-            self.enable = True
-        else:
-            self.enable = False
-            # Zustand zurücksetzen wenn deaktiviert
-            if self.turn_state != TurnState.Idle:
-                self._reset_state()
+        # Empfängt Enable-Signal von switch_control_node
+        # True = Kreuzungsmodus aktiv, False = deaktiviert
+        if msg.data and not self.enable:
+            rospy.loginfo("Intersection-Modus aktiviert.")
+        if not msg.data and self.enable:
+            # Deaktiviert → Zustand zurücksetzen
+            self._reset_state()
+        self.enable = msg.data
 
 
     def cbAprilTag(self, msg):
