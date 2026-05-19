@@ -262,7 +262,7 @@
                     "max": 255
                 },
                 "sh": {
-                    "default": 41,
+                    "default": 60,
                     "min": 0,
                     "max": 255
                 },
@@ -277,7 +277,7 @@
                     "max": 255
                 },
                 "vl": {
-                    "default": 161,
+                    "default": 175,
                     "min": 0,
                     "max": 255
                 }
@@ -460,7 +460,7 @@
                     "max": 255
                 },
                 "sh": {
-                    "default": 41,
+                    "default": 50,
                     "min": 0,
                     "max": 255
                 },
@@ -475,7 +475,7 @@
                     "max": 255
                 },
                 "vl": {
-                    "default": 161,
+                    "default": 175,
                     "min": 0,
                     "max": 255
                 }
@@ -526,7 +526,7 @@
                     "max": 255
                 },
                 "sh": {
-                    "default": 41,
+                    "default": 60,
                     "min": 0,
                     "max": 255
                 },
@@ -541,7 +541,7 @@
                     "max": 255
                 },
                 "vl": {
-                    "default": 161,
+                    "default": 175,
                     "min": 0,
                     "max": 255
                 }
@@ -592,7 +592,7 @@
                     "max": 255
                 },
                 "sh": {
-                    "default": 41,
+                    "default": 60,
                     "min": 0,
                     "max": 255
                 },
@@ -607,7 +607,7 @@
                     "max": 255
                 },
                 "vl": {
-                    "default": 161,
+                    "default": 175,
                     "min": 0,
                     "max": 255
                 }
@@ -790,7 +790,7 @@
                     "max": 255
                 },
                 "sh": {
-                    "default": 41,
+                    "default": 60,
                     "min": 0,
                     "max": 255
                 },
@@ -805,7 +805,7 @@
                     "max": 255
                 },
                 "vl": {
-                    "default": 161,
+                    "default": 175,
                     "min": 0,
                     "max": 255
                 }
