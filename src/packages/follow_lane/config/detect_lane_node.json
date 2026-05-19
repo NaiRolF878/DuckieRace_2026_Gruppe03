@@ -1,6 +1,7 @@
 {
     "debug_image_topics": [
         "/debug/original",
+        "/debug/annotated",
         "/debug/bird_view",
         "/debug/lane_croped",
         "/debug/lane_white",
