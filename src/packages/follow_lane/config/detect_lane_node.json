@@ -1,6 +1,7 @@
 {
     "debug_image_topics": [
         "/debug/original",
+        "/debug/annotated",
         "/debug/bird_view",
         "/debug/lane_croped",
         "/debug/lane_white",
@@ -114,11 +115,6 @@
                     "min": 0,
                     "max": 255
                 },
-                "min_lane_width": {
-                    "default": 50,
-                    "min": 0,
-                    "max": 400
-                },
                 "max_frame_jump": {
                     "default": 80,
                     "min": 0,
@@ -180,50 +176,45 @@
                     "default": 0.4,
                     "min": 0.0,
                     "max": 1.0
+                },
+                "detection_x_end": {
+                    "default": 1.0,
+                    "min": 0.0,
+                    "max": 1.0
                 }
             }
         },
         "donald": {
-            "crop_image": {
-                "bottom_left_x": {
-                    "default": 606,
-                    "min": -100,
-                    "max": 1000
+            "white": {
+                "hh": {
+                    "default": 255,
+                    "min": 0,
+                    "max": 255
                 },
-                "bottom_left_y": {
-                    "default": 382,
-                    "min": -100,
-                    "max": 1000
+                "hl": {
+                    "default": 0,
+                    "min": 0,
+                    "max": 255
                 },
-                "bottom_right_x": {
-                    "default": -29,
-                    "min": -100,
-                    "max": 1000
+                "sh": {
+                    "default": 41,
+                    "min": 0,
+                    "max": 255
                 },
-                "bottom_right_y": {
-                    "default": 382,
-                    "min": -100,
-                    "max": 1000
+                "sl": {
+                    "default": 0,
+                    "min": 0,
+                    "max": 255
                 },
-                "top_left_x": {
-                    "default": 159,
-                    "min": -100,
-                    "max": 1000
+                "vh": {
+                    "default": 255,
+                    "min": 0,
+                    "max": 255
                 },
-                "top_left_y": {
-                    "default": 218,
-                    "min": -100,
-                    "max": 1000
-                },
-                "top_right_x": {
-                    "default": 441,
-                    "min": -100,
-                    "max": 1000
-                },
-                "top_right_y": {
-                    "default": 218,
-                    "min": -100,
-                    "max": 1000
+                "vl": {
+                    "default": 161,
+                    "min": 0,
+                    "max": 255
                 }
             },
             "yellow": {
@@ -257,7 +248,9 @@
                     "min": 0,
                     "max": 255
                 }
-            },
+            }
+        },
+        "daisy": {
             "white": {
                 "hh": {
                     "default": 255,
@@ -286,107 +279,6 @@
                 },
                 "vl": {
                     "default": 161,
-                    "min": 0,
-                    "max": 255
-                },
-                "min_lane_width": {
-                    "default": 5,
-                    "min": 0,
-                    "max": 400
-                },
-                "max_frame_jump": {
-                    "default": 80,
-                    "min": 0,
-                    "max": 400
-                }
-            },
-            "red": {
-                "hl": {
-                    "default": 0,
-                    "min": 0,
-                    "max": 179
-                },
-                "hh": {
-                    "default": 10,
-                    "min": 0,
-                    "max": 179
-                },
-                "hl2": {
-                    "default": 160,
-                    "min": 0,
-                    "max": 179
-                },
-                "hh2": {
-                    "default": 179,
-                    "min": 0,
-                    "max": 179
-                },
-                "sl": {
-                    "default": 100,
-                    "min": 0,
-                    "max": 255
-                },
-                "sh": {
-                    "default": 255,
-                    "min": 0,
-                    "max": 255
-                },
-                "vl": {
-                    "default": 100,
-                    "min": 0,
-                    "max": 255
-                },
-                "vh": {
-                    "default": 255,
-                    "min": 0,
-                    "max": 255
-                },
-                "pixel_threshold": {
-                    "default": 500,
-                    "min": 0,
-                    "max": 5000
-                },
-                "detection_zone": {
-                    "default": 0.85,
-                    "min": 0.0,
-                    "max": 1.0
-                },
-                "detection_x_start": {
-                    "default": 0.4,
-                    "min": 0.0,
-                    "max": 1.0
-                }
-            }
-        },
-        "daisy": {
-            "white": {
-                "hh": {
-                    "default": 255,
-                    "min": 0,
-                    "max": 255
-                },
-                "hl": {
-                    "default": 0,
-                    "min": 0,
-                    "max": 255
-                },
-                "sh": {
-                    "default": 60,
-                    "min": 0,
-                    "max": 255
-                },
-                "sl": {
-                    "default": 0,
-                    "min": 0,
-                    "max": 255
-                },
-                "vh": {
-                    "default": 255,
-                    "min": 0,
-                    "max": 255
-                },
-                "vl": {
-                    "default": 175,
                     "min": 0,
                     "max": 255
                 }
@@ -490,7 +382,7 @@
                 }
             }
         },
-        "track": {
+        "tack": {
             "white": {
                 "hh": {
                     "default": 255,
@@ -557,80 +449,6 @@
             }
         },
         "trick": {
-            "crop_image": {
-                "bottom_left_x": {
-                    "default": 606,
-                    "min": -100,
-                    "max": 1000
-                },
-                "bottom_left_y": {
-                    "default": 382,
-                    "min": -100,
-                    "max": 1000
-                },
-                "bottom_right_x": {
-                    "default": -29,
-                    "min": -100,
-                    "max": 1000
-                },
-                "bottom_right_y": {
-                    "default": 382,
-                    "min": -100,
-                    "max": 1000
-                },
-                "top_left_x": {
-                    "default": 159,
-                    "min": -100,
-                    "max": 1000
-                },
-                "top_left_y": {
-                    "default": 218,
-                    "min": -100,
-                    "max": 1000
-                },
-                "top_right_x": {
-                    "default": 441,
-                    "min": -100,
-                    "max": 1000
-                },
-                "top_right_y": {
-                    "default": 218,
-                    "min": -100,
-                    "max": 1000
-                }
-            },
-            "yellow": {
-                "hh": {
-                    "default": 35,
-                    "min": 0,
-                    "max": 255
-                },
-                "hl": {
-                    "default": 20,
-                    "min": 0,
-                    "max": 255
-                },
-                "sh": {
-                    "default": 255,
-                    "min": 0,
-                    "max": 255
-                },
-                "sl": {
-                    "default": 100,
-                    "min": 0,
-                    "max": 255
-                },
-                "vh": {
-                    "default": 255,
-                    "min": 0,
-                    "max": 255
-                },
-                "vl": {
-                    "default": 100,
-                    "min": 0,
-                    "max": 255
-                }
-            },
             "white": {
                 "hh": {
                     "default": 255,
@@ -643,7 +461,7 @@
                     "max": 255
                 },
                 "sh": {
-                    "default": 63,
+                    "default": 41,
                     "min": 0,
                     "max": 255
                 },
@@ -658,44 +476,19 @@
                     "max": 255
                 },
                 "vl": {
-                    "default": 200,
+                    "default": 161,
+                    "min": 0,
+                    "max": 255
+                }
+            },
+            "yellow": {
+                "hh": {
+                    "default": 60,
                     "min": 0,
                     "max": 255
                 },
-                "min_lane_width": {
-                    "default": 50,
-                    "min": 0,
-                    "max": 400
-                },
-                "max_frame_jump": {
-                    "default": 80,
-                    "min": 0,
-                    "max": 400
-                }
-            },
-            "red": {
                 "hl": {
-                    "default": 0,
-                    "min": 0,
-                    "max": 179
-                },
-                "hh": {
-                    "default": 10,
-                    "min": 0,
-                    "max": 179
-                },
-                "hl2": {
-                    "default": 160,
-                    "min": 0,
-                    "max": 179
-                },
-                "hh2": {
-                    "default": 179,
-                    "min": 0,
-                    "max": 179
-                },
-                "sl": {
-                    "default": 100,
+                    "default": 15,
                     "min": 0,
                     "max": 255
                 },
@@ -704,8 +497,8 @@
                     "min": 0,
                     "max": 255
                 },
-                "vl": {
-                    "default": 100,
+                "sl": {
+                    "default": 60,
                     "min": 0,
                     "max": 255
                 },
@@ -714,20 +507,10 @@
                     "min": 0,
                     "max": 255
                 },
-                "pixel_threshold": {
-                    "default": 500,
+                "vl": {
+                    "default": 120,
                     "min": 0,
-                    "max": 5000
-                },
-                "detection_zone": {
-                    "default": 0.85,
-                    "min": 0.0,
-                    "max": 1.0
-                },
-                "detection_x_start": {
-                    "default": 0.4,
-                    "min": 0.0,
-                    "max": 1.0
+                    "max": 255
                 }
             }
         },
@@ -744,7 +527,7 @@
                     "max": 255
                 },
                 "sh": {
-                    "default": 60,
+                    "default": 41,
                     "min": 0,
                     "max": 255
                 },
@@ -759,7 +542,7 @@
                     "max": 255
                 },
                 "vl": {
-                    "default": 175,
+                    "default": 161,
                     "min": 0,
                     "max": 255
                 }
@@ -810,7 +593,7 @@
                     "max": 255
                 },
                 "sh": {
-                    "default": 60,
+                    "default": 41,
                     "min": 0,
                     "max": 255
                 },
@@ -825,7 +608,7 @@
                     "max": 255
                 },
                 "vl": {
-                    "default": 175,
+                    "default": 161,
                     "min": 0,
                     "max": 255
                 }
@@ -1008,7 +791,7 @@
                     "max": 255
                 },
                 "sh": {
-                    "default": 60,
+                    "default": 41,
                     "min": 0,
                     "max": 255
                 },
@@ -1023,7 +806,7 @@
                     "max": 255
                 },
                 "vl": {
-                    "default": 175,
+                    "default": 161,
                     "min": 0,
                     "max": 255
                 }
