@@ -15,11 +15,10 @@ class ConfigurationNode:
         # ROS-Node initialisieren
         rospy.init_node(node_name)
 
-        # Fahrzeugnamen aus Umgebungsvariable lesen (z.B. "duckiebot01")
+        # Fahrzeugnamen aus Umgebungsvariable lesen
         self._vehicle_name = os.environ['VEHICLE_NAME']
         
         # Pfad zum config-Ordner, in dem alle JSON-Konfigurationsdateien liegen
-        # (eine Ebene über dem aktuellen Skript-Verzeichnis)
         self.config_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'config'))
 
         # Topic über das aktualisierte Parameter an alle Nodes gesendet werden
@@ -178,11 +177,7 @@ class ConfigurationNode:
 
     def save_parameters(self):
         # Aktuelle Parameter in die JSON-Datei zurückschreiben.
-        # Unterscheidet zwischen alter Struktur (flach) und neuer Struktur (default + bot-spezifisch):
-        #
-        #   Alte Struktur: config['parameters'] = { "pid": {...}, ... }
-        #     → self.parameters direkt überschreiben
-        #
+
         #   Neue Struktur: config['parameters'] = { "default": {...}, "dorette": {...}, ... }
         #     → nur den bot-spezifischen Block aktualisieren
         #     → default und andere Bots bleiben unverändert
@@ -194,12 +189,12 @@ class ConfigurationNode:
                 config = json.load(f)
 
             if 'default' in config['parameters']:
-                # Neue Struktur: nur bot-spezifischen Block aktualisieren
+                # Nur bot-spezifischen Block aktualisieren
                 # → default und andere Bots bleiben unverändert
                 config['parameters'][vehicle_name] = self.parameters
                 print(f"Saved bot-specific parameters for '{vehicle_name}' to {path}")
             else:
-                # Alte Struktur: parameters direkt überschreiben
+                # Parameters direkt überschreiben
                 config['parameters'] = self.parameters
                 print(f"Saved parameters to {path}")
 
