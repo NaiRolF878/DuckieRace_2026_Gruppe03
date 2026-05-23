@@ -102,7 +102,7 @@
                 }
             }
         },
-        "tick": {
+        "trick": {
             "pid": {
                 "p": {
                     "default": 4.0,
