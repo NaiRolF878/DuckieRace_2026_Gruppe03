@@ -197,11 +197,11 @@ class DetectLaneNode:
         if raw is None:
             if last_known is not None:
                 # last_known ist die beste Schätzung – Anker beibehalten
-                print(f"{label}: no edges – keeping last position {last_known:.0f}")
+                rospy.logwarn(f"{label}: no edges – keeping last position {last_known:.0f}")
                 return last_known, last_known
             # Erster Frame ohne Detektion → Bildrand-Fallback, aber NICHT ankern
             # (sonst würde get_x_for_driving danach nach Kanten in Bildrand-Nähe suchen)
-            print(f"{label}: no edges and no last known – using image-edge fallback {fallback}")
+            rospy.logwarn(f"{label}: no edges and no last known – using image-edge fallback {fallback}")
             return fallback, None
  
         # Fall B: Detektion vorhanden, aber kein Anker → jetzt ankern
@@ -211,8 +211,7 @@ class DetectLaneNode:
         # Fall C: Detektion + Anker → Sprung prüfen
         jump = abs(raw - last_known)
         if jump > max_jump:
-            print(f"{label} jump too large ({jump:.0f}px) – keeping last position")
-            return last_known, last_known
+            rospy.logwarn(f"{label} jump too large ({jump:.0f}px) – keeping last position")
         return raw, raw
  
     def detect_stop_line(self, hsv):
@@ -239,8 +238,8 @@ class DetectLaneNode:
         # Haltelinie erkannt, wenn genug rote Pixel im ROI vorhanden sind
         red_pixel_count    = cv2.countNonZero(roi_own)
         stop_line_detected = red_pixel_count > self.red_pixel_threshold
-        print(f"Red pixels: {red_pixel_count} | threshold: {self.red_pixel_threshold} | detected: {stop_line_detected}")
-
+        rospy.logdebug(f"Red pixels: {red_pixel_count} | threshold: {self.red_pixel_threshold} | detected: {stop_line_detected}")
+ 
         return stop_line_detected, mask_red
 
 
