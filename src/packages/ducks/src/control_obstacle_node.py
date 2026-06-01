@@ -3,217 +3,291 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # control_obstacle_node.py
 #
-# Aufgabe: Weicht Enten auf der Fahrbahn aus.
+# Aufgabe (Challenge 3 – Watch out for Ducks):
+#   Entscheidet, wie der Bot einer erkannten Ente ausweicht, und reicht das
+#   Ergebnis als additiven Lenk-Offset an control_lane_node weiter.
 #
-# Ausweichlogik:
-#   1. Enten-Position (x) und Spurbreite bekannt
-#   2. Platz links  = ente_x - center_yellow
-#      Platz rechts = center_white - ente_x
-#   3. Ausweichentscheidung:
-#      platz_rechts > platz_links  → rechts ausweichen
-#      platz_links  > platz_rechts → links ausweichen
-#      beide gleich (mittig)       → links (StVO: zur gelben Linie)
-#      beide < min_side_space      → Gegenspurübernahme (über gelbe Linie)
-#   4. Rückkehr: offset wird schrittweise auf 0 reduziert (kontrolliert)
+# Architektur:
+#   - control_lane_node bleibt die EINZIGE Stelle, die PID rechnet.
+#   - Diese Node published nur einen additiven Korrekturterm:
+#       /obstacle/error_offset (Float64)  →  control_lane_node addiert ihn.
+#     Vorteil: keine Duplizierung der Regel-/Geschwindigkeits-/Stop-Line-Logik.
+#   - Ein positiver Offset verschiebt die wahrgenommene Spurmitte so, dass der
+#     Bot nach LINKS ausweicht; ein negativer Offset → nach RECHTS.
+#       (control_lane: error>0 → nach rechts lenken. Damit der Bot nach links
+#        fährt, muss der wahrgenommene Fehler kleiner/negativer werden → wir
+#        ADDIEREN bei Links-Ausweichen einen negativen Offset. Siehe _signed_offset.)
 #
-# Zustandsautomat:
-#   Idle → Evading → Returning → Idle
+# Eingaben:
+#   /detect/duck        (Float64)           x∈[-1,1], -99 = keine Ente
+#   /detect/duck_space  (Float32MultiArray) [free_left, free_right] ∈ [0..1]
+#   /enable/obstacle    (Bool)              von switch_control_node
 #
-# Abonniert:
-#   /detect/duck   (Float64) → x-Position Ente [-1,+1], -99 = keine Ente
-#   /detect/lane   (Float64) → Spurversatz für PID-Offset
-#   /switch/control(Int32)   → aktiviert/deaktiviert
+# Ausgaben:
+#   /obstacle/error_offset (Float64)  additiver Lenk-Offset
+#   /obstacle/done         (Bool)     Ausweichmanöver abgeschlossen → zurück zu Lane
 #
-# Publiziert:
-#   /detect/lane_corrected (Float64) → korrigierter Spurversatz an control_lane_node
+# EvadeState-Automat:
+#   Idle      → keine Ente, Offset = 0
+#   Evading   → Ente im Weg: Richtung wählen, Offset auf Zielwert rampen, halten
+#   Returning → Ente nicht mehr im Weg: Offset schrittweise zurück auf 0
+#   → danach /obstacle/done = True und zurück zu Idle.
+#
+# Ausweichentscheidung (Platz links/rechts der Ente im BEV):
+#   - mehr Platz rechts  → rechts ausweichen
+#   - mehr Platz links   → links ausweichen
+#   - etwa gleich        → links (StVO: links überholen)
+#   - kein Platz         → Gegenspurübernahme (links, größerer Offset;
+#                          erlaubt da keine anderen Bots auf dem Wendeplatz)
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
 import rospy
-from std_msgs.msg import Float64, Int32
 from enum import Enum
+from std_msgs.msg import Float64, Bool, Float32MultiArray
+from duckietown_msgs.msg import Twist2DStamped
 import util
 
 
 class EvadeState(Enum):
-    Idle      = 1  # kein Hindernis
-    Evading   = 2  # weicht aus (offset wird gehalten)
-    Returning = 3  # kehrt kontrolliert in Spur zurück (offset → 0)
+    Idle      = 1   # keine Ente, kein Offset
+    Evading   = 2   # weicht aktiv aus (Offset auf Zielwert)
+    Returning = 3   # kehrt kontrolliert zur Spurmitte zurück (Offset → 0)
 
 
 class ControlObstacleNode:
     def __init__(self, node_name):
         rospy.init_node(node_name)
         self._vehicle_name = os.environ['VEHICLE_NAME']
+
+        # ── Zustand ───────────────────────────────────────────────────────────
+        self.enable        = False
+        self.state         = EvadeState.Idle
+        self.current_offset = 0.0       # aktuell ausgegebener Offset
+        self.target_offset  = 0.0       # Zielwert beim Ausweichen
+        self.evade_side     = 'none'    # 'left' / 'right' für Logging
+
+        self.duck_x      = -99.0
+        self.free_left   = 1.0
+        self.free_right  = 1.0
+        self.last_duck_seen = None      # Zeitstempel der letzten Entensichtung
+
+        # Odometrie-Rückkehr (Befehls-Integration)
+        self.dt           = 0.1         # Schrittzeit (10 Hz)
+        self.last_omega   = 0.0         # zuletzt gesendetes omega (von cmd-Topic)
+        self.yaw_integral = 0.0         # akkumulierter Gierwinkel des Ausweichens
+
+        # Defaults – werden von cbUpdateParameters überschrieben
+        self.evade_offset       = 0.6   # normaler Ausweich-Offset (|error|-Einheiten)
+        self.oncoming_offset    = 1.0   # Offset bei Gegenspurübernahme
+        self.space_threshold    = 0.10  # ab wann "mehr Platz" als eindeutig gilt
+        self.no_space_limit     = 0.15  # darunter gilt eine Seite als "kein Platz"
+        self.ramp_step          = 0.05  # Offset-Änderung pro Zyklus (Rampe)
+        self.evade_hold         = 2.0   # s: Manöver nach letzter Sichtung halten
+        self.return_mode        = 'pid' # 'pid' (kamerabasiert) oder 'odometry'
+        self.yaw_tolerance      = 0.05  # rad: Restgierwinkel, ab dem Rückkehr fertig
+
         util.init_parameters(node_name, self.cbUpdateParameters)
 
-        # Publisher: korrigierter Spurversatz
-        self.pub_lane_corrected = rospy.Publisher(
-            f'/{self._vehicle_name}/detect/lane_corrected',
-            Float64, queue_size=1
-        )
-        # Publisher: meldet switch_control_node wenn Ausweichen abgeschlossen
-        self.pub_obstacle_done = rospy.Publisher(
-            f'/{self._vehicle_name}/obstacle/done',
-            Bool, queue_size=1
-        )
+        # ── Publisher ───────────────────────────────────────────────────────────
+        self.pub_offset = rospy.Publisher(
+            f'/{self._vehicle_name}/obstacle/error_offset', Float64, queue_size=1)
+        self.pub_done = rospy.Publisher(
+            f'/{self._vehicle_name}/obstacle/done', Bool, queue_size=1)
 
-        # Subscriber
-        self.sub_duck = rospy.Subscriber(
-            f'/{self._vehicle_name}/detect/duck',
+        # ── Subscriber ────────────────────────────────────────────────────────
+        rospy.Subscriber(f'/{self._vehicle_name}/detect/duck',
             Float64, self.cbDuck, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/detect/duck_space',
+            Float32MultiArray, self.cbSpace, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/enable/obstacle',
+            Bool, self.cbEnable, queue_size=1)
 
-        self.sub_lane = rospy.Subscriber(
-            f'/{self._vehicle_name}/detect/lane',
-            Float64, self.cbLane, queue_size=1)
+        # Mitlesen, welches omega control_lane_node tatsächlich sendet
+        # → Basis für die Befehls-Odometrie bei der Rückkehr.
+        rospy.Subscriber(f'/{self._vehicle_name}/car_cmd_switch_node/cmd',
+            Twist2DStamped, self.cbCmd, queue_size=1)
 
-        # Subscriber: wird von switch_control_node aktiviert/deaktiviert
-        self.sub_enable = rospy.Subscriber(
-            f'/{self._vehicle_name}/enable/obstacle',
-            Bool, self.cbControl, queue_size=1)
+        rospy.loginfo(f"[{node_name}] Bereit. EvadeState=Idle.")
 
-        # Zustandsautomat
-        self.evade_state    = EvadeState.Idle
-        self.enable         = False
 
-        # Aktueller Ausweich-Offset: wird auf den Spurversatz addiert
-        # positiv = nach links, negativ = nach rechts
-        self.current_offset = 0.0
-
-        # Letzter bekannter Spurversatz (wird direkt weitergeleitet wenn kein Hindernis)
-        self.last_error     = 0.0
-
-        # Letzte bekannte Linienpositionen (aus cbLane geschätzt)
-        self._crop_im_size  = 400
-        self.center_white   = int(self._crop_im_size * 0.95)
-        self.center_yellow  = int(self._crop_im_size * 0.05)
-
-        rospy.loginfo(f"[{node_name}] Obstacle-Steuerung bereit.")
-
+    # ── Parameter ───────────────────────────────────────────────────────────────
 
     def cbUpdateParameters(self, parameters):
-        # Maximaler Ausweich-Offset (wie weit der Bot von der Spurmitte abweicht)
-        self.max_evade_offset      = parameters["evade"]["max_offset"]["default"]
+        e = parameters["evade"]
+        self.evade_offset    = e["evade_offset"]["default"]
+        self.oncoming_offset = e["oncoming_offset"]["default"]
+        self.space_threshold = e["space_threshold"]["default"]
+        self.no_space_limit  = e["no_space_limit"]["default"]
+        self.ramp_step       = e["ramp_step"]["default"]
+        # evade_hold: Mindestdauer, die das Ausweichmanöver NACH der letzten
+        # positiven Entensichtung gehalten wird, bevor zurückgekehrt wird.
+        # Grund: Beim Ausweichen wandert die Ente aus dem Bild/ROI → ohne Hold
+        # würde der Bot zu früh zurücklenken, solange er noch neben der Ente ist.
+        self.evade_hold      = e["evade_hold"]["default"]
 
-        # Gegenspurübernahme: noch größerer Offset
-        self.overtake_offset       = parameters["evade"]["overtake_offset"]["default"]
-
-        # Mindestplatz auf einer Seite für normales Ausweichen
-        self.min_side_space        = parameters["evade"]["min_side_space"]["default"]
-
-        # Wie schnell der Offset pro Schritt reduziert wird (Rückkehr)
-        self.return_step           = parameters["evade"]["return_step"]["default"]
-
-        # Schwellwert unter dem der Offset als "bei 0" gilt
-        self.return_threshold      = parameters["evade"]["return_threshold"]["default"]
+        # Rückkehrmodus: 'pid' (kamerabasiert, Offset-Rampe) oder
+        # 'odometry' (Befehls-Integration des gefahrenen omega, spiegelbildlich).
+        # return_mode wird als Zahl gespeichert (Slider): 0 = pid, 1 = odometry.
+        self.return_mode   = 'odometry' if int(e["return_mode"]["default"]) == 1 else 'pid'
+        self.yaw_tolerance = e["yaw_tolerance"]["default"]
 
 
-    def cbControl(self, msg):
-        # Empfängt Enable-Signal von switch_control_node
-        # True = Obstacle-Modus aktiv, False = deaktiviert
-        if not msg.data and self.enable:
-            # Deaktiviert → Zustand zurücksetzen
-            self.evade_state    = EvadeState.Idle
-            self.current_offset = 0.0
+    # ── Callbacks ───────────────────────────────────────────────────────────────
+
+    def cbEnable(self, msg):
         self.enable = msg.data
 
+    def cbCmd(self, msg):
+        # Zuletzt tatsächlich gesendetes omega merken (Befehls-Odometrie).
+        self.last_omega = msg.omega
 
-    def cbLane(self, msg):
-        # Spurversatz speichern und Linienpositionen schätzen
-        self.last_error = msg.data
-        error           = msg.data
-        lane_center     = (1 - error) * (self._crop_im_size / 2)
-        half_lane       = self._crop_im_size * 0.30
-        self.center_white  = int(min(lane_center + half_lane, self._crop_im_size * 0.95))
-        self.center_yellow = int(max(lane_center - half_lane, self._crop_im_size * 0.05))
-
+    def cbSpace(self, msg):
+        if len(msg.data) >= 2:
+            self.free_left  = msg.data[0]
+            self.free_right = msg.data[1]
 
     def cbDuck(self, msg):
-        # Enten-Position empfangen und Ausweichentscheidung treffen
-        duck_x_norm = msg.data
+        self.duck_x = msg.data
+        if self.duck_x != -99.0:
+            self.last_duck_seen = rospy.Time.now()
 
-        if duck_x_norm == -99.0:
-            # Keine Ente erkannt
-            if self.evade_state == EvadeState.Evading:
-                # Ente verschwunden → kontrollierte Rückkehr starten
-                rospy.loginfo("Ente weg – kontrollierte Rückkehr in Spur.")
-                self.evade_state = EvadeState.Returning
-            return
 
-        if self.evade_state != EvadeState.Idle:
-            # Bereits am Ausweichen → nicht neu entscheiden
-            return
+    # ── Ausweichentscheidung ─────────────────────────────────────────────────────
 
-        # Enten-Position in Pixel umrechnen
-        duck_x_pixel = int((duck_x_norm + 1) / 2 * self._crop_im_size)
+    def _decide_side_and_offset(self):
+        # Wählt Richtung und Ziel-Offset-Betrag anhand des freien Platzes.
+        # Rückgabe: (side, signed_offset)
+        l, r = self.free_left, self.free_right
 
-        # Platz auf beiden Seiten berechnen
-        platz_links  = duck_x_pixel - self.center_yellow
-        platz_rechts = self.center_white - duck_x_pixel
+        # Kein Platz auf beiden Seiten → Gegenspurübernahme (links, groß)
+        if l < self.no_space_limit and r < self.no_space_limit:
+            return 'left(oncoming)', self._signed_offset('left', self.oncoming_offset)
 
-        rospy.loginfo(f"Ente erkannt: x={duck_x_pixel}px | Platz links={platz_links}px, rechts={platz_rechts}px")
+        # Eindeutig mehr Platz rechts → rechts ausweichen
+        if r - l > self.space_threshold:
+            return 'right', self._signed_offset('right', self.evade_offset)
 
-        # Ausweichentscheidung
-        if platz_links < self.min_side_space and platz_rechts < self.min_side_space:
-            # Kein Platz auf beiden Seiten → Gegenspurübernahme
-            rospy.logwarn("Kein Platz zum Ausweichen → Gegenspurübernahme!")
-            self.current_offset = self.overtake_offset   # weit nach links
-            self.evade_state    = EvadeState.Evading
+        # Eindeutig mehr Platz links → links ausweichen
+        if l - r > self.space_threshold:
+            return 'left', self._signed_offset('left', self.evade_offset)
 
-        elif platz_rechts > platz_links:
-            # Mehr Platz rechts → nach rechts ausweichen
-            rospy.loginfo("Ausweichen: rechts")
-            self.current_offset = -self.max_evade_offset  # negativ = rechts
-            self.evade_state    = EvadeState.Evading
+        # Etwa gleich viel Platz → StVO: links überholen
+        return 'left', self._signed_offset('left', self.evade_offset)
 
-        elif platz_links > platz_rechts:
-            # Mehr Platz links → nach links ausweichen
-            rospy.loginfo("Ausweichen: links")
-            self.current_offset = self.max_evade_offset   # positiv = links
-            self.evade_state    = EvadeState.Evading
+    def _signed_offset(self, side, magnitude):
+        # Vorzeichenkonvention von control_lane_node:
+        #   error > 0 → nach rechts lenken,  error < 0 → nach links lenken.
+        # Damit der Bot nach LINKS ausweicht, muss der addierte Offset NEGATIV sein.
+        return -magnitude if side.startswith('left') else +magnitude
 
+
+    # ── Offset-Rampe ──────────────────────────────────────────────────────────
+
+    def _ramp_toward(self, target):
+        # Bewegt current_offset um höchstens ramp_step in Richtung target.
+        diff = target - self.current_offset
+        if abs(diff) <= self.ramp_step:
+            self.current_offset = target
         else:
-            # Gleich viel Platz (mittig) → StVO: zur gelben Linie (links)
-            rospy.loginfo("Ente mittig → Ausweichen links (StVO)")
-            self.current_offset = self.max_evade_offset
-            self.evade_state    = EvadeState.Evading
+            self.current_offset += self.ramp_step * (1 if diff > 0 else -1)
 
+    def _duck_in_way(self):
+        # Ente gilt als "im Weg", solange die letzte POSITIVE Sichtung weniger
+        # als evade_hold Sekunden zurückliegt. Der aktuelle duck_x wird bewusst
+        # NICHT mit einbezogen: beim Ausweichen wandert die Ente aus dem Bild,
+        # liefert also -99 – das Manöver muss aber durchgezogen werden, bis der
+        # Bot sicher an ihr vorbei ist. Reine Zeit ist hier die robuste Heuristik;
+        # ein verlorener Einzeltick (queue_size=1) verlängert das Manöver nur
+        # minimal, statt es fälschlich abzubrechen.
+        if self.last_duck_seen is None:
+            return False
+        elapsed = (rospy.Time.now() - self.last_duck_seen).to_sec()
+        return elapsed < self.evade_hold
+
+
+    # ── Zustandsautomat (in run() getaktet) ───────────────────────────────────
+
+    def _step_state_machine(self):
+        if self.state == EvadeState.Idle:
+            self.current_offset = 0.0
+            self.yaw_integral   = 0.0    # akkumulierter Gierwinkel des Ausweichens
+            if self._duck_in_way():
+                self.evade_side, self.target_offset = self._decide_side_and_offset()
+                self.state = EvadeState.Evading
+                rospy.loginfo(
+                    f"[Evade] Ente → ausweichen nach {self.evade_side} "
+                    f"(Ziel-Offset {self.target_offset:+.2f}, Modus={self.return_mode}).")
+
+        elif self.state == EvadeState.Evading:
+            # Offset auf Zielwert rampen und halten. Richtung nur aktualisieren,
+            # solange die Ente FRISCH sichtbar ist (sonst Richtung einfrieren).
+            if self._duck_in_way():
+                if self.duck_x != -99.0:
+                    self.evade_side, self.target_offset = self._decide_side_and_offset()
+                self._ramp_toward(self.target_offset)
+                # Tatsächlich gefahrenes omega integrieren (für Odometrie-Rückkehr)
+                self.yaw_integral += self.last_omega * self.dt
+            else:
+                rospy.loginfo(
+                    f"[Evade] Ente passiert → Rückkehr ({self.return_mode}). "
+                    f"Gierintegral={self.yaw_integral:+.3f} rad.")
+                self.state = EvadeState.Returning
+
+        elif self.state == EvadeState.Returning:
+            # Ente wieder aufgetaucht? → erneut ausweichen
+            if self._duck_in_way():
+                self.state = EvadeState.Evading
+                return
+
+            if self.return_mode == 'odometry':
+                self._return_odometry()
+            else:
+                self._return_pid()
+
+    def _return_pid(self):
+        # Kamerabasiert: Offset auf 0 rampen, Spur-PID findet die Linie wieder.
+        self._ramp_toward(0.0)
+        if abs(self.current_offset) < 1e-6:
+            self._finish_return()
+
+    def _return_odometry(self):
+        # Befehls-Odometrie: Gegen-Offset halten und das währenddessen gefahrene
+        # omega aufintegrieren, bis der Gierwinkel des Hinwegs ausgeglichen ist.
+        # Hinweg-Gierintegral hatte das Vorzeichen von -target_offset-Richtung;
+        # wir halten einen entgegengesetzten Offset, bis yaw_integral ~0 ist.
+        counter_offset = -self.target_offset
+        self._ramp_toward(counter_offset)
+        self.yaw_integral += self.last_omega * self.dt
+
+        # Sobald die Gierbewegung neutralisiert ist → fertig
+        if abs(self.yaw_integral) < self.yaw_tolerance:
+            self.current_offset = 0.0
+            self._finish_return()
+
+    def _finish_return(self):
+        self.current_offset = 0.0
+        self.yaw_integral   = 0.0
+        self.state          = EvadeState.Idle
+        self.pub_done.publish(Bool(data=True))
+        rospy.loginfo("[Evade] Rückkehr abgeschlossen → Idle, /obstacle/done.")
+
+
+    # ── Hauptschleife ──────────────────────────────────────────────────────────
 
     def run(self):
-        rate = rospy.Rate(10)
-
+        rate = rospy.Rate(10)   # 10 Hz – passend zu dt der PID-Regelung
         while not rospy.is_shutdown():
             if self.enable:
+                self._step_state_machine()
+            else:
+                # Nicht aktiv → Offset hart auf 0, Automat zurücksetzen
+                self.current_offset = 0.0
+                self.state = EvadeState.Idle
 
-                if self.evade_state == EvadeState.Idle:
-                    # Kein Hindernis → Spurversatz direkt weiterleiten
-                    self.pub_lane_corrected.publish(Float64(data=self.last_error))
-
-                elif self.evade_state == EvadeState.Evading:
-                    # Ausweichen: Offset auf Spurversatz addieren
-                    corrected_error = self.last_error + self.current_offset
-                    # Begrenzung auf [-1, +1]
-                    corrected_error = max(-1.0, min(1.0, corrected_error))
-                    self.pub_lane_corrected.publish(Float64(data=corrected_error))
-
-                elif self.evade_state == EvadeState.Returning:
-                    # Kontrollierte Rückkehr: Offset schrittweise auf 0 reduzieren
-                    if self.current_offset > self.return_threshold:
-                        self.current_offset -= self.return_step
-                    elif self.current_offset < -self.return_threshold:
-                        self.current_offset += self.return_step
-                    else:
-                        # Offset nahe genug an 0 → Rückkehr abgeschlossen
-                        self.current_offset = 0.0
-                        self.evade_state    = EvadeState.Idle
-                        rospy.loginfo("Rückkehr in Spur abgeschlossen.")
-                        # switch_control_node informieren → zurück zu Lane-Modus
-                        self.pub_obstacle_done.publish(Bool(data=True))
-
-                    corrected_error = self.last_error + self.current_offset
-                    corrected_error = max(-1.0, min(1.0, corrected_error))
-                    self.pub_lane_corrected.publish(Float64(data=corrected_error))
-
+            # Offset immer publizieren (auch 0.0), damit control_lane_node
+            # nach Modus-Ende garantiert wieder ohne Offset fährt.
+            self.pub_offset.publish(Float64(data=self.current_offset))
             rate.sleep()
 
 
