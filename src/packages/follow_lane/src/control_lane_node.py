@@ -49,12 +49,15 @@ class ControlLaneNode:
         self.lastError = 0       # Fehler vom letzten Schritt (für D-Anteil)
         self.integral  = 0       # aufsummierter Fehler (für I-Anteil)
         self.dt        = 0.1     # Zeit zwischen zwei Schritten (~10 Hz)
+        # Anti-Windup: begrenzt den aufsummierten Fehler, damit der I-Anteil
+        # bei längerer Abweichung (oder hohem ki) nicht unbegrenzt aufläuft
+        self.INTEGRAL_LIMIT = 3.0
 
         # Steuerwerte
         self.v = 0               # Geschwindigkeit
         self.a = 0               # Winkelgeschwindigkeit (Lenkung)
 
-        # Zustandsvariablen für die Haltelinien-Logik
+        # NEU: Zustandsvariablen für die Haltelinien-Logik
         # Drei Zustände: StopState.Driving, StopState.Stopping, StopState.Cooldown
         self.stop_state      = StopState.Driving
         self.STOP_DURATION     = 3.0  # Startwert – wird durch cbUpdateParameters aus JSON überschrieben
@@ -74,9 +77,9 @@ class ControlLaneNode:
         self.enable = msg.data
 
     def cbUpdateParameters(self, parameters):
-        #Prüfung was ankommt
-        print("PARAMETER EMPFANGEN:")
-        print(parameters)
+        # Prüfung was ankommt
+        rospy.logdebug("PARAMETER EMPFANGEN:")
+        rospy.logdebug(f"{parameters}")
         
         # PID Parameter aus config laden
         self.kp      = parameters["pid"]["p"]["default"]
@@ -90,7 +93,7 @@ class ControlLaneNode:
         self.STOP_DURATION     = parameters["stop_line"]["stop_duration"]["default"]
         self.COOLDOWN_DURATION = parameters["stop_line"]["cooldown_duration"]["default"]
 
-    # Callback für rote Haltelinie
+    # NEU: Callback für rote Haltelinie
     def cbStopLine(self, msg):
         # Im Cooldown-Modus: erneutes Erkennen ignorieren
         if self.stop_state == StopState.Cooldown:
@@ -107,7 +110,7 @@ class ControlLaneNode:
     # error < 0 → Bot zu weit rechts → nach links lenken
     # error = 0 → Bot ist mittig     → geradeaus fahren
     def cbFollowLane(self, error):
-        print(f'received message. enabled : {self.enable}')
+        rospy.logdebug(f'received message. enabled : {self.enable}')
 
         # Wenn die rote Linie erkannt wurde → Geschwindigkeit auf 0 setzen und PID-Berechnung überspringen
         # (verhindert dass der Bot während des Stopps weiter lenkt oder beschleunigt)
@@ -129,6 +132,8 @@ class ControlLaneNode:
         # I-Anteil: summiert Fehler über Zeit
         # → gleicht systematische Abweichungen aus (z.B. schiefer Kamerawinkel)
         self.integral += error * self.dt
+        # Anti-Windup: aufsummierten Fehler begrenzen
+        self.integral = max(min(self.integral, self.INTEGRAL_LIMIT), -self.INTEGRAL_LIMIT)
         I = self.ki * self.integral
 
         # D-Anteil: reagiert auf Änderung des Fehlers
