@@ -1,0 +1,15 @@
+{
+  "debug_image_topics": [],
+
+  "parameters": {
+    "timing": {
+      "approaching_duration": {"default": 1.5, "min": 0.5, "max": 5.0},
+      "turning_timeout":      {"default": 6.0, "min": 1.0, "max": 15.0},
+      "handover_timeout":     {"default": 8.0, "min": 1.0, "max": 20.0}
+    },
+    "handover": {
+      "lane_stable_threshold": {"default": 0.15, "min": 0.0,  "max": 1.0},
+      "lane_stable_required":  {"default": 15,   "min": 1,    "max": 50}
+    }
+  }
+}
