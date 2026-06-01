@@ -1,56 +1,37 @@
 {
-    "debug_image_topics": [
-        "/debug/apriltag"
-    ],
-    "parameters": {
-        "detection": {
-            "min_tag_area": {
-                "default": 1000,
-                "min": 0,
-                "max": 50000
-            },
-            "camera_fx": {
-                "default": 320,
-                "min": 100,
-                "max": 1000
-            },
-            "camera_fy": {
-                "default": 320,
-                "min": 100,
-                "max": 1000
-            },
-            "camera_cx": {
-                "default": 320,
-                "min": 0,
-                "max": 640
-            },
-            "camera_cy": {
-                "default": 240,
-                "min": 0,
-                "max": 480
-            }
-        },
-        "tag_directions": {
-            "tag_id_1_directions": {
-                "default": "left,straight",
-                "min": 0,
-                "max": 1
-            },
-            "tag_id_2_directions": {
-                "default": "right,straight",
-                "min": 0,
-                "max": 1
-            },
-            "tag_id_3_directions": {
-                "default": "left,right,straight",
-                "min": 0,
-                "max": 1
-            },
-            "tag_id_4_directions": {
-                "default": "left,right",
-                "min": 0,
-                "max": 1
-            }
-        }
+  "debug_image_topics": [
+    "/debug/apriltag",
+    "/debug/apriltag_red"
+  ],
+
+  "tag_directions": {
+    "56": ["left", "straight", "right"],
+    "57": ["left", "straight"],
+    "58": ["straight", "right"],
+    "62": ["left"],
+    "169": ["straight"],
+    "200": ["left", "right"]
+  },
+
+  "parameters": {
+    "tag_filter": {
+      "stability_frames": {"default": 3,    "min": 1,   "max": 10},
+      "pos_x_min":        {"default": 0.2,  "min": 0.0, "max": 0.5},
+      "pos_x_max":        {"default": 0.8,  "min": 0.5, "max": 1.0},
+      "pos_y_max":        {"default": 0.75, "min": 0.1, "max": 1.0},
+      "min_area":         {"default": 400,  "min": 0,   "max": 5000}
+    },
+    "red": {
+      "hl":  {"default":   0, "min": 0, "max": 179},
+      "hh":  {"default":  10, "min": 0, "max": 179},
+      "hl2": {"default": 160, "min": 0, "max": 179},
+      "hh2": {"default": 179, "min": 0, "max": 179},
+      "sl":  {"default": 100, "min": 0, "max": 255},
+      "sh":  {"default": 255, "min": 0, "max": 255},
+      "vl":  {"default": 100, "min": 0, "max": 255},
+      "vh":  {"default": 255, "min": 0, "max": 255},
+      "pixel_threshold": {"default": 1500, "min": 0, "max": 10000},
+      "detection_zone":  {"default": 0.75, "min": 0.0, "max": 1.0}
     }
+  }
 }
