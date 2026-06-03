@@ -10,9 +10,11 @@ Phase APPROACHING:
   Dauer wird durch switch_control_node gesteuert (Timer dort).
 
 Phase TURNING:
-  left:     omega > 0  (links drehen) bis red_line_side == "right"
-  right:    omega < 0  (rechts drehen) bis red_line_side == "left"
-  straight: omega = 0  (geradeaus) bis red_line_side == "none"
+  left:     omega > 0  (links drehen)
+  right:    omega < 0  (rechts drehen)
+  straight: omega = 0  (geradeaus)
+  Das ENDE der Drehung bestimmt switch_control_node (via detect_red_lane_node /
+  /intersection/turn_complete bzw. Timeout) – diese Node dreht nur.
 
 Phase LANE_HANDOVER:
   Fährt langsam mit sanfter Lenkung aus detect_lane_node,
@@ -40,8 +42,6 @@ class ControlIntersectionNode:
                          Int32, self.cbControl, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/intersection/direction',
                          String, self.cbDirection, queue_size=1)
-        rospy.Subscriber(f'/{self._vehicle_name}/detect/red_line_side',
-                         String, self.cbRedLineSide, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/detect/lane',
                          Float64, self.cbLane, queue_size=1)
 
@@ -53,7 +53,6 @@ class ControlIntersectionNode:
         # ── Zustandsvariablen ─────────────────────────────────────────────────
         self.control_mode  = ControlType.Lane
         self.direction     = "straight"
-        self.red_line_side = "none"
         self.lane_error    = 0.0
 
         # Parameter-Defaults (werden durch cbUpdateParameters überschrieben)
@@ -94,9 +93,6 @@ class ControlIntersectionNode:
 
     def cbDirection(self, msg):
         self.direction = msg.data
-
-    def cbRedLineSide(self, msg):
-        self.red_line_side = msg.data
 
     def cbLane(self, msg):
         self.lane_error = msg.data
@@ -150,7 +146,7 @@ class ControlIntersectionNode:
                 self._publish(v, omega)
                 rospy.logdebug(f"[intersection_ctrl] {self.control_mode.name} "
                                f"v={v:.2f} ω={omega:.2f} "
-                               f"dir={self.direction} red={self.red_line_side}")
+                               f"dir={self.direction}")
             rate.sleep()
 
 
