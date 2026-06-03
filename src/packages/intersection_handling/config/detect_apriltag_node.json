@@ -1,37 +1,33 @@
 {
   "debug_image_topics": [
-    "/debug/apriltag",
-    "/debug/apriltag_red"
+    "/debug/apriltag"
   ],
 
+  "tag_families": ["tagStandard52h13"],
+
   "tag_directions": {
-    "56": ["left", "straight", "right"],
-    "57": ["left", "straight"],
-    "58": ["straight", "right"],
-    "62": ["left"],
-    "169": ["straight"],
-    "200": ["left", "right"]
+    "1": ["left", "straight", "right"],
+    "2": ["right", "left"],
+    "3": ["straight", "left"],
+    "4": ["straight", "right"]
   },
 
   "parameters": {
-    "tag_filter": {
-      "stability_frames": {"default": 3,    "min": 1,   "max": 10},
-      "pos_x_min":        {"default": 0.2,  "min": 0.0, "max": 0.5},
-      "pos_x_max":        {"default": 0.8,  "min": 0.5, "max": 1.0},
-      "pos_y_max":        {"default": 0.75, "min": 0.1, "max": 1.0},
-      "min_area":         {"default": 400,  "min": 0,   "max": 5000}
+    "performance": {
+      "frame_skip":  {"default": 3, "min": 1, "max": 10},
+      "show_window": {"default": 0, "min": 0, "max": 1}
     },
-    "red": {
-      "hl":  {"default":   0, "min": 0, "max": 179},
-      "hh":  {"default":  10, "min": 0, "max": 179},
-      "hl2": {"default": 160, "min": 0, "max": 179},
-      "hh2": {"default": 179, "min": 0, "max": 179},
-      "sl":  {"default": 100, "min": 0, "max": 255},
-      "sh":  {"default": 255, "min": 0, "max": 255},
-      "vl":  {"default": 100, "min": 0, "max": 255},
-      "vh":  {"default": 255, "min": 0, "max": 255},
-      "pixel_threshold": {"default": 1500, "min": 0, "max": 10000},
-      "detection_zone":  {"default": 0.75, "min": 0.0, "max": 1.0}
+    "tag_memory": {
+      "seconds":  {"default": 3.0,  "min": 0.0, "max": 10.0},
+      "min_area": {"default": 1500, "min": 0,   "max": 20000}
+    },
+    "tag_filter": {
+      "stability_frames":   {"default": 3,    "min": 1,   "max": 10},
+      "pos_filter_enabled": {"default": 1,    "min": 0,   "max": 1},
+      "pos_x_min":          {"default": 0.5,  "min": 0.0, "max": 1.0},
+      "pos_x_max":          {"default": 1.0,  "min": 0.0, "max": 1.0},
+      "pos_y_max":          {"default": 0.85, "min": 0.1, "max": 1.0},
+      "min_area":           {"default": 200,  "min": 0,   "max": 5000}
     }
   }
 }
