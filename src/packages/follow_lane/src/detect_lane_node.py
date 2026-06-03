@@ -125,6 +125,7 @@ class DetectLaneNode:
         # (z.B. wenn rechts vom Bot Störungen wie rote Markierungen am Wendeplatz liegen)
         self.red_detection_x_end   = parameters["red"]["detection_x_end"]["default"]
 
+        # Gegenspurfilter entfernt – kein min_lane_width mehr
         # Frame-Tracking: maximaler Pixelsprung zwischen Frames (gilt für beide Linien)
         self.max_frame_jump = parameters["white"]["max_frame_jump"]["default"]
 
@@ -132,7 +133,6 @@ class DetectLaneNode:
     def crop_img(self, img):
         # Bird's-Eye-View Transformation: Trapez der Fahrspur → Quadrat (Draufsicht)
         img = img.copy()
-
         pts1 = np.float32([
             [self.top_left_x,     self.top_left_y],
             [self.top_right_x,    self.top_right_y],
@@ -157,6 +157,9 @@ class DetectLaneNode:
         #   → Wert:       nächste Kante zum letzten bekannten Wert wählen
         #                 → robuster in engen Kurven und am Wendeplatz (keine Fehlzuordnung
         #                    wenn zwei weiße Kanten sichtbar sind)
+        #
+        # Rückgabe: Median der gefundenen Kanten, oder None wenn zu wenig Kanten gefunden.
+        # Die Fallback-Entscheidung (last_known vs Bildrand) trifft der Aufrufer.
         grad = cv2.Sobel(mask, cv2.CV_16S, 1, 0, ksize=3, scale=1, delta=0,
                          borderType=cv2.BORDER_DEFAULT)
         _, th1 = cv2.threshold(grad, 127, 255, cv2.THRESH_BINARY)
@@ -180,7 +183,8 @@ class DetectLaneNode:
             return np.median(a)
         return None  # keine Detektion – Aufrufer entscheidet wie weiter
 
-  def _resolve_line_position(self, raw, last_known, fallback, max_jump, label):
+
+    def _resolve_line_position(self, raw, last_known, fallback, max_jump, label):
         # Entscheidet, welche x-Position als finale Linienposition gilt.
         #
         # raw         : Ergebnis von get_x_for_driving (Pixel oder None)
@@ -192,7 +196,7 @@ class DetectLaneNode:
         # Rückgabe: (finale_position, neuer_last_known)
         #   neuer_last_known ist None, wenn der aktuelle Wert nicht zum Anker werden soll
         #   (Fall: kein last_known UND keine Detektion → Bildrand, aber nicht ankern).
- 
+
         # Fall A: keine Detektion
         if raw is None:
             if last_known is not None:
@@ -203,17 +207,19 @@ class DetectLaneNode:
             # (sonst würde get_x_for_driving danach nach Kanten in Bildrand-Nähe suchen)
             rospy.logwarn(f"{label}: no edges and no last known – using image-edge fallback {fallback}")
             return fallback, None
- 
+
         # Fall B: Detektion vorhanden, aber kein Anker → jetzt ankern
         if last_known is None:
             return raw, raw
- 
+
         # Fall C: Detektion + Anker → Sprung prüfen
         jump = abs(raw - last_known)
         if jump > max_jump:
             rospy.logwarn(f"{label} jump too large ({jump:.0f}px) – keeping last position")
+            return last_known, last_known
         return raw, raw
- 
+
+
     def detect_stop_line(self, hsv):
         # Rote Haltelinie im Bird's-Eye-View erkennen.
         # Rot liegt an zwei Stellen des Hue-Kreises → zwei Bereiche vereinen.
@@ -223,7 +229,6 @@ class DetectLaneNode:
         mask_red_upper = cv2.inRange(hsv,
             (self.hue_red_l2, self.saturation_red_l, self.lightness_red_l),
             (self.hue_red_h2, self.saturation_red_h, self.lightness_red_h))
-        # Beide Masken kombinieren
         mask_red = cv2.bitwise_or(mask_red_lower, mask_red_upper)
 
         # Vertikale + horizontale ROI: nur eigene Spur, direkt vor Bot
@@ -234,12 +239,11 @@ class DetectLaneNode:
         detection_col_start = int(mask_red.shape[1] * self.red_detection_x_start)
         detection_col_end   = int(mask_red.shape[1] * self.red_detection_x_end)
         roi_own = mask_red[detection_row_start:, detection_col_start:detection_col_end]
-        
-        # Haltelinie erkannt, wenn genug rote Pixel im ROI vorhanden sind
+
         red_pixel_count    = cv2.countNonZero(roi_own)
         stop_line_detected = red_pixel_count > self.red_pixel_threshold
         rospy.logdebug(f"Red pixels: {red_pixel_count} | threshold: {self.red_pixel_threshold} | detected: {stop_line_detected}")
- 
+
         return stop_line_detected, mask_red
 
 
@@ -284,7 +288,6 @@ class DetectLaneNode:
         mask_yellow = cv2.inRange(hsv,
             (self.hue_yellow_l, self.saturation_yellow_l, self.lightness_yellow_l),
             (self.hue_yellow_h, self.saturation_yellow_h, self.lightness_yellow_h))
-        
         mask_white = cv2.inRange(hsv,
             (self.hue_white_l, self.saturation_white_l, self.lightness_white_l),
             (self.hue_white_h, self.saturation_white_h, self.lightness_white_h))
@@ -297,6 +300,7 @@ class DetectLaneNode:
         # ── Schritt 5: Linienpositionen ───────────────────────────────────────
         white_alternative  = int(len(img[0]) * 0.95)
         yellow_alternative = int(len(img[0]) * 0.05)
+        distance           = int(len(img) * 0.75)
 
         # ── Gelbe Linie ───────────────────────────────────────────────────────
         center_yellow_raw = self.get_x_for_driving(
@@ -305,8 +309,9 @@ class DetectLaneNode:
         center_yellow, self.last_yellow_position = self._resolve_line_position(
             center_yellow_raw, self.last_yellow_position,
             yellow_alternative, self.max_frame_jump, label='Yellow')
-     
+
         # ── Weiße Linie ───────────────────────────────────────────────────────
+        # Kein Spatial Filter mehr – das last_known-basierte Edge-Picking und
         # Frame-Tracking verhindern Sprünge zur Gegenspur in engen Kurven.
         center_white_raw = self.get_x_for_driving(
             mask_white, distance, left_line=False,
@@ -314,7 +319,7 @@ class DetectLaneNode:
         center_white, self.last_white_position = self._resolve_line_position(
             center_white_raw, self.last_white_position,
             white_alternative, self.max_frame_jump, label='White')
-                
+
         # Plausibilitätsprüfung: weiß muss rechts von gelb liegen
         if center_white <= center_yellow:
             if center_white > int(len(img[0]) * 0.4):
@@ -327,7 +332,7 @@ class DetectLaneNode:
         msg_error = Float64()
         msg_error.data = 1 - (lane_center / len(img) * 2)
         self.pub_lane.publish(msg_error)
-        print(f"Lane error: {msg_error.data:.3f} range [-1,1]")
+        rospy.logdebug(f"Lane error: {msg_error.data:.3f} range [-1,1]")
 
         # ── Schritt 7: Rote Haltelinie ────────────────────────────────────────
         stop_line_detected, mask_red = self.detect_stop_line(hsv)
