@@ -2,17 +2,19 @@
   "debug_image_topics": [],
 
   "parameters": {
-    "approaching": {
-      "speed": {"default": 0.20, "min": 0.0, "max": 0.5}
-    },
-    "turning": {
-      "omega":         {"default": 1.5,  "min": 0.5, "max": 4.0},
-      "speed":         {"default": 0.10, "min": 0.0, "max": 0.3},
-      "straight_speed":{"default": 0.20, "min": 0.0, "max": 0.5}
-    },
-    "handover": {
-      "speed": {"default": 0.15, "min": 0.0, "max": 0.4},
-      "kp":    {"default": 3.0,  "min": 0.0, "max": 10.0}
+    "default": {
+      "approaching": {
+        "speed": {"default": 0.3, "min": 0.0, "max": 1.0}
+      },
+      "turning": {
+        "speed":          {"default": 0.2, "min": 0.0, "max": 1.0},
+        "omega":          {"default": 4.0, "min": 0.0, "max": 10.0},
+        "straight_speed": {"default": 0.3, "min": 0.0, "max": 1.0}
+      },
+      "handover": {
+        "speed": {"default": 0.3, "min": 0.0, "max": 1.0},
+        "kp":    {"default": 3.0, "min": 0.0, "max": 10.0}
+      }
     }
   }
 }
