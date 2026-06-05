@@ -1,179 +1,207 @@
 #!/usr/bin/env python3
-"""
-SwitchControlNode – Zentraler Zustandsautomat für Kreuzungshandling.
-
-Zustände (ControlType):
-  Lane        (1) – normales Spurfolgen (control_lane_node aktiv)
-  Approaching (3) – Kreuzung erkannt, rote Linie überfahren
-  Turning     (4) – in die gewählte Richtung abbiegen
-  LaneHandover(5) – auf neue Spur einscheren
-  Done            – intern; sofortiger Übergang zu Lane
-
-Übergänge:
-  Lane → Approaching   : /detect/intersection == True
-  Approaching → Turning: APPROACHING_DURATION abgelaufen
-  Turning → LaneHandover: Zielkriterium (rote Linie auf Gegenseite)
-                          ODER Timeout
-  LaneHandover → Lane  : Spur stabil erkannt ODER Timeout
-
-Publiziert:
-  /{vehicle}/switch/control        (Int32)  – aktueller Zustand
-  /{vehicle}/intersection/direction(String) – gewählte Richtung (left/right/straight)
-"""
+# ─────────────────────────────────────────────────────────────────────────────
+# switch_control_node.py  (Challenge 2 – Intersection Handling)
+#
+# Zentraler Zustandsautomat (FSM). Einzige Instanz mit Zustandslogik – alle
+# Erkennungs-Nodes liefern nur Signale, hier wird entschieden.
+#
+# Phasen:
+#   Lane        – normales Spurfolgen (control_lane aktiv)
+#   Approaching – ueber die Haltelinie fahren (control_intersection aktiv)
+#   Turning     – abbiegen
+#   Handover    – sanft zurueck in die Spur, bis stabil -> Lane
+#
+# Steuerung der Control-Nodes ueber das enable/<node>-Schema:
+#   /enable/lane          (Bool)   – control_lane aktiv?
+#   /enable/intersection  (Bool)   – control_intersection aktiv?
+#   /intersection/phase   (String) – Approaching/Turning/Handover (fuer control_intersection + Node B)
+#   /intersection/direction (String) – left/right/straight (einmal gewuerfelt)
+#
+# Kreuzung = rote Haltelinie (detect_lane) UND Tag-Richtung bekannt (detect_apriltag).
+# Rote Linie ohne Tag -> ignoriert, Bot faehrt weiter (sicheres Default).
+#
+# Bei erkannter Kreuzung wird control_lane via enable/lane=False komplett
+# stillgelegt; die FSM (control_intersection) uebernimmt Anhalten + Abbiegen.
+# ─────────────────────────────────────────────────────────────────────────────
 
 import os
 import random
 import rospy
-from std_msgs.msg import Float64, Int32, String, Bool
-from enum import Enum
+from std_msgs.msg import Bool, String, Float64, Int32
 import util
 
 
-class ControlType(Enum):
-    Lane         = 1
-    Approaching  = 3
-    Turning      = 4
-    LaneHandover = 5
-
-
 class SwitchControlNode:
+    # Phasen als einfache String-Konstanten (kein Enum -> passt zum String-Topic)
+    LANE        = "Lane"
+    APPROACHING = "Approaching"
+    TURNING     = "Turning"
+    HANDOVER    = "Handover"
+
     def __init__(self, node_name):
         rospy.init_node(node_name)
         self._vehicle_name = os.environ['VEHICLE_NAME']
-        util.init_parameters(node_name, self.cbUpdateParameters)
 
-        # ── Subscriber ────────────────────────────────────────────────────────
-        rospy.Subscriber(f'/{self._vehicle_name}/detect/intersection',
-                         Bool, self.cbIntersection, queue_size=1)
-        rospy.Subscriber(f'/{self._vehicle_name}/detect/apriltag/direction',
-                         String, self.cbApriltagDirection, queue_size=1)
-        rospy.Subscriber(f'/{self._vehicle_name}/detect/red_line_side',
-                         String, self.cbRedLineSide, queue_size=1)
-        rospy.Subscriber(f'/{self._vehicle_name}/detect/lane',
-                         Float64, self.cbLane, queue_size=1)
-
-        # ── Publisher ─────────────────────────────────────────────────────────
-        self.pub_control   = rospy.Publisher(f'/{self._vehicle_name}/switch/control',
-                                             Int32, queue_size=1)
-        self.pub_direction = rospy.Publisher(f'/{self._vehicle_name}/intersection/direction',
-                                             String, queue_size=1)
-
-        # ── Zustandsvariablen ─────────────────────────────────────────────────
-        self.phase            = ControlType.Lane
+        # ── self.*-Defaults VOR init_parameters ───────────────────────────────
+        self.phase            = self.LANE
         self.phase_start_time = rospy.Time.now()
-
-        # Gewählte Abbiegerichtung (wird in Lane-Phase zufällig gezogen)
+        self.allowed_dirs     = []        # erlaubte Richtungen aus letztem Tag
         self.direction        = "straight"
-        # Letzte bekannte erlaubte Richtungen vom AprilTag
-        self.allowed_dirs     = ["straight"]
-
-        # Sensor-Inputs (thread-safe durch GIL bei einfachen Typen)
-        self.red_line_side    = "none"   # "none" | "left" | "center" | "right"
-        self.lane_error       = 0.0      # [-1, +1]
-
-        # Zähler für stabile Spur-Erkennung in LaneHandover
+        self.stop_line        = False     # rote Haltelinie (detect_lane)
+        self.turn_complete    = False     # Abbiegen fertig (Node B)
+        self.lane_error       = 0.0
+        self._approach_cleared = False    # Haltelinie beim Approaching ueberfahren?
         self.lane_stable_count = 0
 
-        # Parameter-Defaults (werden durch cbUpdateParameters überschrieben)
-        self.approaching_duration  = 1.5
+        # Timing-Defaults (aus JSON ueberschrieben)
+        self.approaching_min_time  = 0.5
+        self.approaching_timeout   = 4.0
+        self.approaching_duration  = 1.5     # nur Variante B (zeitgesteuert)
         self.turning_timeout       = 6.0
         self.handover_timeout      = 8.0
         self.lane_stable_threshold = 0.15
-        self.lane_stable_required  = 15    # Frames bei 10 Hz = 1,5 s
+        self.lane_stable_required  = 15
+        self.turn_time_left        = 3.0     # nur Variante B
+        self.turn_time_right       = 2.0
+        self.turn_time_straight    = 2.0
+
+        util.init_parameters(node_name, self.cbUpdateParameters)
+
+        # ── Publisher ─────────────────────────────────────────────────────────
+        self.pub_enable_lane = rospy.Publisher(
+            f'/{self._vehicle_name}/enable/lane', Bool, queue_size=1)
+        self.pub_enable_inter = rospy.Publisher(
+            f'/{self._vehicle_name}/enable/intersection', Bool, queue_size=1)
+        self.pub_phase = rospy.Publisher(
+            f'/{self._vehicle_name}/intersection/phase', String, queue_size=1)
+        self.pub_direction = rospy.Publisher(
+            f'/{self._vehicle_name}/intersection/direction', String, queue_size=1)
+
+        # ── Subscriber ────────────────────────────────────────────────────────
+        rospy.Subscriber(f'/{self._vehicle_name}/detect/stop_line',
+                         Bool, self.cbStopLine, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/detect/apriltag/direction',
+                         String, self.cbApriltagDirection, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/intersection/turn_complete',
+                         Bool, self.cbTurnComplete, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/detect/lane',
+                         Float64, self.cbLane, queue_size=1)
 
         rospy.loginfo(f"[{node_name}] Bereit – Zustand: Lane")
 
-    # ── Parameter-Callback ────────────────────────────────────────────────────
+    # ── Parameter ─────────────────────────────────────────────────────────────
 
     def cbUpdateParameters(self, parameters):
-        self.approaching_duration  = parameters["timing"]["approaching_duration"]["default"]
-        self.turning_timeout       = parameters["timing"]["turning_timeout"]["default"]
-        self.handover_timeout      = parameters["timing"]["handover_timeout"]["default"]
-        self.lane_stable_threshold = parameters["handover"]["lane_stable_threshold"]["default"]
-        self.lane_stable_required  = int(parameters["handover"]["lane_stable_required"]["default"])
+        t = parameters["timing"]
+        self.approaching_min_time = t["approaching_min_time"]["default"]
+        self.approaching_timeout  = t["approaching_timeout"]["default"]
+        self.approaching_duration = t["approaching_duration"]["default"]
+        self.turning_timeout      = t["turning_timeout"]["default"]
+        self.handover_timeout     = t["handover_timeout"]["default"]
+        tt = parameters["turn_time"]
+        self.turn_time_left     = tt["left"]["default"]
+        self.turn_time_right    = tt["right"]["default"]
+        self.turn_time_straight = tt["straight"]["default"]
+        h = parameters["handover"]
+        self.lane_stable_threshold = h["lane_stable_threshold"]["default"]
+        self.lane_stable_required  = int(h["lane_stable_required"]["default"])
 
     # ── Sensor-Callbacks ──────────────────────────────────────────────────────
 
-    def cbIntersection(self, msg):
-        """Kreuzung erkannt (rote Linie + AprilTag gleichzeitig sichtbar)."""
-        if msg.data and self.phase == ControlType.Lane:
-            # Richtung zufällig aus erlaubten Optionen wählen
-            self.direction = random.choice(self.allowed_dirs)
-            rospy.loginfo(f"[switch] Kreuzung erkannt → APPROACHING | Richtung: {self.direction}")
-            self._transition_to(ControlType.Approaching)
+    def cbStopLine(self, msg):
+        # 1) Flag fuers distanzbasierte Approaching-Ende
+        self.stop_line = msg.data
+        # 2) Im Lane-Zustand + Tag-Richtung bekannt -> Kreuzung
+        if not (msg.data and self.phase == self.LANE):
+            return
+        if not self.allowed_dirs or self.allowed_dirs == ["unknown"]:
+            rospy.loginfo_throttle(2.0,
+                "[switch] Rote Linie ohne Tag-Richtung -> keine Kreuzung, fahre weiter")
+            return
+        self.direction = random.choice(self.allowed_dirs)
+        rospy.loginfo(f"[switch] Kreuzung (Linie+Tag) -> APPROACHING | "
+                      f"Richtung: {self.direction} (aus {self.allowed_dirs})")
+        self._transition_to(self.APPROACHING)
 
     def cbApriltagDirection(self, msg):
-        """Erlaubte Richtungen vom AprilTag empfangen (nur in Lane-Phase speichern)."""
-        if self.phase == ControlType.Lane and msg.data and msg.data != "unknown":
+        # Nur im Lane-Zustand merken (waehrend der Kreuzung nicht ueberschreiben)
+        if self.phase == self.LANE and msg.data and msg.data != "unknown":
             self.allowed_dirs = msg.data.split(",")
 
-    def cbRedLineSide(self, msg):
-        self.red_line_side = msg.data
+    def cbTurnComplete(self, msg):
+        self.turn_complete = msg.data
 
     def cbLane(self, msg):
         self.lane_error = msg.data
 
-    # ── Zustandsübergänge ─────────────────────────────────────────────────────
+    # ── Zustandsuebergaenge ─────────────────────────────────────────────────────
 
     def _transition_to(self, new_phase):
         self.phase            = new_phase
         self.phase_start_time = rospy.Time.now()
         self.lane_stable_count = 0
-        rospy.loginfo(f"[switch] → {new_phase.name}")
+        if new_phase == self.APPROACHING:
+            self._approach_cleared = False
+        if new_phase == self.TURNING:
+            self.turn_complete = False
+        rospy.loginfo(f"[switch] -> {new_phase}")
 
     def _update_state(self):
         elapsed = (rospy.Time.now() - self.phase_start_time).to_sec()
 
-        if self.phase == ControlType.Approaching:
-            # Einfach Zeit abwarten – control_intersection_node fährt gerade drüber
-            if elapsed >= self.approaching_duration:
-                rospy.loginfo(f"[switch] Approaching abgeschlossen → TURNING ({self.direction})")
-                self._transition_to(ControlType.Turning)
+        if self.phase == self.APPROACHING:
+            # ── APPROACHING-ENDE ──────────────────────────────────────────────
+            # VARIANTE A (aktiv): distanzbasiert – bis Haltelinie weg + Puffer
+            if not self.stop_line:
+                self._approach_cleared = True
+            cleared = self._approach_cleared and elapsed >= self.approaching_min_time
+            if cleared or elapsed >= self.approaching_timeout:
+                self._transition_to(self.TURNING)
+            # ── VARIANTE B (zeitgesteuert) – stattdessen: ─────────────────────
+            # if elapsed >= self.approaching_duration:
+            #     self._transition_to(self.TURNING)
 
-        elif self.phase == ControlType.Turning:
+        elif self.phase == self.TURNING:
             done = False
-            reason = ""
-
-            if self.direction == "left"     and self.red_line_side == "right":
-                done, reason = True, "rote Linie rechts sichtbar"
-            elif self.direction == "right"  and self.red_line_side == "left":
-                done, reason = True, "rote Linie links sichtbar"
-            elif self.direction == "straight" and self.red_line_side == "none":
-                done, reason = True, "rote Linie verschwunden"
+            # ── TURNING-ENDE ──────────────────────────────────────────────────
+            # VARIANTE A (aktiv): regionsbasiert via detect_red_lane_node
+            if self.turn_complete:
+                done = True
             elif elapsed >= self.turning_timeout:
-                done, reason = True, f"Timeout ({self.turning_timeout:.1f}s)"
-
+                done = True
+            # ── VARIANTE B (zeitgesteuert) – stattdessen: ─────────────────────
+            # turn_time = self.turn_time_straight
+            # if self.direction == "left":  turn_time = self.turn_time_left
+            # elif self.direction == "right": turn_time = self.turn_time_right
+            # if elapsed >= turn_time:
+            #     done = True
             if done:
-                rospy.loginfo(f"[switch] Turning abgeschlossen ({reason}) → LANE_HANDOVER")
-                self._transition_to(ControlType.LaneHandover)
+                self._transition_to(self.HANDOVER)
 
-        elif self.phase == ControlType.LaneHandover:
-            # Spur stabil, wenn Fehler lange genug unter Schwelle
+        elif self.phase == self.HANDOVER:
+            # Warten bis Spur stabil zentriert (control_intersection lenkt sanft ein)
             if abs(self.lane_error) < self.lane_stable_threshold:
                 self.lane_stable_count += 1
             else:
                 self.lane_stable_count = 0
+            if self.lane_stable_count >= self.lane_stable_required or elapsed >= self.handover_timeout:
+                rospy.loginfo("[switch] Handover fertig -> LANE")
+                self.allowed_dirs = []     # fuer naechste Kreuzung zuruecksetzen
+                self._transition_to(self.LANE)
 
-            lane_ok  = self.lane_stable_count >= self.lane_stable_required
-            timed_out = elapsed >= self.handover_timeout
-
-            if lane_ok or timed_out:
-                reason = "Spur stabil" if lane_ok else f"Timeout ({self.handover_timeout:.1f}s)"
-                rospy.loginfo(f"[switch] LaneHandover abgeschlossen ({reason}) → LANE")
-                self._transition_to(ControlType.Lane)
-
-    # ── Hauptschleife ─────────────────────────────────────────────────────────
+    # ── Hauptschleife ──────────────────────────────────────────────────────────
 
     def run(self):
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
             self._update_state()
 
-            self.pub_control.publish(Int32(data=self.phase.value))
+            lane_active = (self.phase == self.LANE)
+            self.pub_enable_lane.publish(Bool(data=lane_active))
+            self.pub_enable_inter.publish(Bool(data=not lane_active))
+            self.pub_phase.publish(String(data=self.phase))
             self.pub_direction.publish(String(data=self.direction))
 
-            rospy.logdebug(f"[switch] Phase={self.phase.name} | dir={self.direction} "
-                           f"| red_side={self.red_line_side} | lane_err={self.lane_error:.3f}")
             rate.sleep()
 
 
