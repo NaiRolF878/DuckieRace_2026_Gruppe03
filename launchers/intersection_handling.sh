@@ -1,60 +1,69 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────────
-# intersection.sh – Launcher für Challenge 2 "Intersection Handling"
+# intersection_handling.sh – Launcher für Challenge 2 (Intersection Handling)
 #
-# Startet alle benötigten Nodes als Hintergrundprozesse und beendet sie
-# gemeinsam, wenn das Skript per Ctrl-C oder Container-Stopp terminiert wird.
+# Startet alle Nodes des intersection_handling-Pakets. roscore wird NICHT
+# gestartet (läuft bereits separat auf dem Bot).
 #
-# Annahme: Alle Python-Nodes liegen im SELBEN Ordner wie dieses Skript (src/).
+# Reihenfolge:
+#   1. detect_lane_node        – Spur + rote Haltelinie (/detect/lane, /detect/stop_line)
+#   2. detect_apriltag_node    – AprilTag-Richtung      (/detect/apriltag/direction, /id)
+#   3. detect_red_lane_node    – Gegenspur beim Abbiegen (/intersection/turn_complete)
+#   4. switch_control_node     – FSM (/enable/lane, /enable/intersection, /intersection/phase)
+#   5. camera_dashboard_node   – Visualisierung
+#   6. control_lane_node       – PID-Spurfolge (startet nach kurzer Wartezeit)
+#   7. control_intersection_node – Kreuzungssteuerung
+#
+# Strg+C beendet alle Nodes sauber (cleanup-trap → cmd_vel = 0).
 # Voraussetzung: VEHICLE_NAME ist gesetzt (z.B. export VEHICLE_NAME=dorette).
 # ─────────────────────────────────────────────────────────────────────────────
-set -e
 
-if [ -z "$VEHICLE_NAME" ]; then
-    echo "[intersection.sh] FEHLER: VEHICLE_NAME ist nicht gesetzt."
-    exit 1
-fi
+source /opt/ros/noetic/setup.bash
+source devel/setup.bash
 
-# Verzeichnis dieses Skripts – die Nodes liegen direkt daneben
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-
-echo "[intersection.sh] Starte Challenge 2 für VEHICLE_NAME=$VEHICLE_NAME"
-
-# Alle Kindprozesse beim Beenden gemeinsam stoppen
 pids=()
 cleanup() {
     echo ""
-    echo "[intersection.sh] Beende alle Nodes ..."
+    echo "[intersection_handling.sh] Beende alle Nodes ..."
     for pid in "${pids[@]}"; do
-        kill "$pid" 2>/dev/null || true
+        kill -INT "$pid" 2>/dev/null
     done
-    wait 2>/dev/null || true
-    echo "[intersection.sh] Fertig."
+    wait
+    echo "[intersection_handling.sh] Alle Nodes beendet."
 }
-trap cleanup SIGINT SIGTERM EXIT
+trap cleanup INT TERM EXIT
+
+if ! rostopic list &>/dev/null; then
+    echo "[intersection_handling.sh] FEHLER: ROS-Master nicht erreichbar."
+    echo "                            Läuft roscore? Ist ROS_MASTER_URI korrekt?"
+    exit 1
+fi
 
 # ── Wahrnehmung ──────────────────────────────────────────────────────────────
-# Spurerkennung (Spurversatz -> /detect/lane)
-python3 "$SCRIPT_DIR/detect_lane_node.py" &
+rosrun intersection_handling detect_lane_node.py &
 pids+=($!)
 
-# AprilTag + rote Haltelinie (-> /detect/intersection, /detect/apriltag/direction,
-#                                /detect/red_line_side)
-python3 "$SCRIPT_DIR/detect_apriltag_node.py" &
+rosrun intersection_handling detect_apriltag_node.py &
 pids+=($!)
 
-# ── Steuerung ────────────────────────────────────────────────────────────────
-# Normales Spurfolgen (aktiv bei ControlType.Lane)
-python3 "$SCRIPT_DIR/control_lane_node.py" &
+rosrun intersection_handling detect_red_lane_node.py &
 pids+=($!)
 
-# Kreuzungssteuerung (aktiv bei Approaching / Turning / LaneHandover)
-python3 "$SCRIPT_DIR/control_intersection_node.py" &
+# ── FSM + Visualisierung ─────────────────────────────────────────────────────
+rosrun intersection_handling switch_control_node.py &
 pids+=($!)
 
-# Zentraler Zustandsautomat (steuert die Phasen, publiziert /switch/control)
-python3 "$SCRIPT_DIR/switch_control_node.py" &
+rosrun intersection_handling camera_dashboard_node.py &
 pids+=($!)
 
-echo "[intersection.sh] Alle Nodes gestartet. Ctrl-C zum Beenden."
+# ── Steuerung (erst starten wenn detect_lane Werte liefert) ──────────────────
+sleep 5
+
+rosrun intersection_handling control_lane_node.py &
+pids+=($!)
+
+rosrun intersection_handling control_intersection_node.py &
+pids+=($!)
+
+# Auf alle Nodes warten (blockiert bis Strg+C)
 wait
