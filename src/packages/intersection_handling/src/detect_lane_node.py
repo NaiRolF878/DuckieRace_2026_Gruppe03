@@ -297,6 +297,7 @@ class DetectLaneNode:
         # ── Schritt 5: Linienpositionen ───────────────────────────────────────
         white_alternative  = int(len(img[0]) * 0.95)
         yellow_alternative = int(len(img[0]) * 0.05)
+        distance           = int(len(img) * 0.75)
 
         # ── Gelbe Linie ───────────────────────────────────────────────────────
         center_yellow_raw = self.get_x_for_driving(
