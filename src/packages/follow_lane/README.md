@@ -1,341 +1,344 @@
-# Challenge 1 – Lane Following
+# follow_lane – Challenge 1: Lane Following
 
-> ROS 1 (Noetic) · Ubuntu 20.04 · Python 3 · OpenCV
+ROS 1 (Noetic) Paket für autonomes Spurfolgen auf einem Duckiebot. Der Bot
+folgt der Fahrspur (gelbe Mittellinie links, weiße Außenlinie rechts) und hält
+an roten Haltelinien für 3 Sekunden an.
 
-Der Duckiebot erkennt die gelbe (links) und weiße (rechts) Spurlinie, folgt der Spur per PID-Regler und hält an roten Haltelinien für 3 Sekunden an.
+Getestet unter Ubuntu 20.04 mit ROS Noetic.
 
 ---
 
 ## Inhaltsverzeichnis
 
-- [Dateien](#dateien)
-- [Systemüberblick](#systemüberblick)
-- [Nodes](#nodes)
-- [Konfigurationsparameter](#konfigurationsparameter)
-- [Bot-spezifische Parameter](#bot-spezifische-parameter)
-- [Setup & Starten](#setup--starten)
-- [Kalibrierung](#kalibrierung)
-- [Bekannte Probleme & Lösungen](#bekannte-probleme--lösungen)
+1. [Überblick](#überblick)
+2. [Paketstruktur](#paketstruktur)
+3. [Voraussetzungen](#voraussetzungen)
+4. [Start](#start)
+5. [Architektur & Datenfluss](#architektur--datenfluss)
+6. [Nodes im Detail](#nodes-im-detail)
+7. [ROS-Topics](#ros-topics)
+8. [Kalibrierung & Parameter-Tuning](#kalibrierung--parameter-tuning)
+9. [Troubleshooting](#troubleshooting)
 
 ---
 
-## Dateien
+## Überblick
 
-| Datei | Typ | Beschreibung |
-|---|---|---|
-| `detect_lane_node.py` | Node | Spurerkennung, CLAHE, rote Linie, Spatial Filter, Frame-Tracking |
-| `control_lane_node.py` | Node | PID-Regler, StopState-Automat, MIN_VEL |
-| `switch_control_node.py` | Node | Steuerungsmodus-Umschalter (Lane / Obstacle / Intersection) |
-| `configuration_node.py` | Node | Live-Kalibrierungs-GUI mit JSON-Persistenz |
-| `camera_dashboard_node.py` | Node | 2×2 Kamera-Dashboard (Original, Bird's-Eye-View, Gelb, Weiß) |
-| `util.py` | Hilfsfunktionen | Parameter laden, mergen, live updaten |
-| `detect_lane_node.json` | Config | HSV-Parameter, Perspektive, rote Linie, Gegenspurfilter |
-| `control_lane_node.json` | Config | PID, MIN/MAX_VEL, Stop/Cooldown-Dauer |
-
----
-
-## Systemüberblick
+Das Paket besteht aus vier produktiven Nodes plus zwei Hilfs-Nodes für
+Konfiguration und Visualisierung. Der Kern-Datenfluss ist:
 
 ```
-Kamera (/camera_node/image/compressed)
-    │
-    ▼
-┌──────────────────────┐     ┌──────────────────────┐
-│  detect_lane_node    │     │  configuration_node  │
-│                      │     │  (Tkinter GUI)       │
-│  Bird's-Eye-View     │     │                      │
-│  CLAHE               │◀────│  Schieberegler aus   │
-│  HSV-Masken          │     │  *.json gebaut       │
-│  Morphologie         │     └──────────────────────┘
-│  Spatial Filter      │          /update_parameters
-│  Frame-Tracking      │
-│  Rote Linie (2x ROI) │
-└──────┬───────────────┘
-       │ /detect/lane           (Float64) Spurversatz [-1,+1]
-       │ /detect/stop_line      (Bool)    Rote Linie erkannt
-       │ /detect/stop_line_side (String)  Seite der roten Linie
-       ▼
-┌──────────────────────┐     ┌──────────────────────┐
-│  control_lane_node   │◀────│  switch_control_node │
-│                      │     │                      │
-│  PID-Regler          │     │  Lane=1              │
-│  StopState-Automat   │     │  Obstacle=2          │
-│  MIN_VEL             │     │  Intersection=3      │
-└──────┬───────────────┘     └──────────────────────┘
-       │ /car_cmd_switch_node/cmd (Twist2DStamped)
-       ▼
-    Motoren
+Kamera → detect_lane_node → /detect/lane → control_lane_node → Fahrbefehl
+```
 
-┌──────────────────────┐
-│ camera_dashboard_node│  → cv2.imshow (2×2 Grid)
-│  oben links:  Original        │
-│  oben rechts: Bird's-Eye-View │
-│  unten links: Gelb-Maske      │
-│  unten rechts: Weiß-Maske     │
-└──────────────────────┘
+`detect_lane_node` analysiert das Kamerabild und berechnet den Spurversatz
+(ein Wert zwischen -1 und +1). `control_lane_node` regelt daraus per PID die
+Lenkung. `switch_control_node` aktiviert den Lane-Controller. Die roten
+Haltelinien werden ebenfalls von `detect_lane_node` erkannt und über einen
+Zustandsautomaten in `control_lane_node` verarbeitet.
+
+---
+
+## Paketstruktur
+
+```
+follow_lane/
+├── follow_lane.sh                    # Bash-Launcher
+├── src/
+│   ├── detect_lane_node.py           # Spurerkennung (Kern)
+│   ├── control_lane_node.py          # PID-Regelung + Haltelinien-Automat
+│   ├── switch_control_node.py        # Aktiviert den Lane-Controller
+│   ├── camera_dashboard_node.py      # Visualisierung (2×2 Dashboard)
+│   ├── configuration_node.py         # GUI für Live-Parameter-Tuning
+│   └── util.py                       # Parameter-Laden + Bot-spezifisches Merging
+├── config/
+│   ├── detect_lane_node.json         # HSV, BEV-Eckpunkte, Haltelinien-ROI
+│   └── control_lane_node.json        # PID-Werte, Stopp-Zeiten
+└── launch/
+    └── follow_lane.launch            # ROS-Launch-Datei
 ```
 
 ---
 
-## Nodes
+## Voraussetzungen
 
-### detect\_lane\_node
+- ROS Noetic, Catkin-Workspace mit gebautem `follow_lane`-Paket
+- Laufender `roscore` (auf dem Duckiebot bereits vorhanden – wird **nicht**
+  vom Launcher gestartet)
+- Laufender Kamera-Treiber, der auf
+  `/<VEHICLE_NAME>/camera_node/image/compressed` published
+- Umgebungsvariable `VEHICLE_NAME` gesetzt (z.B. `dorette`):
 
-Verarbeitet jeden Kameraframe und erkennt Spurlinien sowie die rote Haltelinie.
+```bash
+export VEHICLE_NAME=dorette
+```
 
-**Pipeline pro Frame:**
-
-| Schritt | Was | Warum |
-|---|---|---|
-| Bird's-Eye-View | Perspektivtransformation | Spurlinien werden parallel → einfachere Erkennung |
-| CLAHE | Lokaler Helligkeitsausgleich im LAB-Farbraum | Schatten und Lichtunterschiede kompensieren ohne HSV-Kalibrierung zu verschieben |
-| HSV-Masken | `cv2.inRange` für Gelb und Weiß | HSV stabiler als BGR für Farbsegmentierung |
-| Morphologie | `MORPH_CLOSE` | Lücken durch Schatten in Masken schließen |
-| Spatial Filter | Weiß-Maske links von `center_yellow + min_lane_width` ausblenden | Gegenspur-Weiß in engen Kurven ignorieren |
-| Frame-Tracking | Sprung > `max_frame_jump` → letzten Wert behalten | Einzelne Fehlmessungen abfangen |
-| Rote Linie (eigen) | Vertikale + horizontale ROI auf Bird's-Eye-View | Nur eigene Spur, nur direkt vor Bot |
-| Rote Linie (Seite) | Linke/rechte Bildhälfte auf Originalbild | Gegenspur-Linie für Kreuzungsnavigation erkennen |
-
-**Warum zwei HSV-Masken für Rot?**
-Rot liegt im HSV-Farbraum an zwei Stellen: Hue 0–10 (orangerot) und Hue 160–179 (blaurot). Nur mit beiden Masken werden alle Rottöne erfasst.
-
-**Publiziert:**
-
-| Topic | Typ | Beschreibung |
-|---|---|---|
-| `/detect/lane` | `Float64` | Spurversatz: `0` = mittig, `+1` = ganz links, `-1` = ganz rechts |
-| `/detect/stop_line` | `Bool` | `True` wenn eigene Haltelinie im ROI erkannt |
-| `/detect/stop_line_side` | `String` | `none`, `left`, `right`, `both` – Seite der roten Linie |
-| `/debug/original` | `CompressedImage` | Rohes Kamerabild |
-| `/debug/bird_view` | `CompressedImage` | Bird's-Eye-View |
-| `/debug/lane_white` | `CompressedImage` | Weiß-Maske |
-| `/debug/lane_yellow` | `CompressedImage` | Gelb-Maske |
-| `/debug/lane_red` | `CompressedImage` | Rot-Maske |
+Alle Nodes lesen den Fahrzeugnamen aus dieser Variable. Ohne sie brechen die
+Nodes beim Start mit einem `KeyError` ab.
 
 ---
 
-### control\_lane\_node
+## Start
 
-**PID-Formel:**
-```
-P = kp * error
-I = ki * Σ(error * dt)      # I-Anteil wird beim Stopp zurückgesetzt
-D = kd * (error - lastError) / dt
+### Variante A – roslaunch (empfohlen)
 
-omega = P + I + D            # begrenzt auf [-3, +3]
-v     = max(MIN_VEL, MAX_VEL * (1 - |error|))
+```bash
+roslaunch follow_lane follow_lane.launch
 ```
 
-**Warum `v = max(MIN_VEL, MAX_VEL * (1 - |error|))`?**
-In Kurven (großer Fehler) fährt der Bot langsamer – sicherer und stabiler. `MIN_VEL` verhindert dass der Bot bei maximalem Fehler komplett stoppt.
+`roslaunch` startet alle vier Nodes, bündelt die Logs und beendet bei `Strg+C`
+automatisch alles sauber – inklusive des Shutdown-Handlers in
+`control_lane_node`, der den Bot auf `v=0` setzt.
 
-**StopState-Zustandsautomat:**
+### Variante B – Bash-Script
 
-```
-Driving ──(rote Linie erkannt)──▶ Stopping (v=0, omega=0)
-                                       │ 3s abgelaufen
-                                       ▼
-Driving ◀──(Cooldown abgelaufen)── Cooldown
-                                   (weiterfahren, neue Linien ignorieren)
+```bash
+./follow_lane.sh
 ```
 
-**Warum Integral beim Stopp zurücksetzen?**
-Während des Stopps akkumuliert der I-Anteil Fehler → beim Anfahren würde das einen Lenkruck erzeugen.
+Das Script prüft zuerst, ob der ROS-Master erreichbar ist, startet dann die
+Nodes und fängt `Strg+C` ab, um alle Prozesse sauber zu beenden.
+
+### Konfigurations-GUI (optional, separat)
+
+Zum Live-Tuning der Parameter (siehe unten):
+
+```bash
+rosrun follow_lane configuration_node.py
+```
 
 ---
 
-### switch\_control\_node
-
-Publiziert den aktiven Modus kontinuierlich mit 10 Hz:
-
-| Wert | Modus | Aktive Node |
-|---|---|---|
-| `1` | `Lane` | `control_lane_node` |
-| `2` | `Obstacle` | `control_obstacle_node` |
-| `3` | `Intersection` | `control_intersection_node` |
-
----
-
-### configuration\_node
-
-Vollständig datengetrieben – neue Parameter in der JSON erscheinen automatisch als Schieberegler.
-
-**Warum bot-spezifisch speichern?**
-`save_parameters()` erkennt ob die JSON die neue Struktur (`default` + Bot-Name) hat:
-- Neue Struktur → nur den bot-spezifischen Block überschreiben, andere Bots bleiben unberührt
-- Alte Struktur → direkt überschreiben (Rückwärtskompatibilität)
-
----
-
-### camera\_dashboard\_node
-
-Zeigt alle 4 Kameraansichten in einem 2×2 Grid:
+## Architektur & Datenfluss
 
 ```
-┌──────────────┬──────────────┐
-│  Original    │  Bird's-Eye  │
-├──────────────┼──────────────┤
-│  Gelb-Maske  │  Weiß-Maske  │
-└──────────────┴──────────────┘
+                  /camera_node/image/compressed
+                              │
+                              ▼
+                   ┌──────────────────────┐
+                   │   detect_lane_node    │
+                   │  ───────────────────  │
+                   │  BEV-Transformation   │
+                   │  CLAHE (LAB)          │
+                   │  HSV-Masken gelb/weiß │
+                   │  Sobel-Kanten         │
+                   │  Frame-Tracking       │
+                   └──────────┬────────────┘
+                              │
+              ┌───────────────┼────────────────────┐
+              │               │                    │
+        /detect/lane    /detect/stop_line     /debug/* (Bilder)
+        (Float64)         (Bool)                    │
+              │               │                    ▼
+              │               │           ┌──────────────────────┐
+              │               │           │ camera_dashboard_node │
+              │               │           └──────────────────────┘
+              ▼               ▼
+       ┌────────────────────────────┐         ┌─────────────────────┐
+       │     control_lane_node      │◄────────│ switch_control_node │
+       │  ────────────────────────  │/enable/ │  (/enable/lane=True)│
+       │  PID-Regelung              │  lane   └─────────────────────┘
+       │  Haltelinien-Automat       │
+       └─────────────┬──────────────┘
+                     │
+                     ▼
+       /car_cmd_switch_node/cmd (Twist2DStamped)
 ```
 
-Mit `q` schließen.
+Wichtig: Die Detection-Seite ist **zustandslos** (jeder Frame wird unabhängig
+verarbeitet), die Control-Seite **hält Zustand** (PID-Integral,
+Haltelinien-Automat). Diese Trennung ist bewusst so gewählt.
 
 ---
+
+## Nodes im Detail
+
+### detect_lane_node.py
+
+Das Herzstück. Pipeline pro Kamerabild:
+
+1. **Bird's-Eye-View** – Perspektivtransformation des Trapez-Spurausschnitts
+   in eine Draufsicht (400×400). Eckpunkte sind kalibrierbar.
+2. **CLAHE im LAB-Farbraum** – lokaler Helligkeitsausgleich nur auf dem
+   L-Kanal, damit Schatten die HSV-Erkennung nicht stören und die
+   Farbkalibrierung stabil bleibt.
+3. **HSV-Masken** für Gelb und Weiß.
+4. **Morphologie (MORPH_CLOSE)** – schließt Lücken in den Masken, die durch
+   Schatten entstehen.
+5. **Sobel-Kantenerkennung** – findet die Linienposition. Mit `last_known`
+   wird jeweils die Kante gewählt, die dem letzten bekannten Wert am nächsten
+   liegt (robuster in engen Kurven und am Wendeplatz, wo zwei weiße Kanten
+   sichtbar sein können).
+6. **Frame-Tracking** für beide Linien – Sprünge größer als `max_frame_jump`
+   werden verworfen, der letzte gültige Wert beibehalten.
+7. **Plausibilitätsprüfung** – Weiß muss rechts von Gelb liegen.
+8. **Spurversatz** berechnen und auf `/detect/lane` publizieren.
+
+Die Fallback-Logik steckt zentral in `_resolve_line_position`: Bei fehlender
+Detektion wird der letzte bekannte Wert gehalten; nur beim allerersten Frame
+ohne Anker greift der Bildrand-Fallback (ohne sich darauf festzulegen).
+
+Die rote Haltelinie wird über einen zweidimensionalen ROI im BEV erkannt
+(vertikal + horizontal einschränkbar) und als Bool publiziert.
+
+### control_lane_node.py
+
+PID-Regler plus Haltelinien-Zustandsautomat.
+
+**PID:** Die Geschwindigkeit sinkt mit wachsendem Spurversatz
+(`v = max(MIN_VEL, MAX_VEL * (1 - |error|))`) – der Bot fährt also in Kurven
+langsamer. Der I-Anteil hat einen Anti-Windup-Clamp (`INTEGRAL_LIMIT = 3.0`),
+damit er bei hohem `ki` nicht unbegrenzt aufläuft.
+
+**Haltelinien-Automat:** `Driving → Stopping (3s) → Cooldown → Driving`. Im
+Cooldown wird keine neue rote Linie erkannt, damit der Bot nach dem Anfahren
+nicht sofort wieder stoppt. Beim Anfahren wird das PID-Integral
+zurückgesetzt.
+
+### switch_control_node.py
+
+Minimaler Scaffold. Publiziert dauerhaft `/enable/lane = True` mit 10 Hz, womit
+`control_lane_node` aktiv bleibt. Kann später erweitert werden, um zwischen
+mehreren Modi (Intersection, Obstacle Avoidance) umzuschalten.
+
+### camera_dashboard_node.py
+
+Zeigt ein 2×2-Dashboard (600×600): Original mit Annotationen (Modus-Rahmen,
+AprilTag- und Enten-Bounding-Boxen, Rote-Linie-Box, Statuszeile), Bird's-Eye-
+View, Gelb-Maske, Weiß-Maske. Bewusst challenge-übergreifend gehalten – die
+Subscriber für AprilTag/Ente bleiben funktionsfähig, auch wenn in Challenge 1
+nichts darauf published.
+
+### configuration_node.py
+
+Tkinter-GUI zum Live-Tuning. Liest dynamisch alle JSON-Dateien aus dem
+`config/`-Ordner, baut Dropdowns für Node + Parametergruppe und für jeden
+Parameter einen Schieberegler. Änderungen werden sofort per ROS an die
+laufenden Nodes gesendet **und** in die JSON zurückgeschrieben.
 
 ### util.py
 
-**Parameter-Merge-Logik:**
-```
-JSON (neue Struktur):
-  default    → Basiswerte für alle Bots
-  dorette    → Überschreibungen nur für dorette
-
-Beim Start:
-  merged = deep_merge(default, dorette)
-  → dorette-Werte überschreiben default
-  → nicht genannte Parameter kommen aus default
-```
-
-**Bug-Fix gegenüber Original:**
-Der Callback wurde im Original für alle Nodes aufgerufen, auch wenn die Message für eine andere Node bestimmt war. Korrigiert: `if msg['node'] == node_name`.
+Lädt Parameter und merged bot-spezifische Overrides über die `default`-Werte
+(`_deep_merge`). Registriert den Live-Update-Callback und stellt sicher, dass
+nur die richtige Node ihre Parameter-Updates erhält.
 
 ---
 
-## Konfigurationsparameter
+## ROS-Topics
 
-### detect\_lane\_node.json
+Alle Topics sind mit `/<VEHICLE_NAME>/` präfixiert.
 
-#### `crop_image` – Perspektivtransformation
+### Abonniert (Eingänge)
 
-| Parameter | Default | Beschreibung |
-|---|---|---|
-| `top_left_x/y` | 159 / 218 | Obere linke Ecke der Fahrspur im Kamerabild |
-| `top_right_x/y` | 441 / 218 | Obere rechte Ecke |
-| `bottom_left_x/y` | 606 / 382 | Untere linke Ecke |
-| `bottom_right_x/y` | -29 / 382 | Untere rechte Ecke |
-
-#### `white` – Weiße Linie (HSV) + Gegenspurfilter
-
-| Parameter | Default | Beschreibung |
-|---|---|---|
-| `hl` / `hh` | 0 / 255 | Hue Unter- / Obergrenze |
-| `sl` / `sh` | 0 / 41 | Saturation Unter- / Obergrenze |
-| `vl` / `vh` | 161 / 255 | Value Unter- / Obergrenze |
-| `min_lane_width` | 50 px | Mindestabstand gelb→weiß – blendet Gegenspur aus |
-| `max_frame_jump` | 80 px | Max. Pixelsprung zwischen Frames |
-
-#### `yellow` – Gelbe Linie (HSV)
-
-| Parameter | Default | Beschreibung |
-|---|---|---|
-| `hl` / `hh` | 15 / 60 | Hue Unter- / Obergrenze |
-| `sl` / `sh` | 60 / 255 | Saturation Unter- / Obergrenze |
-| `vl` / `vh` | 120 / 255 | Value Unter- / Obergrenze |
-
-#### `red` – Rote Haltelinie
-
-| Parameter | Default | Beschreibung |
-|---|---|---|
-| `hl` / `hh` | 0 / 10 | Hue unterer Rot-Bereich |
-| `hl2` / `hh2` | 160 / 179 | Hue oberer Rot-Bereich |
-| `sl` / `sh` | 100 / 255 | Saturation Unter- / Obergrenze |
-| `vl` / `vh` | 100 / 255 | Value Unter- / Obergrenze |
-| `pixel_threshold` | 500 | Mindestanzahl roter Pixel |
-| `detection_zone` | 0.85 | Vertikale ROI: unterste 15% prüfen |
-| `detection_x_start` | 0.4 | Horizontale ROI: rechte 60% prüfen |
-
-### control\_lane\_node.json
-
-#### `pid` – PID-Regler
-
-| Parameter | Default | Bot-spezifisch? | Beschreibung |
+| Topic | Typ | Node | Zweck |
 |---|---|---|---|
-| `p` | 8.0 | ✅ | Proportionalbeiwert |
-| `i` | 0.0 | ✅ | Integralbeiwert |
-| `d` | 6.0 | ✅ | Differentialbeiwert |
-| `max_vel` | 0.5 m/s | ❌ | Maximalgeschwindigkeit |
-| `min_vel` | 0.1 m/s | ❌ | Minimalgeschwindigkeit |
+| `camera_node/image/compressed` | CompressedImage | detect_lane | Kamerabild |
+| `detect/lane` | Float64 | control_lane | Spurversatz [-1, +1] |
+| `detect/stop_line` | Bool | control_lane | Rote Linie erkannt |
+| `enable/lane` | Bool | control_lane | Controller aktiv? |
 
-#### `stop_line` – Haltelinien-Logik
+### Publiziert (Ausgänge)
 
-| Parameter | Default | Beschreibung |
+| Topic | Typ | Node | Zweck |
+|---|---|---|---|
+| `detect/lane` | Float64 | detect_lane | Spurversatz [-1, +1] |
+| `detect/stop_line` | Bool | detect_lane | Rote Linie erkannt |
+| `enable/lane` | Bool | switch_control | Aktiviert control_lane |
+| `car_cmd_switch_node/cmd` | Twist2DStamped | control_lane | Fahrbefehl (v, omega) |
+
+### Debug-Bilder (von detect_lane_node)
+
+`debug/original`, `debug/bird_view`, `debug/annotated`, `debug/lane_croped`,
+`debug/lane_white`, `debug/lane_yellow`, `debug/lane_red` – alle CompressedImage.
+Werden nur publiziert, wenn ein Subscriber verbunden ist.
+
+---
+
+## Kalibrierung & Parameter-Tuning
+
+Parameter liegen in `config/*.json`. Sie lassen sich **live** über die
+`configuration_node`-GUI verändern (Schieberegler) – Änderungen wirken sofort
+und werden gespeichert.
+
+### Bot-spezifische Parameter
+
+Die JSON-Struktur trennt `default` (für alle Bots) von bot-spezifischen
+Blöcken (z.B. `dorette`, `daffy`). Beim Laden wird gemergt: bot-spezifische
+Werte überschreiben die Defaults, nicht genannte Werte bleiben aus `default`.
+So kann jeder Bot eigene HSV- und PID-Werte haben, ohne die anderen zu stören.
+`save_parameters()` schreibt nur den bot-spezifischen Block zurück.
+
+### detect_lane_node.json
+
+| Gruppe | Parameter | Bedeutung |
 |---|---|---|
-| `stop_duration` | 3.0 s | Wartezeit an der roten Linie |
-| `cooldown_duration` | 3.0 s | Sperrzeit nach dem Stopp |
+| `crop_image` | top/bottom × left/right (x, y) | BEV-Trapez-Eckpunkte |
+| `yellow` / `white` | hl, hh, sl, sh, vl, vh | HSV-Grenzen der Maske |
+| `white` | `max_frame_jump` | max. Pixelsprung pro Frame (beide Linien) |
+| `red` | hl, hh, hl2, hh2, sl, sh, vl, vh | HSV (Rot, zwei Hue-Bereiche) |
+| `red` | `pixel_threshold` | Mindest-Pixelzahl für Erkennung |
+| `red` | `detection_zone` | schneidet oben ab (0.85 = unterste 15%) |
+| `red` | `detection_x_start` | schneidet links ab (0.4 = rechte 60%) |
+| `red` | `detection_x_end` | schneidet rechts ab (1.0 = bis Rand) |
 
----
+**Hinweis zu den Rot-Parametern:** Rot liegt an zwei Stellen des Hue-Kreises
+(nahe 0 und nahe 180), deshalb zwei Bereiche (`hl/hh` und `hl2/hh2`), die zu
+einer Maske vereint werden. Der ROI lässt sich in drei Richtungen
+einschränken, um z.B. rote Markierungen am Wendeplatz auszublenden.
 
-## Bot-spezifische Parameter
+### control_lane_node.json
 
-Jeder Bot hat eigene Einträge in `detect_lane_node.json` (HSV-Werte) und `control_lane_node.json` (PID). Beim Start liest `util.py` den `VEHICLE_NAME` und merged automatisch:
-
-**Verfügbare Bots:** `donald`, `daisy`, `tick`, `tack`, `trick`, `gustav`, `dorette`, `dagobert`, `daffy`, `gundel`
-
-**Workflow beim Kalibrieren eines neuen Bots:**
-1. `export VEHICLE_NAME=dorette` setzen
-2. Nodes starten → default-Parameter werden geladen
-3. Im `configuration_node` kalibrieren
-4. Schieberegler bewegen → Werte werden automatisch unter `dorette` in der JSON gespeichert
-5. Beim nächsten Start mit demselben Bot werden die kalibrierten Werte geladen
-
----
-
-## Setup & Starten
-
-```bash
-# ROS-Umgebung + Bot setzen (Beispiel: dorette)
-source /opt/ros/noetic/setup.bash
-export ROS_MASTER_URI=http://dorette.local:11311
-export VEHICLE_NAME=dorette
-
-# Nodes starten (je ein Terminal)
-python3 src/detect_lane_node.py
-python3 src/control_lane_node.py
-python3 src/switch_control_node.py
-python3 src/configuration_node.py    # Kalibrierungs-GUI
-python3 src/camera_dashboard_node.py # 2x2 Debug-Ansicht
-```
-
----
-
-## Kalibrierung
-
-### 1. Perspektivtransformation
-
-1. `configuration_node` → Node `detect_lane_node` → Gruppe `crop_image`
-2. Debug Image `/debug/bird_view` auswählen
-3. Eckpunkte so einstellen dass die Fahrspur im transformierten Bild als Rechteck erscheint
-
-### 2. HSV-Farbbereiche
-
-1. Debug Image `/debug/lane_white` oder `/debug/lane_yellow`
-2. `vl` hochschieben bis Hintergrund verschwindet
-3. `sh` runterschieben bis Linie vollständig erkannt wird
-4. Werte werden automatisch bot-spezifisch gespeichert
-
-### 3. PID kalibrieren
-
-1. `i = 0` lassen
-2. `p` erhöhen bis Bot der Spur folgt
-3. `d` erhöhen bis Schwingen aufhört
-4. `i` nur bei dauerhaftem Versatz leicht erhöhen
-
-### 4. Haltelinie kalibrieren
-
-1. `pixel_threshold` erhöhen bis keine Fehlalarme auf gerader Strecke
-2. `detection_zone` anpassen (Richtung 1.0 = Bot hält später an)
-3. `detection_x_start` erhöhen wenn Gegenspur-Haltelinie auslöst
-
----
-
-## Bekannte Probleme & Lösungen
-
-| Problem | Ursache | Lösung |
+| Gruppe | Parameter | Bedeutung |
 |---|---|---|
-| Falsche weiße Linie in engen Kurven | Gegenspur nah an eigener Spur | `min_lane_width` erhöhen |
-| Weiße Linie springt bei Lichtreflexen | Fehlmessungen einzelner Frames | `max_frame_jump` verringern |
-| Gegenspur-Haltelinie löst Stopp aus | Horizontale ROI zu breit | `detection_x_start` erhöhen |
-| Bot hält zu früh an | Vertikale ROI zu weit oben | `detection_zone` erhöhen |
-| Bot fährt nach Neustart nicht | `KeyError` in `cbUpdateParameters` | Alle `.json`-Dateien auf Bot übertragen |
-| HSV-Kalibrierung nach Botwechsel falsch | Anderer Bot, andere Kamera | Bot-spezifische Werte im `configuration_node` kalibrieren und speichern |
+| `pid` | `p`, `i`, `d` | PID-Verstärkungen |
+| `pid` | `max_vel`, `min_vel` | Geschwindigkeitsgrenzen |
+| `stop_line` | `stop_duration` | Haltezeit an roter Linie (Sek.) |
+| `stop_line` | `cooldown_duration` | Sperrzeit nach Anfahren (Sek.) |
+
+### Tuning-Reihenfolge (Empfehlung)
+
+1. **BEV-Eckpunkte** zuerst – ein falsch kalibrierter Bird's-Eye-View macht
+   alles andere unbrauchbar. Im Dashboard die `bird_view`-Kachel prüfen.
+2. **HSV-Masken** für Gelb und Weiß – im Dashboard die Masken-Kacheln nutzen,
+   bis nur die Linien sichtbar sind und Rauschen weg ist.
+3. **Rote Linie** – `pixel_threshold` und ROI so einstellen, dass nur die
+   eigene Haltelinie auslöst.
+4. **PID** zuletzt – mit `p` beginnen (Spurfolgen), dann `d` gegen
+   Überschwingen. `i` meist 0 lassen; nur bei systematischem Versatz leicht
+   erhöhen.
+
+---
+
+## Troubleshooting
+
+**Nodes starten, aber nichts passiert / keine Messages**
+ROS-Master läuft nicht oder `ROS_MASTER_URI` falsch. Prüfen mit
+`rostopic list`. Kommt ein Fehler, läuft kein roscore.
+
+**`KeyError: 'VEHICLE_NAME'`**
+Umgebungsvariable nicht gesetzt: `export VEHICLE_NAME=<botname>`.
+
+**Bot lenkt nicht / fährt nicht los**
+`/detect/lane` prüfen (`rostopic echo`). Kommen Werte? Falls nicht, hängt es
+in `detect_lane_node` – BEV oder HSV-Masken kontrollieren. Außerdem prüfen, ob
+`/enable/lane` auf `True` steht.
+
+**Bot stoppt ständig / erkennt überall rote Linien**
+`red/pixel_threshold` zu niedrig oder ROI zu groß. ROI über `detection_zone`,
+`detection_x_start` und `detection_x_end` enger ziehen.
+
+**Bot springt in Kurven auf die Gegenspur**
+`max_frame_jump` zu hoch – verkleinern, damit große Sprünge verworfen werden.
+Im Dashboard auf `logwarn`-Meldungen ("jump too large") achten.
+
+**Debug-Logs sehen**
+Per-Frame-Ausgaben laufen über `rospy.logdebug` (standardmäßig still). Zum
+Aktivieren die Node mit `log_level=rospy.DEBUG` starten oder zur Laufzeit über
+`rqt_logger_level` hochdrehen. Echte Warnungen (verlorene Linien) erscheinen
+als `logwarn` ohnehin.
+
+---
+
+*Stand: Challenge 1 (Lane Following). Die Architektur ist auf spätere
+Erweiterung um Intersection- und Obstacle-Handling vorbereitet
+(switch_control_node, Enable-Topics, challenge-übergreifendes Dashboard).*
