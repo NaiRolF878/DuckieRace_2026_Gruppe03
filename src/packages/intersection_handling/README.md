@@ -278,38 +278,38 @@ So lässt sich am Prüfungstag in Sekunden auf die robustere Variante wechseln.
 ---
 
 ## Parameter
-switch_control_node.json — alle Parameter
-timing:
+**switch_control_node.json — alle Parameter**
+**timing:**
 
-stop_duration — wie lange der Bot an der roten Haltelinie steht (Phase Stopping)
-pre_turn_pause — Debug-Pause vor dem Drehen; 0 = aus
-approaching_timeout — Sicherheitsnetz: nach so vielen Sekunden geht Approaching zwangsweise weiter, falls die Linie nie „verschwindet"
-approaching_duration — nur relevant für die zeitgesteuerte Approaching-Variante B (aktuell auskommentiert)
-turning_timeout — Sicherheitsnetz fürs Drehen: nach so vielen Sekunden endet Turning zwangsweise, falls Node B nie „fertig" meldet
-handover_timeout — Sicherheitsnetz fürs Einscheren
+- **stop_duration** — wie lange der Bot an der roten Haltelinie steht (Phase Stopping)
+  pre_turn_pause — Debug-Pause vor dem Drehen; 0 = aus
+- **approaching_timeout** — Sicherheitsnetz: nach so vielen Sekunden geht Approaching zwangsweise weiter,     falls die Linie nie „verschwindet"
+- **approaching_duration** — nur relevant für die zeitgesteuerte Approaching-Variante B (aktuell auskommentiert)
+- **turning_timeout** — Sicherheitsnetz fürs Drehen: nach so vielen Sekunden endet Turning zwangsweise, falls Node B nie „fertig" meldet
+- **handover_timeout** — Sicherheitsnetz fürs Einscheren
 
-approach_min_time (richtungsabhängig — das, was wir getrennt haben):
+**approach_min_time** (richtungsabhängig — das, was wir getrennt haben):
 
-left — wie weit der Bot nach dem Verschwinden der Linie noch geradeaus fährt, bevor er links dreht. Größer = weiter in die Kreuzung. Gegen „dreht zu früh nach links".
-right — dasselbe für rechts. Kleiner, weil engere Kurve.
-straight — Mindest-Fahrzeit bei Geradeausfahrt.
+- **left** — wie weit der Bot nach dem Verschwinden der Linie noch geradeaus fährt, bevor er links dreht. Größer = weiter in die Kreuzung. Gegen „dreht zu früh nach links".
+- **right** — dasselbe für rechts. Kleiner, weil engere Kurve.
+- **straight** — Mindest-Fahrzeit bei Geradeausfahrt.
 
 turn_time (nur für zeitgesteuerte Turning-Variante B):
 
 left / right / straight — feste Drehdauer pro Richtung. Nur aktiv, wenn ihr die regionsbasierte Variante (Node B) auskommentiert.
 
-handover:
+**handover:**
 
-lane_stable_threshold — wie mittig die Spur sein muss, damit sie als „wieder gefunden" gilt (kleiner = strenger)
-lane_stable_required — wie viele Frames in Folge die Spur stabil sein muss, bevor zurück zu Lane geschaltet wird
+**lane_stable_threshold** — wie mittig die Spur sein muss, damit sie als „wieder gefunden" gilt (kleiner = strenger)
+**lane_stable_required** — wie viele Frames in Folge die Spur stabil sein muss, bevor zurück zu Lane geschaltet wird
 
-detect_apriltag_node.json — alle Parameter
-tag_memory:
+**detect_apriltag_node.json — alle Parameter**
+**tag_memory:**
 
-seconds — wie lange ein gesehener Tag „im Gedächtnis" bleibt, nachdem er aus dem Bild verschwunden ist. Größer = überbrückt längere Lücken zwischen Tag und roter Linie, aber riskiert, einen veralteten Tag zu verwenden.
-min_area — wie groß (nah) ein Tag sein muss, damit er ins Gedächtnis aufgenommen wird. Größer = nur sehr nahe Tags zählen (verhindert, dass ein weit entfernter Tag einer anderen Kreuzung gemerkt wird).
+**seconds** — wie lange ein gesehener Tag „im Gedächtnis" bleibt, nachdem er aus dem Bild verschwunden ist. Größer = überbrückt längere Lücken zwischen Tag und roter Linie, aber riskiert, einen veralteten Tag zu verwenden.
+**min_area** — wie groß (nah) ein Tag sein muss, damit er ins Gedächtnis aufgenommen wird. Größer = nur sehr nahe Tags zählen (verhindert, dass ein weit entfernter Tag einer anderen Kreuzung gemerkt wird).
 
-tag_filter:
+**tag_filter:**
 
 stability_frames — wie viele Frames in Folge dieselbe Tag-ID erkannt werden muss, bevor sie als gültig gilt. Größer = robuster gegen Fehlerkennungen, aber träger.
 pos_filter_enabled — 1 = nur Tags in einem bestimmten Bildbereich zählen (Positionsfilter an), 0 = alle Tags.
