@@ -55,6 +55,8 @@ class CameraDashboardNode:
         self._enable_lane         = True
         self._enable_intersection = False
         self._enable_obstacle     = False
+        self._chosen_direction    = '-'      # gewuerfelte Abbiegerichtung (FSM)
+        self._phase               = 'Lane'   # aktuelle FSM-Phase
         # Haltelinien-Detektionszone: untere 15% des Bildes (identisch zu detect_lane_node default)
         self.red_detection_zone   = 0.65  # entspricht grob h*0.65 im Originalbild
 
@@ -87,6 +89,12 @@ class CameraDashboardNode:
             Bool, lambda m: setattr(self, '_enable_intersection', m.data), queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/enable/obstacle',
             Bool, lambda m: setattr(self, '_enable_obstacle', m.data), queue_size=1)
+
+        # Kreuzung: gewuerfelte Richtung + aktuelle Phase von switch_control_node
+        rospy.Subscriber(f'/{self._vehicle_name}/intersection/direction',
+            String, lambda m: setattr(self, '_chosen_direction', m.data if m.data else '-'), queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/intersection/phase',
+            String, lambda m: setattr(self, '_phase', m.data if m.data else '-'), queue_size=1)
 
         rospy.loginfo(f"[{node_name}] Dashboard gestartet.")
 
@@ -193,6 +201,14 @@ class CameraDashboardNode:
         stop_color = (0, 0, 255) if self._stop_line else (160, 160, 160)
         cv2.putText(annotated, f"Linie: {self._stop_line_side}",
                     (w - 180, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, stop_color, 2, cv2.LINE_AA)
+
+        # ── 2b. Zweite Statuszeile: FSM-Phase + gewuerfelte Abbiegerichtung ───
+        cv2.rectangle(annotated, (0, 32), (w, 60), (0, 0, 0), -1)
+        cv2.putText(annotated, f"Phase: {self._phase}",
+                    (10, 53), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2, cv2.LINE_AA)
+        dir_txt = self._chosen_direction.upper() if self._chosen_direction else "-"
+        cv2.putText(annotated, f"FAHRE: {dir_txt}",
+                    (w - 180, 53), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
 
         # ── 3. Rote Haltelinie: Bounding-Box am unteren Bildrand ─────────────
         if self._stop_line:
