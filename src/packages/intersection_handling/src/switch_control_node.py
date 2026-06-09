@@ -27,16 +27,17 @@
 import os
 import random
 import rospy
-from std_msgs.msg import Bool, String, Float64, Int32
+from std_msgs.msg import Bool, String
 import util
 
 
 class SwitchControlNode:
     # Phasen als einfache String-Konstanten (kein Enum -> passt zum String-Topic)
     LANE        = "Lane"
+    STOPPING    = "Stopping"
     APPROACHING = "Approaching"
+    PRETURN     = "PreTurnPause"
     TURNING     = "Turning"
-    HANDOVER    = "Handover"
 
     def __init__(self, node_name):
         rospy.init_node(node_name)
@@ -48,20 +49,19 @@ class SwitchControlNode:
         self.allowed_dirs     = []        # erlaubte Richtungen aus letztem Tag
         self.direction        = "straight"
         self.stop_line        = False     # rote Haltelinie (detect_lane)
-        self.turn_complete    = False     # Abbiegen fertig (Node B)
-        self.lane_error       = 0.0
         self._approach_cleared = False    # Haltelinie beim Approaching ueberfahren?
-        self.lane_stable_count = 0
 
         # Timing-Defaults (aus JSON ueberschrieben)
-        self.approaching_min_time  = 0.5
+        self.stop_duration         = 2.0
+        # Debug-Pause zwischen Approaching und Turning (0 = aus)
+        self.pre_turn_pause        = 0.0
+        # approaching_min_time richtungsabhaengig: wie weit faehrt der Bot in die
+        # Kreuzung, bevor er dreht. Rechts kuerzer (engere Kurve), links laenger.
+        self.approach_min_left     = 1.2
+        self.approach_min_right    = 0.5
+        self.approach_min_straight = 0.5
         self.approaching_timeout   = 4.0
-        self.approaching_duration  = 1.5     # nur Variante B (zeitgesteuert)
-        self.turning_timeout       = 6.0
-        self.handover_timeout      = 8.0
-        self.lane_stable_threshold = 0.15
-        self.lane_stable_required  = 15
-        self.turn_time_left        = 3.0     # nur Variante B
+        self.turn_time_left        = 3.0     # zeitgesteuertes Abbiegen
         self.turn_time_right       = 2.0
         self.turn_time_straight    = 2.0
 
@@ -82,10 +82,6 @@ class SwitchControlNode:
                          Bool, self.cbStopLine, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/detect/apriltag/direction',
                          String, self.cbApriltagDirection, queue_size=1)
-        rospy.Subscriber(f'/{self._vehicle_name}/intersection/turn_complete',
-                         Bool, self.cbTurnComplete, queue_size=1)
-        rospy.Subscriber(f'/{self._vehicle_name}/detect/lane',
-                         Float64, self.cbLane, queue_size=1)
 
         rospy.loginfo(f"[{node_name}] Bereit – Zustand: Lane")
 
@@ -93,18 +89,17 @@ class SwitchControlNode:
 
     def cbUpdateParameters(self, parameters):
         t = parameters["timing"]
-        self.approaching_min_time = t["approaching_min_time"]["default"]
+        self.stop_duration        = t["stop_duration"]["default"]
+        self.pre_turn_pause       = t["pre_turn_pause"]["default"]
         self.approaching_timeout  = t["approaching_timeout"]["default"]
-        self.approaching_duration = t["approaching_duration"]["default"]
-        self.turning_timeout      = t["turning_timeout"]["default"]
-        self.handover_timeout     = t["handover_timeout"]["default"]
+        am = parameters["approach_min_time"]
+        self.approach_min_left     = am["left"]["default"]
+        self.approach_min_right    = am["right"]["default"]
+        self.approach_min_straight = am["straight"]["default"]
         tt = parameters["turn_time"]
         self.turn_time_left     = tt["left"]["default"]
         self.turn_time_right    = tt["right"]["default"]
         self.turn_time_straight = tt["straight"]["default"]
-        h = parameters["handover"]
-        self.lane_stable_threshold = h["lane_stable_threshold"]["default"]
-        self.lane_stable_required  = int(h["lane_stable_required"]["default"])
 
     # ── Sensor-Callbacks ──────────────────────────────────────────────────────
 
@@ -119,73 +114,75 @@ class SwitchControlNode:
                 "[switch] Rote Linie ohne Tag-Richtung -> keine Kreuzung, fahre weiter")
             return
         self.direction = random.choice(self.allowed_dirs)
-        rospy.loginfo(f"[switch] Kreuzung (Linie+Tag) -> APPROACHING | "
+        rospy.loginfo(f"[switch] Kreuzung (Linie+Tag) -> STOPPING | "
                       f"Richtung: {self.direction} (aus {self.allowed_dirs})")
-        self._transition_to(self.APPROACHING)
+        self._transition_to(self.STOPPING)
 
     def cbApriltagDirection(self, msg):
         # Nur im Lane-Zustand merken (waehrend der Kreuzung nicht ueberschreiben)
         if self.phase == self.LANE and msg.data and msg.data != "unknown":
             self.allowed_dirs = msg.data.split(",")
 
-    def cbTurnComplete(self, msg):
-        self.turn_complete = msg.data
-
-    def cbLane(self, msg):
-        self.lane_error = msg.data
-
     # ── Zustandsuebergaenge ─────────────────────────────────────────────────────
 
     def _transition_to(self, new_phase):
         self.phase            = new_phase
         self.phase_start_time = rospy.Time.now()
-        self.lane_stable_count = 0
         if new_phase == self.APPROACHING:
             self._approach_cleared = False
-        if new_phase == self.TURNING:
-            self.turn_complete = False
         rospy.loginfo(f"[switch] -> {new_phase}")
 
     def _update_state(self):
         elapsed = (rospy.Time.now() - self.phase_start_time).to_sec()
 
-        if self.phase == self.APPROACHING:
+        if self.phase == self.STOPPING:
+            # An der Haltelinie stehen bleiben (control_intersection haelt v=0),
+            # bis die Stopp-Dauer abgelaufen ist -> dann ueber die Linie fahren.
+            if elapsed >= self.stop_duration:
+                rospy.loginfo(f"[switch] Stopp beendet ({self.stop_duration:.1f}s) -> APPROACHING")
+                self._transition_to(self.APPROACHING)
+
+        elif self.phase == self.APPROACHING:
             # ── APPROACHING-ENDE ──────────────────────────────────────────────
             # VARIANTE A (aktiv): distanzbasiert – bis Haltelinie weg + Puffer
             if not self.stop_line:
                 self._approach_cleared = True
-            cleared = self._approach_cleared and elapsed >= self.approaching_min_time
+            # Richtungsabhaengige Mindest-Fahrzeit in die Kreuzung
+            if self.direction == "left":
+                min_time = self.approach_min_left
+            elif self.direction == "right":
+                min_time = self.approach_min_right
+            else:
+                min_time = self.approach_min_straight
+            cleared = self._approach_cleared and elapsed >= min_time
             if cleared or elapsed >= self.approaching_timeout:
-                self._transition_to(self.TURNING)
+                # Wenn Debug-Pause aktiv (>0), erst in PreTurnPause, sonst direkt drehen
+                if self.pre_turn_pause > 0:
+                    self._transition_to(self.PRETURN)
+                else:
+                    self._transition_to(self.TURNING)
             # ── VARIANTE B (zeitgesteuert) – stattdessen: ─────────────────────
             # if elapsed >= self.approaching_duration:
             #     self._transition_to(self.TURNING)
 
-        elif self.phase == self.TURNING:
-            done = False
-            # ── TURNING-ENDE ──────────────────────────────────────────────────
-            # VARIANTE A (aktiv): regionsbasiert via detect_red_lane_node
-            if self.turn_complete:
-                done = True
-            elif elapsed >= self.turning_timeout:
-                done = True
-            # ── VARIANTE B (zeitgesteuert) – stattdessen: ─────────────────────
-            # turn_time = self.turn_time_straight
-            # if self.direction == "left":  turn_time = self.turn_time_left
-            # elif self.direction == "right": turn_time = self.turn_time_right
-            # if elapsed >= turn_time:
-            #     done = True
-            if done:
-                self._transition_to(self.HANDOVER)
+        elif self.phase == self.PRETURN:
+            # Debug-Pause: Bot steht still, damit man die Position vor dem Drehen
+            # sieht. pre_turn_pause auf 0 setzen, um diese Phase zu ueberspringen.
+            if elapsed >= self.pre_turn_pause:
+                rospy.loginfo(f"[switch] Pre-Turn-Pause beendet -> TURNING ({self.direction})")
+                self._transition_to(self.TURNING)
 
-        elif self.phase == self.HANDOVER:
-            # Warten bis Spur stabil zentriert (control_intersection lenkt sanft ein)
-            if abs(self.lane_error) < self.lane_stable_threshold:
-                self.lane_stable_count += 1
-            else:
-                self.lane_stable_count = 0
-            if self.lane_stable_count >= self.lane_stable_required or elapsed >= self.handover_timeout:
-                rospy.loginfo("[switch] Handover fertig -> LANE")
+        elif self.phase == self.TURNING:
+            # ── TURNING-ENDE ──────────────────────────────────────────────────
+            # Zeitgesteuert (Hardcode): feste Drehzeit pro Richtung.
+            turn_time = self.turn_time_straight
+            if self.direction == "left":
+                turn_time = self.turn_time_left
+            elif self.direction == "right":
+                turn_time = self.turn_time_right
+            if elapsed >= turn_time:
+                # Direkt zurueck zu Lane: der control_lane-PID faengt die Spur.
+                rospy.loginfo("[switch] Turning fertig -> LANE")
                 self.allowed_dirs = []     # fuer naechste Kreuzung zuruecksetzen
                 self._transition_to(self.LANE)
 
