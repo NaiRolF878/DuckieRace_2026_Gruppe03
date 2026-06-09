@@ -8,9 +8,8 @@
 # Reihenfolge:
 #   1. detect_lane_node        – Spur + rote Haltelinie (/detect/lane, /detect/stop_line)
 #   2. detect_apriltag_node    – AprilTag-Richtung      (/detect/apriltag/direction, /id)
-#   3. detect_red_lane_node    – Gegenspur beim Abbiegen (/intersection/turn_complete)
-#   4. switch_control_node     – FSM (/enable/lane, /enable/intersection, /intersection/phase)
-#   5. camera_dashboard_node   – Visualisierung
+#   3. switch_control_node     – FSM (/enable/lane, /enable/intersection, /intersection/phase)
+#   4. camera_dashboard_node   – Visualisierung
 #   6. control_lane_node       – PID-Spurfolge (startet nach kurzer Wartezeit)
 #   7. control_intersection_node – Kreuzungssteuerung
 #
@@ -44,9 +43,6 @@ rosrun intersection_handling detect_lane_node.py &
 pids+=($!)
 
 rosrun intersection_handling detect_apriltag_node.py &
-pids+=($!)
-
-rosrun intersection_handling detect_red_lane_node.py &
 pids+=($!)
 
 # ── FSM + Visualisierung ─────────────────────────────────────────────────────
