@@ -178,6 +178,7 @@ class ConfigurationNode:
     def save_parameters(self):
         # Aktuelle Parameter in die JSON-Datei zurückschreiben.
 
+        #   Neue Struktur: config['parameters'] = { "default": {...}, "dorette": {...}, ... }
         #     → nur den bot-spezifischen Block aktualisieren
         #     → default und andere Bots bleiben unverändert
         node_name    = self.selected_node.get()
