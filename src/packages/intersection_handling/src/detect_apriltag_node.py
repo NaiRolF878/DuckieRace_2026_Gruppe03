@@ -62,6 +62,7 @@ class DetectApriltagNode:
         self._mem_tag_id         = -1
         self._mem_direction      = "unknown"
         self._mem_time           = None
+        self._chosen_direction   = "-"   # von der FSM gewuerfelte Abbiegerichtung
         # Filter-/Memory-Defaults (werden aus JSON überschrieben)
         self.stability_required  = 3
         self.pos_filter_enabled  = True
@@ -93,6 +94,10 @@ class DetectApriltagNode:
         self._camera_topic = f"/{self._vehicle_name}/camera_node/image/compressed"
         self.sub_image = rospy.Subscriber(
             self._camera_topic, CompressedImage, self.cbImage, queue_size=1)
+        # Gewuerfelte Abbiegerichtung von der FSM (nur fuer die Debug-Anzeige)
+        self.sub_chosen = rospy.Subscriber(
+            f'/{self._vehicle_name}/intersection/direction', String,
+            self.cbChosenDirection, queue_size=1)
 
         # ── Publisher ─────────────────────────────────────────────────────────
         self.pub_direction = rospy.Publisher(
@@ -133,6 +138,10 @@ class DetectApriltagNode:
         m = parameters["tag_memory"]
         self.tag_memory_seconds  = m["seconds"]["default"]
         self.tag_memory_min_area = m["min_area"]["default"]
+
+    def cbChosenDirection(self, msg):
+        # Von der FSM gewuerfelte Abbiegerichtung (nur Anzeige)
+        self._chosen_direction = msg.data if msg.data else "-"
 
     # ── Tag-Hilfsfunktionen ────────────────────────────────────────────────────
 
@@ -248,7 +257,7 @@ class DetectApriltagNode:
             self.pub_tag_dash.publish(Int32(data=out_id))
 
             # ── Debug-Legende ─────────────────────────────────────────────────
-            cv2.rectangle(debug_img, (0, 0), (470, 130), (0, 0, 0), -1)
+            cv2.rectangle(debug_img, (0, 0), (470, 160), (0, 0, 0), -1)
             cv2.putText(debug_img, f"Tag ID: {out_id if out_id != -1 else 'None'}",
                         (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             cv2.putText(debug_img, f"Erlaubt: {out_dir.replace(',', ', ') if out_id != -1 else '-'}",
@@ -259,11 +268,17 @@ class DetectApriltagNode:
                         (0, 255, 0) if mem_valid else (120, 120, 120), 1)
             cv2.putText(debug_img, f"Quelle: {'live' if detected else ('Gedaechtnis' if mem_valid else '-')}",
                         (10, 116), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+            # Gewuerfelte Abbiegerichtung – gruen wenn sie zu den erlaubten passt
+            allowed_list = out_dir.split(",") if out_id != -1 else []
+            chosen_ok = self._chosen_direction in allowed_list
+            chosen_col = (0, 255, 0) if chosen_ok else (0, 165, 255)
+            cv2.putText(debug_img, f"FAHRE: {self._chosen_direction.upper()}",
+                        (10, 146), cv2.FONT_HERSHEY_SIMPLEX, 0.6, chosen_col, 2)
             self.debug_img = debug_img
 
-            # Lokale Debug-Ansicht – bei Bedarf einkommentieren:
-            # cv2.imshow("AprilTag", debug_img)
-            # cv2.waitKey(1)
+            # Lokale Debug-Ansicht – zum Abschalten die 2 Zeilen auskommentieren:
+            cv2.imshow("AprilTag", debug_img)
+            cv2.waitKey(1)
         except Exception as e:
             rospy.logerr(f"[detect_apriltag] Fehler: {e}")
         finally:
