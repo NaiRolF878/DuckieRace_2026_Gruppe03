@@ -7,14 +7,14 @@
 #
 #   Approaching – geradeaus ueber die Haltelinie
 #   Turning     – abbiegen (omega je Richtung); Ende bestimmt switch_control_node
-#   Handover    – sanft mit P-Regler zurueck in die Spur
+#   Turning     – abbiegen (omega je Richtung); danach direkt zurueck zu Lane
 #
 # Publiziert car_cmd_switch_node/cmd.
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
 import rospy
-from std_msgs.msg import Bool, String, Float64
+from std_msgs.msg import Bool, String
 from duckietown_msgs.msg import Twist2DStamped
 import util
 
@@ -28,14 +28,11 @@ class ControlIntersectionNode:
         self.enable     = False
         self.phase      = "Lane"
         self.direction  = "straight"
-        self.lane_error = 0.0
         # Param-Defaults
         self.app_speed     = 0.3
         self.turn_speed    = 0.2
         self.turn_omega    = 4.0
         self.straight_speed = 0.3
-        self.handover_speed = 0.3
-        self.handover_kp    = 3.0
 
         util.init_parameters(node_name, self.cbUpdateParameters)
 
@@ -46,8 +43,6 @@ class ControlIntersectionNode:
                          String, self.cbPhase, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/intersection/direction',
                          String, self.cbDirection, queue_size=1)
-        rospy.Subscriber(f'/{self._vehicle_name}/detect/lane',
-                         Float64, self.cbLane, queue_size=1)
 
         # ── Publisher ─────────────────────────────────────────────────────────
         self.pub_cmd = rospy.Publisher(
@@ -65,9 +60,6 @@ class ControlIntersectionNode:
         self.turn_speed     = t["speed"]["default"]
         self.turn_omega     = t["omega"]["default"]
         self.straight_speed = t["straight_speed"]["default"]
-        h = parameters["handover"]
-        self.handover_speed = h["speed"]["default"]
-        self.handover_kp    = h["kp"]["default"]
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
@@ -80,14 +72,19 @@ class ControlIntersectionNode:
     def cbDirection(self, msg):
         self.direction = msg.data
 
-    def cbLane(self, msg):
-        self.lane_error = msg.data
-
     # ── Phasen-Steuerung ────────────────────────────────────────────────────────
 
     def _compute_cmd(self):
         v, omega = 0.0, 0.0
-        if self.phase == "Approaching":
+        if self.phase == "Stopping":
+            # An der Haltelinie stehen bleiben
+            v, omega = 0.0, 0.0
+
+        elif self.phase == "PreTurnPause":
+            # Debug-Pause vor dem Drehen: stehen bleiben
+            v, omega = 0.0, 0.0
+
+        elif self.phase == "Approaching":
             v, omega = self.app_speed, 0.0
 
         elif self.phase == "Turning":
@@ -97,10 +94,6 @@ class ControlIntersectionNode:
                 v, omega = self.turn_speed, -self.turn_omega
             else:  # straight
                 v, omega = self.straight_speed, 0.0
-
-        elif self.phase == "Handover":
-            # sanft in die Spur einlenken (P-Regler auf lane_error)
-            v, omega = self.handover_speed, self.handover_kp * self.lane_error
 
         return v, omega
 
