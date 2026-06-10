@@ -5,11 +5,8 @@
 # Faehrt die Kreuzung. Aktiv nur wenn /enable/intersection == True.
 # Die Phase kommt von switch_control_node ueber /intersection/phase:
 #
-#   Approaching – geradeaus ueber die Haltelinie
-#   Turning     – abbiegen (omega je Richtung); Ende bestimmt switch_control_node
-#   Turning     – abbiegen (omega je Richtung); danach direkt zurueck zu Lane
-#
-# Publiziert car_cmd_switch_node/cmd.
+#   Stopping    – stehen bleiben (v=0)
+#   Turning     – Abbiege-SEQUENZ abfahren
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
@@ -24,19 +21,18 @@ class ControlIntersectionNode:
         rospy.init_node(node_name)
         self._vehicle_name = os.environ['VEHICLE_NAME']
 
-        # ── Defaults VOR init_parameters ──────────────────────────────────────
         self.enable     = False
         self.phase      = "Lane"
         self.direction  = "straight"
-        # Param-Defaults
-        self.app_speed     = 0.3
-        self.turn_speed    = 0.2
-        self.turn_omega    = 4.0
-        self.straight_speed = 0.3
+        self.turn_segments = {"left": [], "right": [], "straight": []}
+
+        self._turn_active     = False
+        self._turn_start      = None
+        self._last_phase      = "Lane"
+        self._turn_done_sent  = False
 
         util.init_parameters(node_name, self.cbUpdateParameters)
 
-        # ── Subscriber ────────────────────────────────────────────────────────
         rospy.Subscriber(f'/{self._vehicle_name}/enable/intersection',
                          Bool, self.cbEnable, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/intersection/phase',
@@ -44,24 +40,21 @@ class ControlIntersectionNode:
         rospy.Subscriber(f'/{self._vehicle_name}/intersection/direction',
                          String, self.cbDirection, queue_size=1)
 
-        # ── Publisher ─────────────────────────────────────────────────────────
         self.pub_cmd = rospy.Publisher(
             f'/{self._vehicle_name}/car_cmd_switch_node/cmd', Twist2DStamped, queue_size=1)
+        self.pub_turn_done = rospy.Publisher(
+            f'/{self._vehicle_name}/intersection/turn_done', Bool, queue_size=1)
 
         rospy.on_shutdown(self.fnShutDown)
         rospy.loginfo(f"[{node_name}] Bereit.")
 
-    # ── Parameter ─────────────────────────────────────────────────────────────
-
     def cbUpdateParameters(self, parameters):
-        a = parameters["approaching"]
-        self.app_speed = a["speed"]["default"]
-        t = parameters["turning"]
-        self.turn_speed     = t["speed"]["default"]
-        self.turn_omega     = t["omega"]["default"]
-        self.straight_speed = t["straight_speed"]["default"]
-
-    # ── Callbacks ─────────────────────────────────────────────────────────────
+        seg = parameters.get("turn_segments", {})
+        for d in ("left", "right", "straight"):
+            self.turn_segments[d] = [
+                (float(s["v"]), float(s["omega"]), float(s["duration"]))
+                for s in seg.get(d, [])
+            ]
 
     def cbEnable(self, msg):
         self.enable = msg.data
@@ -72,38 +65,24 @@ class ControlIntersectionNode:
     def cbDirection(self, msg):
         self.direction = msg.data
 
-    # ── Phasen-Steuerung ────────────────────────────────────────────────────────
+    def _segment_cmd(self):
+        segments = self.turn_segments.get(self.direction, [])
+        if not segments:
+            return 0.0, 0.0, True
+        elapsed = (rospy.Time.now() - self._turn_start).to_sec()
+        acc = 0.0
+        for v, omega, dur in segments:
+            acc += dur
+            if elapsed < acc:
+                return v, omega, False
+        return 0.0, 0.0, True
 
     def _compute_cmd(self):
-        v, omega = 0.0, 0.0
-        if self.phase == "Stopping":
-            # An der Haltelinie stehen bleiben
-            v, omega = 0.0, 0.0
-
-        elif self.phase == "PreTurnPause":
-            # Debug-Pause vor dem Drehen: stehen bleiben
-            v, omega = 0.0, 0.0
-
-        elif self.phase == "PostTurnPause":
-            # Debug-Pause nach dem Drehen: stehen bleiben
-            v, omega = 0.0, 0.0
-
-        elif self.phase == "Approaching":
-            v, omega = self.app_speed, 0.0
-
-        elif self.phase == "ExitStraight":
-            # Nach dem Drehen geradeaus, bis die FSM zu Lane schaltet
-            v, omega = self.straight_speed, 0.0
-
-        elif self.phase == "Turning":
-            if self.direction == "left":
-                v, omega = self.turn_speed, +self.turn_omega
-            elif self.direction == "right":
-                v, omega = self.turn_speed, -self.turn_omega
-            else:  # straight
-                v, omega = self.straight_speed, 0.0
-
-        return v, omega
+        if self.phase == "Turning":
+            v, omega, done = self._segment_cmd()
+            return v, omega, done
+        # Stopping oder Lane -> Motor aus
+        return 0.0, 0.0, False
 
     def fnShutDown(self):
         self.pub_cmd.publish(Twist2DStamped(v=0.0, omega=0.0))
@@ -111,13 +90,24 @@ class ControlIntersectionNode:
     def run(self):
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
+            if self.phase == "Turning" and self._last_phase != "Turning":
+                self._turn_start = rospy.Time.now()
+                self._turn_done_sent = False
+                rospy.loginfo(f"[control_intersection] Starte Sequenz: {self.direction}")
+            self._last_phase = self.phase
+
             if self.enable:
-                v, omega = self._compute_cmd()
+                v, omega, done = self._compute_cmd()
                 twist = Twist2DStamped()
                 twist.header.stamp = rospy.Time.now()
                 twist.v     = v
                 twist.omega = omega
                 self.pub_cmd.publish(twist)
+                
+                if self.phase == "Turning" and done and not self._turn_done_sent:
+                    self.pub_turn_done.publish(Bool(data=True))
+                    self._turn_done_sent = True
+                    rospy.loginfo("[control_intersection] Sequenz fertig -> turn_done")
             rate.sleep()
 
 
