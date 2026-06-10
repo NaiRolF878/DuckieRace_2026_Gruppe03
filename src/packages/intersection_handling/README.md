@@ -5,7 +5,8 @@
 Der Duckiebot folgt der Spur (wie Challenge 1), erkennt an Kreuzungen die **rote
 Haltelinie** und das zugehörige **AprilTag**, hält an, wählt zufällig eine der
 vom Tag erlaubten Richtungen und biegt ab. Ein zentraler Zustandsautomat (FSM)
-steuert den gesamten Kreuzungs-Ablauf.
+steuert den gesamten Kreuzungs-Ablauf. Das Abbiegen ist **zeitgesteuert**
+(feste Zeiten pro Richtung).
 
 ---
 
@@ -14,7 +15,7 @@ steuert den gesamten Kreuzungs-Ablauf.
 - [Dateien](#dateien)
 - [Grundidee](#grundidee)
 - [Systemüberblick](#systemüberblick)
-- [Die vier Phasen](#die-vier-phasen)
+- [Die Phasen](#die-phasen)
 - [Nodes](#nodes)
 - [Topics](#topics)
 - [Konfigurationsparameter](#konfigurationsparameter)
@@ -22,7 +23,7 @@ steuert den gesamten Kreuzungs-Ablauf.
 - [Tag-Mapping](#tag-mapping)
 - [Setup & Starten](#setup--starten)
 - [Kalibrierung](#kalibrierung)
-- [Umschaltbare Varianten](#umschaltbare-varianten)
+- [Mögliche Optimierungen](#mögliche-optimierungen)
 - [Bekannte Probleme & Lösungen](#bekannte-probleme--lösungen)
 
 ---
@@ -33,12 +34,11 @@ steuert den gesamten Kreuzungs-Ablauf.
 |---|---|---|
 | `detect_lane_node.py` | Node | Spurerkennung (CLAHE, Frame-Tracking) + rote Haltelinie (Bird's-Eye) |
 | `detect_apriltag_node.py` | Node | AprilTag-Erkennung, Tag-Gedächtnis, Positionsfilter |
-| `detect_red_lane_node.py` | Node | Gegenspur-Linie beim Abbiegen (Abbruchkriterium Turning) |
 | `switch_control_node.py` | Node | **FSM** – trifft alle Entscheidungen, schaltet Steuerungs-Nodes |
-| `control_lane_node.py` | Node | PID-Spurregler (reiner PID, kein StopState) |
-| `control_intersection_node.py` | Node | Fährt die Kreuzung (Approaching / Turning / Handover) |
+| `control_lane_node.py` | Node | PID-Spurregler (reiner PID) |
+| `control_intersection_node.py` | Node | Fährt die Kreuzung (Stopping / Approaching / Turning / ExitStraight) |
 | `configuration_node.py` | Node | Live-Kalibrierungs-GUI mit JSON-Persistenz |
-| `camera_dashboard_node.py` | Node | Kamera-Dashboard (Debug-Ansicht) |
+| `camera_dashboard_node.py` | Node | Kamera-Dashboard (Debug-Ansicht, zeigt Phase + Richtung) |
 | `util.py` | Hilfsfunktionen | Parameter laden, default+Bot mergen, live updaten |
 | `*.json` | Config | je Node ein HSV-/Parameter-Satz (default + bot-spezifisch) |
 
@@ -54,6 +54,7 @@ steuert den gesamten Kreuzungs-Ablauf.
 
 Beide Signale sind bewusst getrennt und werden erst in der FSM kombiniert. Eine
 Kreuzung wird nur ausgelöst, wenn rote Linie **und** Tag-Richtung vorliegen.
+Eine rote Linie ohne Tag wird ignoriert (Bot fährt weiter) – sicheres Default.
 
 ---
 
@@ -62,27 +63,27 @@ Kreuzung wird nur ausgelöst, wenn rote Linie **und** Tag-Richtung vorliegen.
 ```
                           Kamera
             (/camera_node/image/compressed)
-                            │
-        ┌───────────────────┼────────────────────────┐
-        ▼                   ▼                         ▼
-  detect_lane         detect_apriltag         detect_red_lane
-   │     │                  │                         │
- lane  stop_line     direction / id            turn_complete
-   │     │                  │                         │
-   │     └────────┐         │                         │
-   ▼              ▼         ▼                          ▼
-   │        ┌──────────────────────────────────────────┐
-   │        │           switch_control  (FSM)           │  ◄── Entscheidungen
-   │        │   Kreuzung? · Richtung würfeln · Phase    │
-   │        └──────────────────────────────────────────┘
-   │           │ enable/lane     │ enable/intersection
-   │           │                 │ phase · direction
-   ▼           ▼                 ▼
-control_lane              control_intersection
-   │                            │
-   └─────────────┬──────────────┘
-                 ▼
-       /car_cmd_switch_node/cmd  →  Motoren
+                            |
+            +---------------+---------------+
+            v                               v
+      detect_lane                     detect_apriltag
+       |     |                              |
+     lane  stop_line               direction / id
+       |     |                              |
+       |     +----------+          +--------+
+       v                v          v
+       |        +------------------------------------------+
+       |        |           switch_control  (FSM)          |  <-- Entscheidungen
+       |        |   Kreuzung? . Richtung wuerfeln . Phase  |
+       |        +------------------------------------------+
+       |           | enable/lane     | enable/intersection
+       |           |                 | phase . direction
+       v           v                 v
+   control_lane              control_intersection
+       |                            |
+       +-------------+--------------+
+                     v
+           /car_cmd_switch_node/cmd  ->  Motoren
 ```
 
 Strikte Trennung: **Wahrnehmungs-Nodes** erkennen nur und liefern Signale.
@@ -90,14 +91,30 @@ Strikte Trennung: **Wahrnehmungs-Nodes** erkennen nur und liefern Signale.
 
 ---
 
-## Die vier Phasen
+## Die Phasen
+
+Der Bot durchläuft an einer Kreuzung diese Phasen. Immer genau eine ist aktiv.
 
 | Phase | Was passiert | Aktive Steuerung |
 |---|---|---|
 | **Lane** | Normales Spurfolgen, wartet auf Kreuzung | control_lane |
+| **Stopping** | An der Haltelinie anhalten (v=0) für `stop_duration` | control_intersection |
 | **Approaching** | Geradeaus über die Haltelinie fahren | control_intersection |
-| **Turning** | In gewählte Richtung abbiegen | control_intersection |
-| **Handover** | Sanft zurück in die Spur, bis stabil → Lane | control_intersection |
+| **(PreTurnPause)** | *Debug:* vor dem Drehen anhalten (`pre_turn_pause` > 0) | control_intersection |
+| **Turning** | Zeitgesteuert abbiegen (feste Zeit pro Richtung) | control_intersection |
+| **(PostTurnPause)** | *Debug:* nach dem Drehen anhalten (`pre_turn_pause` > 0) | control_intersection |
+| **ExitStraight** | Geradeaus aus der Kreuzung fahren (feste Zeit pro Richtung), bis die Spur wieder im Bild ist | control_intersection |
+| -> **Lane** | Übergabe an den PID-Spurregler | control_lane |
+
+**Warum ExitStraight?** Nach einer weiten Linkskurve liegt erst die schwarze
+Kreuzungsfläche im Kamerabild – der PID hätte keine Spur zum Einregeln. Die
+ExitStraight-Phase fährt darum nach dem Drehen noch eine feste Strecke geradeaus
+(länger bei links, kurz bei rechts), bis die Spur sicher sichtbar ist, und
+übergibt erst dann an control_lane.
+
+**Debug-Pausen:** PreTurnPause und PostTurnPause werden beide über denselben
+Parameter `pre_turn_pause` gesteuert. Für den Wettkampf auf `0` setzen → beide
+Pausen werden übersprungen, der Ablauf läuft flüssig durch.
 
 ---
 
@@ -105,7 +122,7 @@ Strikte Trennung: **Wahrnehmungs-Nodes** erkennen nur und liefern Signale.
 
 ### detect_lane_node
 Bird's-Eye-View, CLAHE-Helligkeitsausgleich, Frame-Tracking gegen
-Linien-Sprünge. Erkennt gelbe + weiße Spurlinie (→ Spurversatz) und die rote
+Linien-Sprünge. Erkennt gelbe + weiße Spurlinie (-> Spurversatz) und die rote
 Haltelinie im unteren Bildbereich.
 **Publiziert:** `/detect/lane` (Float64), `/detect/stop_line` (Bool)
 
@@ -113,77 +130,69 @@ Haltelinie im unteren Bildbereich.
 Erkennt AprilTags (Familie *tagStandard52h13*, IDs 1–4) im Originalbild.
 **Tag-Gedächtnis:** ein naher Tag wird einige Sekunden gemerkt (Tag und rote
 Linie sind selten gleichzeitig sichtbar). **Positionsfilter:** nur rechte
-Bildhälfte (Rechtsverkehr). **Stabilitätsfilter:** ID muss mehrere Frames stabil
-sein.
+Bildhälfte. Das Debug-Fenster zeigt die erkannte ID, die erlaubten Richtungen
+und die gewählte Fahrtrichtung ("FAHRE: ...", grün wenn sie zu den erlaubten passt).
 **Publiziert:** `/detect/apriltag/direction` (String), `/detect/apriltag/id` (Int32)
-
-### detect_red_lane_node
-Abbruchkriterium für die Turning-Phase. Sucht die Gegenspur-/Querlinie im
-Originalbild **nur in der erwarteten Region** (links-drehen → rechts suchen,
-rechts-drehen → links). Nimmt die größte zusammenhängende rote Fläche und meldet
-"fertig" erst nach dem Prinzip *erst leer sehen, dann Wiederauftauchen* – robust
-gegen die mehreren roten Linien an einer Kreuzung.
-**Publiziert:** `/intersection/turn_complete` (Bool)
 
 ### switch_control_node — die FSM (Entscheidungsebene)
 Einzige Node mit Zustandslogik.
 - **Kreuzungs-Erkennung:** rote Linie **und** bekannte Tag-Richtung im
-  Lane-Zustand → Kreuzung. Rote Linie ohne Tag → ignoriert (Bot fährt weiter).
+  Lane-Zustand -> Kreuzung. Rote Linie ohne Tag -> ignoriert.
 - **Richtungswahl:** beim Eintritt einmalig zufällig aus den erlaubten Richtungen.
-- **Phasensteuerung:** Lane → Approaching → Turning → Handover → Lane.
+- **Phasensteuerung:** Lane -> Stopping -> Approaching -> Turning -> ExitStraight -> Lane
+  (Abbiegen und Ausfahren zeitgesteuert pro Richtung).
 - **Aktiviert/deaktiviert** control_lane und control_intersection.
 **Publiziert:** `/enable/lane` (Bool), `/enable/intersection` (Bool),
 `/intersection/phase` (String), `/intersection/direction` (String)
 
 ### control_lane_node
-Reiner PID-Spurregler (Anti-Windup, MIN_VEL). **Kein** StopState mehr – an der
-Kreuzung übernimmt die FSM. Aktiv nur bei `/enable/lane == True`.
+Reiner PID-Spurregler (Anti-Windup, MIN_VEL). Aktiv nur bei `/enable/lane == True`.
 **Publiziert:** `/car_cmd_switch_node/cmd` (Twist2DStamped)
 
 ### control_intersection_node
-Fährt die Kreuzung je nach Phase: Approaching = geradeaus, Turning = drehen
-(Richtung je nach Wahl), Handover = sanfter P-Regler zurück in die Spur. Aktiv
-nur bei `/enable/intersection == True`.
+Fährt die Kreuzung je nach Phase: Stopping/PreTurnPause/PostTurnPause = stehen,
+Approaching = geradeaus, Turning = drehen (omega je Richtung),
+ExitStraight = geradeaus aus der Kreuzung. Aktiv nur bei `/enable/intersection == True`.
 **Publiziert:** `/car_cmd_switch_node/cmd` (Twist2DStamped)
 
 ### configuration_node / camera_dashboard_node
 Live-Kalibrierung (Schieberegler, schreibt in die JSONs) bzw.
-Debug-Visualisierung. Greifen nicht ins Fahren ein.
+Debug-Visualisierung. Das Dashboard zeigt zusätzlich die aktuelle Phase und die
+gewählte Abbiegerichtung. Greifen nicht ins Fahren ein.
 
 ---
 
 ## Topics
 
-| Topic | Typ | Von → Nach |
+| Topic | Typ | Von -> Nach |
 |---|---|---|
-| `/detect/lane` | Float64 | detect_lane → control_lane, control_intersection, FSM |
-| `/detect/stop_line` | Bool | detect_lane → FSM |
-| `/detect/apriltag/direction` | String | detect_apriltag → FSM |
-| `/detect/apriltag/id` | Int32 | detect_apriltag → (Dashboard) |
-| `/intersection/turn_complete` | Bool | detect_red_lane → FSM |
-| `/intersection/phase` | String | FSM → control_intersection, detect_red_lane |
-| `/intersection/direction` | String | FSM → control_intersection, detect_red_lane |
-| `/enable/lane` | Bool | FSM → control_lane |
-| `/enable/intersection` | Bool | FSM → control_intersection |
-| `/car_cmd_switch_node/cmd` | Twist2DStamped | control_lane / control_intersection → Motoren |
+| `/detect/lane` | Float64 | detect_lane -> control_lane |
+| `/detect/stop_line` | Bool | detect_lane -> FSM |
+| `/detect/apriltag/direction` | String | detect_apriltag -> FSM |
+| `/detect/apriltag/id` | Int32 | detect_apriltag -> (Dashboard) |
+| `/intersection/phase` | String | FSM -> control_intersection, Dashboard |
+| `/intersection/direction` | String | FSM -> control_intersection, detect_apriltag, Dashboard |
+| `/enable/lane` | Bool | FSM -> control_lane |
+| `/enable/intersection` | Bool | FSM -> control_intersection |
+| `/car_cmd_switch_node/cmd` | Twist2DStamped | control_lane / control_intersection -> Motoren |
 
 ---
 
 ## Konfigurationsparameter
 
-Jede Node hat eine `<node>.json` mit `default`-Werten (und optional
-bot-spezifischen Overrides). Die wichtigsten:
-
 | Node | Gruppe | Zweck |
 |---|---|---|
 | detect_lane | `yellow`/`white`/`red` | HSV-Schwellen der Linien; `crop_image` = Bird's-Eye-Eckpunkte |
-| detect_apriltag | `tag_memory` | Gedächtnis-Dauer + Mindestfläche eines „nahen" Tags |
-| detect_apriltag | `tag_filter` | Stabilitäts-Frames, Positionsfilter (rechte Hälfte), Mindestgröße |
-| detect_red_lane | `region` | Schwelle + Regionsgrenzen (`split_lo`/`split_hi`) für die Suche |
-| switch_control | `timing` | Phasen-Dauern und Timeouts |
-| switch_control | `turn_time` | Drehzeiten pro Richtung (nur zeitgesteuerte Variante) |
-| switch_control | `handover` | Wann gilt die Spur als wieder stabil? |
-| control_intersection | `approaching`/`turning`/`handover` | Geschwindigkeiten + Drehrate |
+| detect_lane | `red.detection_zone` | wie weit vorn die rote Linie gesucht wird (kleiner = früher) |
+| detect_apriltag | `tag_memory` | Gedächtnis-Dauer + Mindestfläche eines "nahen" Tags |
+| detect_apriltag | `tag_filter` | Stabilitäts-Frames, Positionsfilter, Mindestgröße |
+| switch_control | `timing.stop_duration` | Haltezeit an der roten Linie |
+| switch_control | `timing.pre_turn_pause` | Debug-Pausen vor + nach dem Drehen (0 = aus) |
+| switch_control | `timing.approaching_timeout` | Sicherheits-Timeout fürs Approaching |
+| switch_control | `approach_min_time` | Fahrzeit in die Kreuzung vor dem Drehen, je Richtung (links länger) |
+| switch_control | `turn_time` | Drehzeit je Richtung (links/rechts/straight) |
+| switch_control | `exit_time` | Geradeaus-Zeit nach dem Drehen je Richtung (links länger) |
+| control_intersection | `approaching`/`turning` | Geschwindigkeiten + Drehrate |
 | control_lane | `pid` | PID-Werte, MIN/MAX_VEL |
 
 ---
@@ -194,13 +203,17 @@ bot-spezifischen Overrides). Die wichtigsten:
 mit einem bot-spezifischen Block, falls vorhanden:
 
 ```
-parameters.default            → gilt für alle Bots
-parameters.<vehicle_name>     → Overrides für diesen Bot (z.B. HSV-Kalibrierung)
+parameters.default            -> gilt für alle Bots
+parameters.<vehicle_name>     -> Overrides für diesen Bot (z.B. HSV, Timings)
 ```
 
-Beim Start wird gemeldet, ob ein bot-spezifischer Block geladen wurde oder
-default verwendet wird. **Hinweis:** Die neuen Intersection-Nodes haben nur
-`default` – die Meldung „verwende default" ist dort normal und korrekt.
+`detect_lane` und `control_lane` haben die Bot-Struktur (echte Kalibrierung pro
+Bot). `control_intersection` ist flach (für alle Bots gleich). Bei flacher
+Struktur meldet util "verwende default" – das ist dort normal.
+
+**Wichtig:** Der `configuration_node` schreibt die JSON beim Speichern neu. Hat
+sie einen `default`-Block, legt er einen Block mit dem aktuellen Bot-Namen an;
+ist sie flach (kein `default`), bleibt sie flach.
 
 ---
 
@@ -220,11 +233,11 @@ Anpassbar in `config/detect_apriltag_node.json` unter `tag_directions`.
 ## Setup & Starten
 
 ```bash
-# ROS-Umgebung + Bot setzen (Beispiel: donald)
+# ROS-Umgebung + Bot setzen (Beispiel: track)
 source /opt/ros/noetic/setup.bash
 source devel/setup.bash
-export ROS_MASTER_URI=http://donald.local:11311
-export VEHICLE_NAME=donald
+export ROS_MASTER_URI=http://track.local:11311
+export VEHICLE_NAME=track
 
 # Alles über den Launcher starten (empfohlen):
 launchers/intersection_handling.sh
@@ -232,7 +245,6 @@ launchers/intersection_handling.sh
 # Oder einzeln (je ein Terminal):
 rosrun intersection_handling detect_lane_node.py
 rosrun intersection_handling detect_apriltag_node.py
-rosrun intersection_handling detect_red_lane_node.py
 rosrun intersection_handling switch_control_node.py
 rosrun intersection_handling control_lane_node.py
 rosrun intersection_handling control_intersection_node.py
@@ -250,72 +262,49 @@ export ROS_IP=$(ip route get <BOT-IP> | grep -oP 'src \K[0-9.]+')
 
 ## Kalibrierung
 
-1. `configuration_node` + `camera_dashboard_node` starten.
-2. **Spurfarben:** Gelb-Maske (`/debug/lane_yellow`) und Weiß-Maske
-   (`/debug/lane_white`) beobachten, HSV-Schieberegler so einstellen, dass die
-   jeweilige Linie sauber erkannt wird und die andere nicht mitkommt.
-3. **Rote Linie:** Rot-Maske (`/debug/lane_red`) prüfen, `pixel_threshold` und
-   `detection_zone` einstellen.
-4. **AprilTag:** Im AprilTag-Debug-Bild ID + Fläche prüfen; `tag_memory.min_area`
-   so wählen, dass ein „naher" Tag zuverlässig gemerkt wird.
-5. **Abbiegen:** Im Red-Lane-Debug die roten Pixel links/rechts beobachten und
-   `region.threshold` einstellen.
-
-Werte werden über den `configuration_node` in die jeweilige JSON persistiert.
-
----
-
-## Umschaltbare Varianten
-
-In `switch_control_node.py` (`_update_state`) per Kommentar umschaltbar:
-
-- **Approaching-Ende:** distanzbasiert (Standard) ↔ zeitgesteuert
-- **Turning-Ende:** regionsbasiert via detect_red_lane (Standard) ↔ zeitgesteuert
-  (feste Drehzeit pro Richtung aus `turn_time`)
-
-So lässt sich am Prüfungstag in Sekunden auf die robustere Variante wechseln.
+1. `configuration_node` + `camera_dashboard_node` (oder die imshow-Fenster) starten.
+2. **Spurfarben:** Gelb-/Weiß-Maske beobachten, HSV so einstellen, dass die Linie
+   sauber erkannt wird. Blasses Klebeband: `yellow.sl` runter, `white.sh` runter.
+3. **Rote Linie:** Rot-Maske prüfen, `pixel_threshold` + `detection_zone` einstellen.
+4. **AprilTag:** Im AprilTag-Fenster ID + Fläche prüfen; `tag_memory.min_area` so,
+   dass ein naher Tag zuverlässig gemerkt wird.
+5. **Abbiegen (zeitgesteuert):** `pre_turn_pause` hochsetzen, um nach dem Drehen
+   die Position zu sehen. `turn_time` je Richtung einstellen, bis der Bot korrekt
+   in der Zielspur landet. Dann `exit_time` je Richtung so, dass der Bot nach dem
+   Drehen weit genug geradeaus fährt, bis die Spur im Bild ist (links länger).
+   Zum Schluss `pre_turn_pause` = 0 für den flüssigen Lauf.
 
 ---
 
-## Parameter
-**switch_control_node.json — alle Parameter**
-**timing:**
+## Mögliche Optimierungen
 
-- **stop_duration** — wie lange der Bot an der roten Haltelinie steht (Phase Stopping)
-  pre_turn_pause — Debug-Pause vor dem Drehen; 0 = aus
-- **approaching_timeout** — Sicherheitsnetz: nach so vielen Sekunden geht Approaching zwangsweise weiter,     falls die Linie nie „verschwindet"
-- **approaching_duration** — nur relevant für die zeitgesteuerte Approaching-Variante B (aktuell auskommentiert)
-- **turning_timeout** — Sicherheitsnetz fürs Drehen: nach so vielen Sekunden endet Turning zwangsweise, falls Node B nie „fertig" meldet
-- **handover_timeout** — Sicherheitsnetz fürs Einscheren
+Der aktuelle Ablauf ist bewusst **zeitgesteuert** (robust, einfach zu
+kalibrieren). Für mehr Präzision und Unabhängigkeit von festen Zeiten gibt es
+drei sinnvolle Ausbaustufen:
 
-**approach_min_time** (richtungsabhängig — das, was wir getrennt haben):
+1. **Turning mit Abbruchkriterium statt fester Zeit.**
+   Statt `turn_time` ablaufen zu lassen, die Drehung beenden, sobald ein
+   sichtbares Kriterium erfüllt ist – z.B. die **rote Linie der Gegenspur** im
+   erwarteten Bildbereich (bei Linksdrehung im linken unteren Bereich, bei
+   Rechtsdrehung im rechten). Vorteil: unabhängig von Drehgeschwindigkeit,
+   Akkustand und Reibung. Erfordert eine zusätzliche Erkennung (eine eigene
+   Node oder eine Region in detect_lane), die nur in der Turning-Phase aktiv ist.
 
-- **left** — wie weit der Bot nach dem Verschwinden der Linie noch geradeaus fährt, bevor er links dreht. Größer = weiter in die Kreuzung. Gegen „dreht zu früh nach links".
-- **right** — dasselbe für rechts. Kleiner, weil engere Kurve.
-- **straight** — Mindest-Fahrzeit bei Geradeausfahrt.
+2. **ExitStraight mit Abbruchkriterium statt fester Zeit.**
+   Statt `exit_time` ablaufen zu lassen, geradeaus fahren, **bis die Lane
+   Detection wieder eine gültige Spur meldet**, und erst dann an den PID
+   übergeben. Vorteil: passt sich automatisch an unterschiedliche
+   Kreuzungsgrößen und Anfahrwinkel an. Voraussetzung: detect_lane muss ein
+   verlässliches "Spur gefunden / nicht gefunden"-Signal liefern (kein
+   Fallback-Wert, der eine Spur vortäuscht).
 
-turn_time (nur für zeitgesteuerte Turning-Variante B):
-
-left / right / straight — feste Drehdauer pro Richtung. Nur aktiv, wenn ihr die regionsbasierte Variante (Node B) auskommentiert.
-
-**handover:**
-
-**lane_stable_threshold** — wie mittig die Spur sein muss, damit sie als „wieder gefunden" gilt (kleiner = strenger)
-**lane_stable_required** — wie viele Frames in Folge die Spur stabil sein muss, bevor zurück zu Lane geschaltet wird
-
-**detect_apriltag_node.json — alle Parameter**
-**tag_memory:**
-
-**seconds** — wie lange ein gesehener Tag „im Gedächtnis" bleibt, nachdem er aus dem Bild verschwunden ist. Größer = überbrückt längere Lücken zwischen Tag und roter Linie, aber riskiert, einen veralteten Tag zu verwenden.
-**min_area** — wie groß (nah) ein Tag sein muss, damit er ins Gedächtnis aufgenommen wird. Größer = nur sehr nahe Tags zählen (verhindert, dass ein weit entfernter Tag einer anderen Kreuzung gemerkt wird).
-
-**tag_filter:**
-
-stability_frames — wie viele Frames in Folge dieselbe Tag-ID erkannt werden muss, bevor sie als gültig gilt. Größer = robuster gegen Fehlerkennungen, aber träger.
-pos_filter_enabled — 1 = nur Tags in einem bestimmten Bildbereich zählen (Positionsfilter an), 0 = alle Tags.
-pos_x_min / pos_x_max — horizontaler Bereich (0.0 = links, 1.0 = rechts), in dem Tags akzeptiert werden. Default 0.5–1.0 = nur rechte Bildhälfte (Schild steht rechts).
-pos_y_max — bis zu welcher Bildhöhe Tags zählen (0.0 = oben, 1.0 = unten). Filtert z.B. Tags, die zu weit unten/nah sind.
-min_area — Mindestgröße, damit ein Tag überhaupt erkannt wird (kleiner Filter gegen winzige Fehldetektionen). Nicht zu verwechseln mit tag_memory.min_area — dieser hier ist die generelle Erkennungsschwelle, der andere die strengere Schwelle fürs Gedächtnis.
+3. **Ausrichten an der roten Haltelinie (Orthogonalität).**
+   Vor dem Durchfahren den Bot so drehen, dass er **senkrecht zur roten
+   Haltelinie** steht. Aus der Neigung der roten Linie im Kamerabild lässt sich
+   der Schräglagewinkel ableiten; der Bot dreht im Stand, bis die Linie
+   waagerecht erscheint. Vorteil: löst das Problem an der Wurzel – ein schräg
+   angekommener Bot startet trotzdem gerade und fährt sauber durch die Kreuzung,
+   statt über die Linien hinauszufahren. Aufwändigste, aber sauberste Lösung.
 
 ---
 
@@ -323,7 +312,10 @@ min_area — Mindestgröße, damit ein Tag überhaupt erkannt wird (kleiner Filt
 
 | Problem | Ursache | Lösung |
 |---|---|---|
-| `Unable to start XML-RPC server, port 0` | `ROS_IP` falsch / Docker-Bridge / hängender Prozess | richtige `ROS_IP` setzen, alte Prozesse killen, ggf. Neustart |
-| Verzögertes Kamerabild | WLAN-Last (mehrere Nodes ziehen den Stream) | `frame_skip` erhöhen, imshow-Fenster aus, Nodes ggf. auf den Bot verlagern |
-| „verwende default" trotz Bot-Block | Meldung stammt von einer Intersection-Node (hat nur default) | normal, kein Fehler |
-| Bot steht trotz `enable/lane=True` | control_lane nicht gestartet / sendet `v=0` | `rosnode list` prüfen, control_lane einzeln starten und Fehler lesen |
+| `Unable to start XML-RPC server, port 0` | `ROS_IP` falsch / Docker-Bridge / hängender Prozess | richtige `ROS_IP` setzen, `pkill -9 -f node.py`, ggf. Neustart |
+| Verzögertes Dashboard-Bild, imshow aber flüssig | Dashboard baut mehrere Topics über WLAN zusammen; imshow zeichnet lokal im Prozess | normal; fürs Debuggen imshow vertrauen. WLAN-Last senken |
+| "verwende default" trotz Kalibrierung | Meldung stammt von einer Node mit flacher JSON (kein default-Block) | normal, kein Fehler |
+| Gelbe/grüne Linie wird als weiß erkannt | Klebeband zu wenig gesättigt | `yellow.sl` runter, `white.sh` runter; ggf. farbkräftigeres Band |
+| Bot steht trotz `enable/lane=True` | control_lane nicht gestartet / JSON-Parameter fehlt (z.B. min_vel) | `rosnode list` prüfen, control_lane einzeln starten und Fehler lesen |
+| JSON-Fehler `Expecting property name` | Komma-Fehler beim Editieren (trailing comma) | `python3 -m json.tool <datei>` zeigt die Stelle |
+| Bot findet nach Linkskurve die Spur nicht | weite Kurve, nach dem Drehen nur Kreuzungsfläche im Bild | `exit_time.left` erhöhen, bis Spur sicher sichtbar |
