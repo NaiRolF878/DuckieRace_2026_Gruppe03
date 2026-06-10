@@ -84,8 +84,16 @@ class ControlIntersectionNode:
             # Debug-Pause vor dem Drehen: stehen bleiben
             v, omega = 0.0, 0.0
 
+        elif self.phase == "PostTurnPause":
+            # Debug-Pause nach dem Drehen: stehen bleiben
+            v, omega = 0.0, 0.0
+
         elif self.phase == "Approaching":
             v, omega = self.app_speed, 0.0
+
+        elif self.phase == "ExitStraight":
+            # Nach dem Drehen geradeaus, bis die FSM zu Lane schaltet
+            v, omega = self.straight_speed, 0.0
 
         elif self.phase == "Turning":
             if self.direction == "left":
