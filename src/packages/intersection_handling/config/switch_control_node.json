@@ -52,6 +52,23 @@
                     "min": 0.5,
                     "max": 8.0
                 }
+            },
+            "exit_time": {
+                "left": {
+                    "default": 1.5,
+                    "min": 0.0,
+                    "max": 8.0
+                },
+                "right": {
+                    "default": 0.5,
+                    "min": 0.0,
+                    "max": 8.0
+                },
+                "straight": {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 8.0
+                }
             }
         },
         "track": {
@@ -103,6 +120,23 @@
                 "straight": {
                     "default": 2.0,
                     "min": 0.5,
+                    "max": 8.0
+                }
+            },
+            "exit_time": {
+                "left": {
+                    "default": 1.5,
+                    "min": 0.0,
+                    "max": 8.0
+                },
+                "right": {
+                    "default": 0.5,
+                    "min": 0.0,
+                    "max": 8.0
+                },
+                "straight": {
+                    "default": 0.0,
+                    "min": 0.0,
                     "max": 8.0
                 }
             }
