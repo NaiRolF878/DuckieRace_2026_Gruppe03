@@ -9,7 +9,7 @@
 #   Lane        – normales Spurfolgen (control_lane aktiv)
 #   Approaching – ueber die Haltelinie fahren (control_intersection aktiv)
 #   Turning     – abbiegen
-#   Handover    – sanft zurueck in die Spur, bis stabil -> Lane
+#   Exitstraight– fährt einne fixen Zeitwert gerade aus
 #
 # Steuerung der Control-Nodes ueber das enable/<node>-Schema:
 #   /enable/lane          (Bool)   – control_lane aktiv?
@@ -38,6 +38,8 @@ class SwitchControlNode:
     APPROACHING = "Approaching"
     PRETURN     = "PreTurnPause"
     TURNING     = "Turning"
+    POSTTURN    = "PostTurnPause"
+    EXITSTRAIGHT = "ExitStraight"
 
     def __init__(self, node_name):
         rospy.init_node(node_name)
@@ -64,6 +66,10 @@ class SwitchControlNode:
         self.turn_time_left        = 3.0     # zeitgesteuertes Abbiegen
         self.turn_time_right       = 2.0
         self.turn_time_straight    = 2.0
+        # ExitStraight: nach dem Drehen geradeaus, bis Spur wieder da (zeitgesteuert)
+        self.exit_time_left        = 1.5     # links: weite Kurve -> laenger
+        self.exit_time_right       = 0.5     # rechts: Spur schnell wieder da
+        self.exit_time_straight    = 0.0
 
         util.init_parameters(node_name, self.cbUpdateParameters)
 
@@ -100,6 +106,10 @@ class SwitchControlNode:
         self.turn_time_left     = tt["left"]["default"]
         self.turn_time_right    = tt["right"]["default"]
         self.turn_time_straight = tt["straight"]["default"]
+        et = parameters["exit_time"]
+        self.exit_time_left     = et["left"]["default"]
+        self.exit_time_right    = et["right"]["default"]
+        self.exit_time_straight = et["straight"]["default"]
 
     # ── Sensor-Callbacks ──────────────────────────────────────────────────────
 
@@ -181,8 +191,30 @@ class SwitchControlNode:
             elif self.direction == "right":
                 turn_time = self.turn_time_right
             if elapsed >= turn_time:
-                # Direkt zurueck zu Lane: der control_lane-PID faengt die Spur.
-                rospy.loginfo("[switch] Turning fertig -> LANE")
+                # Debug-Pause nach dem Drehen (gleiche pre_turn_pause), sonst direkt ExitStraight
+                if self.pre_turn_pause > 0:
+                    self._transition_to(self.POSTTURN)
+                else:
+                    self._transition_to(self.EXITSTRAIGHT)
+
+        elif self.phase == self.POSTTURN:
+            # Debug-Pause nach dem Drehen: Bot steht, man sieht die Position nach
+            # der Drehung. Wird ueber dieselbe pre_turn_pause gesteuert (0 = aus).
+            if elapsed >= self.pre_turn_pause:
+                rospy.loginfo("[switch] Post-Turn-Pause beendet -> EXITSTRAIGHT")
+                self._transition_to(self.EXITSTRAIGHT)
+
+        elif self.phase == self.EXITSTRAIGHT:
+            # Nach dem Drehen geradeaus weiterfahren, bis die Spur wieder im Bild
+            # ist (zeitgesteuert pro Richtung). Ueberbrueckt die spurlose
+            # Kreuzungsflaeche, besonders bei der weiten Linkskurve.
+            exit_time = self.exit_time_straight
+            if self.direction == "left":
+                exit_time = self.exit_time_left
+            elif self.direction == "right":
+                exit_time = self.exit_time_right
+            if elapsed >= exit_time:
+                rospy.loginfo("[switch] ExitStraight fertig -> LANE")
                 self.allowed_dirs = []     # fuer naechste Kreuzung zuruecksetzen
                 self._transition_to(self.LANE)
 
