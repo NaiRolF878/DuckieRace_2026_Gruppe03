@@ -43,10 +43,11 @@ class DetectLaneNode:
         self.last_yellow_position = None  # Frame-Tracking für gelbe Linie
 
         # Lokales Debug-Fenster (imshow). Nur im Main-Thread (run_debug) genutzt.
-        # Auf True setzen, um beim Kalibrieren am Notebook Live-Fenster zu sehen.
-        # self.show_window = False
+        # True  = beim Kalibrieren am Bildschirm (zusätzlich imshow-Zeilen einkommentieren)
         self.show_window = True
-
+        # False = immer im Fahrbetrieb/Challenge (Debug-Bilder laufen via /debug-Topics weiter)
+        # self.show_window = False
+        
         # Platzhalter für Debug-Variablen
         # → verhindert AttributeError, falls run_debug vor dem ersten Frame läuft
         blank       = np.zeros((self._crop_im_size, self._crop_im_size), dtype=np.uint8)
@@ -173,10 +174,7 @@ class DetectLaneNode:
         #   → Wert:  nächste Kante zum letzten bekannten Wert wählen
         #            → robuster in engen Kurven und am Wendeplatz (keine Fehlzuordnung,
         #              wenn zwei weiße Kanten gleichzeitig sichtbar sind)
-        #
-        # Hinweis (bewusst lesbar gehalten): die Auswertung läuft als Python-Schleife
-        # über ein 100-px-Band um die Zielzeile. Eine vektorisierte NumPy-Variante wäre
-        # schneller, aber schwerer nachzuvollziehen – hier ist Lesbarkeit gewollt.
+
         grad = cv2.Sobel(mask, cv2.CV_16S, 1, 0, ksize=3, scale=1, delta=0,
                          borderType=cv2.BORDER_DEFAULT)
         _, th1 = cv2.threshold(grad, 127, 255, cv2.THRESH_BINARY)
