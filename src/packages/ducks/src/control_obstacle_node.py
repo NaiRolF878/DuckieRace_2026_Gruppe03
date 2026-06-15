@@ -1,234 +1,222 @@
 #!/usr/bin/env python3
+# ─────────────────────────────────────────────────────────────────────────────
+# control_obstacle_node.py  (Challenge 3 – Watch out for Ducks)
+#
+# Wählt das Ausweichverhalten anhand des BELEGUNGSPROFILS von detect_duck_node
+# und reicht das Ergebnis als additiven Lenk-Offset an control_lane_node weiter.
+#
+# Kombi-Strategie (in dieser Reihenfolge):
+#   1. Freier RAND breit genug?  → Feld außen umfahren (bevorzugt, ruhig).
+#   2. Sonst breiteste innere LÜCKE breit genug? → dort durchzielen.
+#   3. Sonst kein Platz → Gegenspurübernahme (großer Offset, links).
+#
+# Offset-Konvention (wie control_lane_node):
+#   error > 0 → nach rechts lenken. NEGATIVER Offset → Bot weicht LINKS aus.
+#
+# EvadeState: Idle → Evading → Returning → Idle.
+#   Manöver wird nach letzter Sichtung noch evade_hold s gehalten (Feld wandert
+#   beim Ausweichen aus dem Bild). Zielrichtung wird dabei eingefroren.
+#   Rückkehr: Offset-Rampe auf 0 (kamerabasiert, selbstkorrigierend).
+#
+# Stufen-Schalter "active": steht er auf 0, gibt die Node immer Offset 0 aus
+#   (zum isolierten Testen von Lane+Erkennung ohne Ausweichen).
+# Defensiv gegen fehlende JSON-Keys.
+# ─────────────────────────────────────────────────────────────────────────────
 
 import os
 import rospy
-from std_msgs.msg import Float64, Bool
-from duckietown_msgs.msg import Twist2DStamped
+import numpy as np
 from enum import Enum
+from std_msgs.msg import Float64, Bool, Float32MultiArray
 import util
 
-class StopState(Enum):
-    Driving  = 1  # normales Spurfolgen
-    Stopping = 2  # rote Linie erkannt, Bot hält für STOP_DURATION Sekunden an
-    Cooldown = 3  # nach dem Anhalten kurz weiterfahren ohne erneut zu stoppen
 
-class ControlLaneNode:
-    def __init__(self,node_name):
-        # ROS-Node initialisieren
+class EvadeState(Enum):
+    Idle      = 1
+    Evading   = 2
+    Returning = 3
+
+
+class ControlObstacleNode:
+    def __init__(self, node_name):
         rospy.init_node(node_name)
-
-        # Steuerung aktiv? Wird durch switch_control_node gesetzt
-        self.enable = True
-
-        # Fahrzeugnamen aus Umgebungsvariable lesen (z.B. "duckiebot01")
         self._vehicle_name = os.environ['VEHICLE_NAME']
 
-        # Parameter aus der zugehörigen JSON-Konfigurationsdatei laden
-        # und Callback für spätere Live-Aktualisierungen registrieren
+        # ── Zustand ───────────────────────────────────────────────────────────
+        self.enable         = False         # von switch_control (/enable/obstacle)
+        self.state          = EvadeState.Idle
+        self.current_offset = 0.0
+        self.target_offset  = 0.0
+        self.evade_desc     = 'none'
+        self.occupancy      = None
+        self.last_duck_seen = None
+
+        # Defaults (defensiv überschrieben)
+        self.active          = True
+        self.evade_offset    = 0.6
+        self.oncoming_offset = 1.0
+        self.ramp_step       = 0.05
+        self.evade_hold      = 2.0
+        self.gap_min_bins    = 6
+        self.edge_min_bins   = 5
+
         util.init_parameters(node_name, self.cbUpdateParameters)
 
-        # Publisher für Fahrbefehle
-        twist_topic = f"/{self._vehicle_name}/car_cmd_switch_node/cmd"
-        self.pub_cmd_vel = rospy.Publisher(twist_topic, Twist2DStamped, queue_size = 1)
+        # ── Publisher ─────────────────────────────────────────────────────────
+        self.pub_offset = rospy.Publisher(
+            f'/{self._vehicle_name}/obstacle/error_offset', Float64, queue_size=1)
+        self.pub_done = rospy.Publisher(
+            f'/{self._vehicle_name}/obstacle/done', Bool, queue_size=1)
 
-        # Subscriber: bekommt Spurversatz von detect_lane_node
-        detect_lane_topic = f"/{self._vehicle_name}/detect/lane"
-        self.sub_lane = rospy.Subscriber(detect_lane_topic, Float64, self.cbFollowLane, queue_size=1)
+        # ── Subscriber ────────────────────────────────────────────────────────
+        rospy.Subscriber(f'/{self._vehicle_name}/detect/duck_occupancy',
+                         Float32MultiArray, self.cbOccupancy, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/detect/duck',
+                         Float64, self.cbDuck, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/enable/obstacle',
+                         Bool, self.cbEnable, queue_size=1)
 
-        # Subscriber: wird von switch_control_node aktiviert/deaktiviert
-        # Bool True = diese Node ist aktiv, False = deaktiviert
-        self.sub_enable = rospy.Subscriber(
-            f'/{self._vehicle_name}/enable/lane',
-            Bool, self.cbControl, queue_size=1)
+        rospy.loginfo(f"[{node_name}] Bereit. EvadeState=Idle.")
 
-        # Subscriber für rote Haltelinie von detect_lane_node
-        stop_line_topic = f"/{self._vehicle_name}/detect/stop_line"
-        self.sub_stop_line = rospy.Subscriber(stop_line_topic, Bool, self.cbStopLine, queue_size = 1)
-
-        # NEU (Challenge 3): additiver Ausweich-Offset von control_obstacle_node
-        # 0.0 = kein Ausweichen. Wird in cbFollowLane zum Spurfehler addiert.
-        self.error_offset = 0.0
-        self.sub_error_offset = rospy.Subscriber(
-            f'/{self._vehicle_name}/obstacle/error_offset',
-            Float64, self.cbErrorOffset, queue_size=1)
-
-        # PID Variablen
-        self.lastError = 0       # Fehler vom letzten Schritt (für D-Anteil)
-        self.integral  = 0       # aufsummierter Fehler (für I-Anteil)
-        self.dt        = 0.1     # Zeit zwischen zwei Schritten (~10 Hz)
-
-        # Steuerwerte
-        self.v = 0               # Geschwindigkeit
-        self.a = 0               # Winkelgeschwindigkeit (Lenkung)
-
-        # NEU: Zustandsvariablen für die Haltelinien-Logik
-        # Drei Zustände: StopState.Driving, StopState.Stopping, StopState.Cooldown
-        self.stop_state      = StopState.Driving
-        self.STOP_DURATION     = 3.0  # Startwert – wird durch cbUpdateParameters aus JSON überschrieben
-        self.COOLDOWN_DURATION = 3.0  # Startwert – wird durch cbUpdateParameters aus JSON überschrieben
-        self.stop_start_time = None  # Zeitstempel des Stopps
-
-        rospy.on_shutdown(self.fnShutDown)
-        rospy.loginfo(f"[{node_name}] Bereit. Warte auf Spurversatz ...")
-
-#-------------------------------
-# Callbacks
-#-------------------------------
-
-    def cbControl(self, msg):
-        # Empfängt Enable-Signal von switch_control_node
-        # True = Lane Following aktiv, False = andere Node übernimmt
-        self.enable = msg.data
-
-    def cbErrorOffset(self, msg):
-        # Additiver Ausweich-Offset von control_obstacle_node (0.0 = kein Ausweichen)
-        self.error_offset = msg.data
+    # ── Parameter (defensiv) ─────────────────────────────────────────────────────
 
     def cbUpdateParameters(self, parameters):
-        #Prüfung was ankommt
-        print("PARAMETER EMPFANGEN:")
-        print(parameters)
-
-        # Defensiv laden: fehlt ein Key in der JSON, wird ein sinnvoller Default
-        # genutzt statt die Node beim Start mit KeyError abstürzen zu lassen.
         def g(group, key, default):
             try:
                 return parameters[group][key]["default"]
             except (KeyError, TypeError):
-                rospy.logwarn(f"[control_lane] Parameter {group}.{key} fehlt – nutze {default}")
+                rospy.logwarn(f"[control_obstacle] Parameter {group}.{key} fehlt – nutze {default}")
                 return default
 
-        # PID Parameter aus config laden
-        self.kp      = g("pid", "p", 8.0)
-        self.ki      = g("pid", "i", 0.0)
-        self.kd      = g("pid", "d", 6.0)
-        self.MAX_VEL = g("pid", "max_vel", 0.3)
-        # Minimalgeschwindigkeit: verhindert dass der Bot durch großen Fehler komplett stoppt
-        self.MIN_VEL = g("pid", "min_vel", 0.1)
+        self.active          = int(g("evade", "active", 1)) == 1
+        self.evade_offset    = g("evade", "evade_offset", 0.6)
+        self.oncoming_offset = g("evade", "oncoming_offset", 1.0)
+        self.ramp_step       = g("evade", "ramp_step", 0.05)
+        self.evade_hold      = g("evade", "evade_hold", 2.0)
+        self.gap_min_bins    = int(g("evade", "gap_min_bins", 6))
+        self.edge_min_bins   = int(g("evade", "edge_min_bins", 5))
 
-        # Haltelinien-Parameter aus config laden
-        self.STOP_DURATION     = g("stop_line", "stop_duration", 3.0)
-        self.COOLDOWN_DURATION = g("stop_line", "cooldown_duration", 3.0)
+    # ── Callbacks ───────────────────────────────────────────────────────────────
 
-    # NEU: Callback für rote Haltelinie
-    def cbStopLine(self, msg):
-        # Im Cooldown-Modus: erneutes Erkennen ignorieren
-        if self.stop_state == StopState.Cooldown:
-            return
+    def cbEnable(self, msg):
+        self.enable = msg.data
 
-        # Wenn Linie erkannt und wir gerade normal fahren → Stopp einleiten
-        if msg.data and self.stop_state == StopState.Driving:
-            rospy.loginfo("Rote Haltelinie erkannt – halte 3 Sekunden an.")
-            self.stop_state      = StopState.Stopping
-            self.stop_start_time = rospy.Time.now()
+    def cbOccupancy(self, msg):
+        self.occupancy = np.array(msg.data, dtype=np.float32)
 
-    # Spurversatz error im Bereich [-1, +1]:
-    # error > 0 → Bot zu weit links  → nach rechts lenken
-    # error < 0 → Bot zu weit rechts → nach links lenken
-    # error = 0 → Bot ist mittig     → geradeaus fahren
-    def cbFollowLane(self, error):
-        print(f'received message. enabled : {self.enable}')
+    def cbDuck(self, msg):
+        if msg.data != -99.0:
+            self.last_duck_seen = rospy.Time.now()
 
-        # Wenn die rote Linie erkannt wurde → Geschwindigkeit auf 0 setzen und PID-Berechnung überspringen
-        # (verhindert dass der Bot während des Stopps weiter lenkt oder beschleunigt)
-        if self.stop_state == StopState.Stopping:
-            self.v = 0.0
-            self.a = 0.0
-            return
+    # ── Lückenanalyse ────────────────────────────────────────────────────────────
 
-        error = error.data
+    def _free_intervals(self, occ):
+        free = []
+        n = len(occ); i = 0
+        while i < n:
+            if occ[i] < 0.5:
+                j = i
+                while j < n and occ[j] < 0.5:
+                    j += 1
+                free.append((i, j)); i = j
+            else:
+                i += 1
+        return free
 
-        # NEU (Challenge 3): Ausweich-Offset addieren → verschiebt die
-        # wahrgenommene Spurmitte, damit der Bot um Enten herumlenkt.
-        error = error + self.error_offset
+    def _decide_from_occupancy(self):
+        occ = self.occupancy
+        if occ is None or occ.sum() == 0:
+            return None
+        n = len(occ)
+        center = n / 2.0
+        free = self._free_intervals(occ)
+        if not free:
+            return 'gegenspur', -self.oncoming_offset
 
-        # Begrenzung damit PID nicht übersteuert
-        error = max(min(error, 2.0), -2.0)
+        # 1. Freier Rand
+        left_edge  = free[0][1] - free[0][0] if free[0][0] == 0 else 0
+        right_edge = free[-1][1] - free[-1][0] if free[-1][1] == n else 0
+        if max(left_edge, right_edge) >= self.edge_min_bins:
+            if right_edge >= left_edge:
+                return f'rand-rechts({right_edge})', +self.evade_offset
+            return f'rand-links({left_edge})', -self.evade_offset
 
-        # PID REGELUNG 
-        
-        # P-Anteil: reagiert auf aktuellen Fehler
-        P = self.kp * error
+        # 2. Innere Lücke (die dem Zentrum nächste ausreichende → wenig Lenken)
+        usable = [(a, b) for (a, b) in free if (b - a) >= self.gap_min_bins]
+        if usable:
+            best = min(usable, key=lambda iv: abs((iv[0] + iv[1]) / 2.0 - center))
+            gap_center = (best[0] + best[1]) / 2.0
+            rel = (gap_center - center) / center
+            return (f'luecke[{best[0]}:{best[1]}]',
+                    float(np.clip(rel, -1.0, 1.0)) * self.evade_offset)
 
-        # I-Anteil: summiert Fehler über Zeit
-        # → gleicht systematische Abweichungen aus (z.B. schiefer Kamerawinkel)
-        self.integral += error * self.dt
-        I = self.ki * self.integral
+        # 3. Kein Platz → Gegenspur
+        return 'gegenspur', -self.oncoming_offset
 
-        # D-Anteil: reagiert auf Änderung des Fehlers
-        # → dämpft Überschwingen und macht die Regelung stabiler
-        derivative = (error - self.lastError) / self.dt
-        D = self.kd * derivative
+    # ── Rampe / Hilfen ──────────────────────────────────────────────────────────
 
-        # Gesamte Lenkung aus allen drei Anteilen
-        self.a = P + I + D
+    def _ramp_toward(self, target):
+        diff = target - self.current_offset
+        if abs(diff) <= self.ramp_step:
+            self.current_offset = target
+        else:
+            self.current_offset += self.ramp_step * (1 if diff > 0 else -1)
 
-        # Begrenzung der Lenkung auf [-3, +3] rad/s → verhindert „Durchdrehen"
-        self.a = max(min(self.a, 3), -3)
+    def _duck_in_way(self):
+        if self.last_duck_seen is None:
+            return False
+        return (rospy.Time.now() - self.last_duck_seen).to_sec() < self.evade_hold
 
-        # Geschwindigkeit abhängig vom Fehler reduzieren:
-        # Je größer der Spurversatz, desto langsamer fährt der Bot (sicherer in Kurven)
-        # MIN_VEL verhindert dass der Bot bei großem Fehler komplett stoppt und stehen bleibt
-        self.v = max(self.MIN_VEL, self.MAX_VEL * (1 - abs(error)))
+    # ── Zustandsautomat ─────────────────────────────────────────────────────────
 
-        # Fehler speichern für nächsten Schritt (wird für D-Anteil benötigt)
-        self.lastError = error
+    def _step_state_machine(self):
+        if self.state == EvadeState.Idle:
+            self.current_offset = 0.0
+            if self._duck_in_way():
+                decision = self._decide_from_occupancy()
+                if decision is not None:
+                    self.evade_desc, self.target_offset = decision
+                    self.state = EvadeState.Evading
+                    rospy.loginfo(f"[Evade] Feld erkannt → {self.evade_desc}, "
+                                  f"Ziel-Offset {self.target_offset:+.2f}")
 
+        elif self.state == EvadeState.Evading:
+            if self._duck_in_way():
+                if self.occupancy is not None and self.occupancy.sum() > 0:
+                    decision = self._decide_from_occupancy()
+                    if decision is not None:
+                        self.evade_desc, self.target_offset = decision
+                self._ramp_toward(self.target_offset)
+            else:
+                rospy.loginfo("[Evade] Feld passiert → kontrollierte Rueckkehr.")
+                self.state = EvadeState.Returning
 
-    def fnShutDown(self):
-        # Beim Beenden der Node sicherstellen, dass der Bot sofort stoppt
-        rospy.loginfo("Shutting down. cmd_vel will be 0")
-        twist = Twist2DStamped(v=0.0, omega=0.0)
-        self.pub_cmd_vel.publish(twist)
+        elif self.state == EvadeState.Returning:
+            if self._duck_in_way():
+                self.state = EvadeState.Evading
+                return
+            self._ramp_toward(0.0)
+            if abs(self.current_offset) < 1e-6:
+                self.current_offset = 0.0
+                self.state = EvadeState.Idle
+                self.pub_done.publish(Bool(data=True))
+                rospy.loginfo("[Evade] Rueckkehr abgeschlossen → Idle, /obstacle/done.")
+
+    # ── Hauptschleife ──────────────────────────────────────────────────────────
 
     def run(self):
-        # Hauptschleife mit 10 Hz – publiziert Fahrbefehle basierend auf aktuellem Zustand
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
-            if self.enable:
-                twist = Twist2DStamped()
-                twist.header.stamp = rospy.Time.now()
-
-                # Haltelinien-Zustandsautomat:
-                # Der Zustand wird durch cbStopLine gesetzt und hier ausgewertet
-                if self.stop_state == StopState.Stopping:
-                    # Stopp-Zeit läuft → Bot anhalten
-                    elapsed = (rospy.Time.now() - self.stop_start_time).to_sec()
-                    if elapsed < self.STOP_DURATION:
-                        # Noch nicht lange genug gestanden → v und omega auf 0 halten
-                        twist.v     = 0.0
-                        twist.omega = 0.0
-                    else:
-                        # Stopp-Zeit abgelaufen → Cooldown starten und weiterfahren
-                        rospy.loginfo("3 Sekunden vorbei – fahre weiter.")
-                        self.stop_state      = StopState.Cooldown
-                        self.stop_start_time = rospy.Time.now()
-                        # Integral zurücksetzen, damit der I-Anteil keinen alten Fehler mitschleppt
-                        self.integral = 0
-                        twist.v     = self.v
-                        twist.omega = self.a
-
-                elif self.stop_state == StopState.Cooldown:
-                    # Cooldown läuft → normal weiterfahren, aber keine neue Linie erkennen
-                    # (verhindert direktes Wiederanhalten nach dem Losfahren)
-                    elapsed = (rospy.Time.now() - self.stop_start_time).to_sec()
-                    if elapsed >= self.COOLDOWN_DURATION:
-                        rospy.loginfo("Cooldown beendet – Haltelinien-Erkennung wieder aktiv.")
-                        self.stop_state = StopState.Driving
-                    twist.v     = self.v
-                    twist.omega = self.a
-
-                else:
-                    # Normaler Fahrbetrieb: Steuerwerte aus cbFollowLane direkt senden
-                    twist.v     = self.v
-                    twist.omega = self.a
-
-                self.pub_cmd_vel.publish(twist)
-
+            if self.enable and self.active:
+                self._step_state_machine()
+            else:
+                self.current_offset = 0.0
+                self.state = EvadeState.Idle
+            self.pub_offset.publish(Float64(data=self.current_offset))
             rate.sleep()
 
+
 if __name__ == '__main__':
-    # create the node
-    node = ControlLaneNode('control_lane_node')
+    node = ControlObstacleNode('control_obstacle_node')
     node.run()
     rospy.spin()
