@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-
 # ─────────────────────────────────────────────────────────────────────────────
-# switch_control_node.py
+# switch_control_node.py  (Challenge 3 – Watch out for Ducks)
 #
-# Aufgabe (Challenge 3): Schaltet zwischen Lane- und Obstacle-Modus um und
-#          aktiviert die jeweilige Control-Node über ihr Enable-Topic.
+# Schaltet zwischen Lane- und Obstacle-Modus.
+#   /enable/lane     → control_lane_node      (fährt IMMER, auch beim Ausweichen)
+#   /enable/obstacle → control_obstacle_node  (darf nur im Obstacle-Modus Offset erzeugen)
 #
-#   /enable/lane     → control_lane_node      (immer aktiv außer beim Ausweichen?)
-#   /enable/obstacle → control_obstacle_node  (nur im Obstacle-Modus)
-#
-# WICHTIG zur Architektur:
-#   control_lane_node fährt IMMER (PID + Stop-Line). control_obstacle_node liefert
-#   nur einen additiven Offset. Daher bleibt /enable/lane auch im Obstacle-Modus
-#   True – sonst stünde der Bot beim Ausweichen still. /enable/obstacle schaltet
-#   lediglich, ob die Obstacle-Node aktiv einen Offset erzeugen darf.
+# Warum /enable/lane immer True ist:
+#   control_obstacle_node liefert nur einen additiven Lenk-Offset. Die eigentliche
+#   Fahrt (PID, Geschwindigkeit, rote Haltelinie) macht control_lane_node. Würde
+#   man Lane beim Ausweichen abschalten, bliebe der Bot stehen.
 #
 # Übergänge:
 #   Lane → Obstacle : Ente erkannt        (/detect/duck ≠ -99)
 #   Obstacle → Lane : Ausweichen fertig   (/obstacle/done)
+#
+# Die rote Haltelinie wird NICHT hier behandelt – sie geht direkt von
+# detect_lane_node an control_lane_node (Halte-Automat dort).
+#
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
@@ -38,7 +38,7 @@ class SwitchControlNode:
 
         self._mode = ControlMode.Lane
 
-        # ── Publisher: Enable-Topics ──────────────────────────────────────────
+        # ── Publisher ─────────────────────────────────────────────────────────
         self.pub_enable_lane = rospy.Publisher(
             f'/{self._vehicle_name}/enable/lane', Bool, queue_size=1)
         self.pub_enable_obstacle = rospy.Publisher(
@@ -46,42 +46,37 @@ class SwitchControlNode:
 
         # ── Subscriber ────────────────────────────────────────────────────────
         rospy.Subscriber(f'/{self._vehicle_name}/detect/duck',
-            Float64, self.cbDuckDetected, queue_size=1)
+                         Float64, self.cbDuckDetected, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/obstacle/done',
-            Bool, self.cbObstacleDone, queue_size=1)
+                         Bool, self.cbObstacleDone, queue_size=1)
 
-        rospy.loginfo(f"[{node_name}] Bereit. Startet im Lane-Modus.")
-
-
-    def _publish_enable(self):
-        # control_lane_node fährt immer (auch beim Ausweichen, da Offset additiv).
-        self.pub_enable_lane.publish(Bool(data=True))
-        # control_obstacle_node nur im Obstacle-Modus aktiv.
-        self.pub_enable_obstacle.publish(
-            Bool(data=(self._mode == ControlMode.Obstacle)))
-
+        rospy.loginfo(f"[{node_name}] Bereit – Zustand: Lane")
 
     # ── Callbacks ───────────────────────────────────────────────────────────────
 
     def cbDuckDetected(self, msg):
         if msg.data != -99.0 and self._mode == ControlMode.Lane:
-            rospy.loginfo(f"Ente erkannt (x={msg.data:.2f}) → Obstacle-Modus.")
+            rospy.loginfo(f"[switch] Ente erkannt (x={msg.data:.2f}) → Obstacle-Modus")
             self._mode = ControlMode.Obstacle
 
     def cbObstacleDone(self, msg):
         if msg.data and self._mode == ControlMode.Obstacle:
-            rospy.loginfo("Ausweichen abgeschlossen → Lane-Modus.")
+            rospy.loginfo("[switch] Ausweichen abgeschlossen → Lane-Modus")
             self._mode = ControlMode.Lane
 
+    # ── Hauptschleife ──────────────────────────────────────────────────────────
 
     def run(self):
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
-            self._publish_enable()
+            # control_lane_node ist immer aktiv (siehe Kopfkommentar)
+            self.pub_enable_lane.publish(Bool(data=True))
+            self.pub_enable_obstacle.publish(
+                Bool(data=(self._mode == ControlMode.Obstacle)))
             rate.sleep()
 
 
 if __name__ == '__main__':
-    node = SwitchControlNode(node_name='switch_control_node')
+    node = SwitchControlNode('switch_control_node')
     node.run()
     rospy.spin()
