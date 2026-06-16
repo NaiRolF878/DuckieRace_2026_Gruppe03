@@ -1,8 +1,4 @@
 #!/bin/bash
-# ─────────────────────────────────────────────────────────────────────────────
-# ducks.sh – Launcher für Challenge 3 "Watch out for Ducks"
-# Startet alle Nodes aus dem SELBEN Ordner. Voraussetzung: VEHICLE_NAME gesetzt.
-# ─────────────────────────────────────────────────────────────────────────────
 set -e
 if [ -z "$VEHICLE_NAME" ]; then
     echo "[ducks.sh] FEHLER: VEHICLE_NAME ist nicht gesetzt."
@@ -20,20 +16,21 @@ cleanup() {
 }
 trap cleanup SIGINT SIGTERM EXIT
 
+export ROS_NAMESPACE=$VEHICLE_NAME
+
 # Wahrnehmung
-python3 "$DIR/detect_lane_node.py" &
-pids+=($!)
-pids+=($!)
+rosrun ducks detect_lane_node.py &
+pids+=("$!")
 # Steuerung
-python3 "$DIR/control_lane_node.py" &
-pids+=($!)
-python3 "$DIR/control_obstacle_node.py" &
-pids+=($!)
-python3 "$DIR/switch_control_node.py" &
-pids+=($!)
+rosrun ducks control_lane_node.py &
+pids+=("$!")
+rosrun ducks control_obstacle_node.py &
+pids+=("$!")
+rosrun ducks switch_control_node.py &
+pids+=("$!")
 # Visualisierung (optional, braucht Display)
-python3 "$DIR/camera_dashboard_node.py" &
-pids+=($!)
+rosrun ducks camera_dashboard_node.py &
+pids+=("$!")
 
 echo "[ducks.sh] Alle Nodes gestartet. Ctrl-C zum Beenden."
 wait
