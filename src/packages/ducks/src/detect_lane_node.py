@@ -25,20 +25,16 @@ class DetectLaneNode:
         self.is_running          = False
         self.counter             = 0     # Frame-Zähler: erste 3 Frames verwerfen
         self.last_white_position  = None  # Frame-Tracking für weiße Linie
-        self.last_yellow_position = None  # Frame-Tracking für gelbe Linie
 
         # Platzhalter für Debug-Variablen
         blank       = np.zeros((self._crop_im_size, self._crop_im_size), dtype=np.uint8)
         blank_color = np.zeros((self._crop_im_size, self._crop_im_size, 3), dtype=np.uint8)
         self.img              = blank_color
         self.lane_center      = self._crop_im_size / 2
-        self.white_alternative  = int(self._crop_im_size * 0.95)
-        self.yellow_alternative = int(self._crop_im_size * 0.05)
-        self.center_white     = int(self._crop_im_size * 0.95)
-        self.center_yellow    = int(self._crop_im_size * 0.05)
-        self.debug_img_white  = blank
-        self.debug_img_yellow = blank
-        self.debug_img_red    = blank
+        self.white_alternative = int(self._crop_im_size * 0.95)
+        self.center_white      = int(self._crop_im_size * 0.95)
+        self.debug_img_white   = blank
+        self.debug_img_red     = blank
 
         # ── Enten-Erkennung (Challenge 3) – Defaults VOR init_parameters ──────
         self.duck_enabled         = True
@@ -51,6 +47,20 @@ class DetectLaneNode:
         self.duck_min_h           = 12
         self.duck_line_max_aspect = 4.0
         self.debug_img_duck       = blank_color
+
+        # ── Weiß-Follow-Modus (Stufe 2) ──────────────────────────────────────
+        self.white_follow_offset_px = 150
+
+        # ── Zonen-Erkennung (Stufe 3) ─────────────────────────────────────────
+        self.zone_corridor_x_min       = 0.05
+        self.zone_corridor_x_max       = 0.90
+        self.zone_far_y_min            = 0.20
+        self.zone_far_y_max            = 0.45
+        self.zone_mid_y_min            = 0.45
+        self.zone_mid_y_max            = 0.70
+        self.zone_near_y_min           = 0.70
+        self.zone_near_y_max           = 0.95
+        self.zone_pixel_threshold_frac = 0.05
 
         # Parameter aus JSON laden + Live-Update Callback registrieren
         util.init_parameters(node_name, self.cbUpdateParameters)
@@ -76,6 +86,9 @@ class DetectLaneNode:
         # Trigger/Kompatibilität: x der nächsten Ente [-1,1]; -99 = keine
         self.pub_duck = rospy.Publisher(
             f'/{self._vehicle_name}/detect/duck', Float64, queue_size=1)
+        # Zonen-Belegung [nah, mittel, fern] ∈ {0.0, 1.0}
+        self.pub_zones = rospy.Publisher(
+            f'/{self._vehicle_name}/detect/zones', Float32MultiArray, queue_size=1)
 
         # ── Debug-Publisher ───────────────────────────────────────────────────
         self.pub_debug_original  = rospy.Publisher(
@@ -88,8 +101,6 @@ class DetectLaneNode:
             f'/{self._vehicle_name}/debug/lane_croped', CompressedImage, queue_size=1)
         self.pub_debug_white     = rospy.Publisher(
             f'/{self._vehicle_name}/debug/lane_white',  CompressedImage, queue_size=1)
-        self.pub_debug_yellow    = rospy.Publisher(
-            f'/{self._vehicle_name}/debug/lane_yellow', CompressedImage, queue_size=1)
         self.pub_debug_red       = rospy.Publisher(
             f'/{self._vehicle_name}/debug/lane_red',    CompressedImage, queue_size=1)
         # Enten-Debug-Bild (BEV mit Boxen + Belegungsbalken)
@@ -107,14 +118,6 @@ class DetectLaneNode:
         self.saturation_white_h = parameters["white"]["sh"]["default"]
         self.lightness_white_l  = parameters["white"]["vl"]["default"]
         self.lightness_white_h  = parameters["white"]["vh"]["default"]
-
-        # Gelbe Linie (linke, gestrichelte Mittellinie)
-        self.hue_yellow_l        = parameters["yellow"]["hl"]["default"]
-        self.hue_yellow_h        = parameters["yellow"]["hh"]["default"]
-        self.saturation_yellow_l = parameters["yellow"]["sl"]["default"]
-        self.saturation_yellow_h = parameters["yellow"]["sh"]["default"]
-        self.lightness_yellow_l  = parameters["yellow"]["vl"]["default"]
-        self.lightness_yellow_h  = parameters["yellow"]["vh"]["default"]
 
         # Perspektivtransformation (Bird's-Eye-View Eckpunkte)
         self.top_left_x     = parameters["crop_image"]["top_left_x"]["default"]
@@ -158,6 +161,18 @@ class DetectLaneNode:
         self.duck_min_w           = gd("duck", "min_w", 12)
         self.duck_min_h           = gd("duck", "min_h", 12)
         self.duck_line_max_aspect = gd("duck", "line_max_aspect", 4.0)
+
+        self.white_follow_offset_px = gd("white_follow", "offset_px", 150)
+
+        self.zone_corridor_x_min       = gd("zones", "corridor_x_min",       0.05)
+        self.zone_corridor_x_max       = gd("zones", "corridor_x_max",       0.90)
+        self.zone_far_y_min            = gd("zones", "far_y_min",            0.20)
+        self.zone_far_y_max            = gd("zones", "far_y_max",            0.45)
+        self.zone_mid_y_min            = gd("zones", "mid_y_min",            0.45)
+        self.zone_mid_y_max            = gd("zones", "mid_y_max",            0.70)
+        self.zone_near_y_min           = gd("zones", "near_y_min",           0.70)
+        self.zone_near_y_max           = gd("zones", "near_y_max",           0.95)
+        self.zone_pixel_threshold_frac = gd("zones", "pixel_threshold_frac", 0.05)
 
 
     def crop_img(self, img):
@@ -328,6 +343,71 @@ class DetectLaneNode:
             rospy.logwarn_throttle(5.0, f"[duck] Fehler in _process_ducks: {e}")
 
 
+    # ──────────────────────────────────────────────────────────────────────────
+    #  ZONEN-ERKENNUNG (Stufe 3) – drei Bereiche im Fahrkorridor
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _process_zones(self, bev_bgr):
+        try:
+            H, W = bev_bgr.shape[:2]
+
+            # Helligkeitsmaske (gleicher Ansatz wie Enten, aber ohne ROI-Beschnitt)
+            gray = cv2.cvtColor(bev_bgr, cv2.COLOR_BGR2GRAY)
+            gray = cv2.GaussianBlur(gray, (5, 5), 0)
+            if self.duck_use_otsu:
+                _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            else:
+                _, mask = cv2.threshold(gray, int(self.duck_brightness_thr), 255, cv2.THRESH_BINARY)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+
+            # Korridor x-Grenzen (fest in BEV-Pixeln)
+            x0 = int(self.zone_corridor_x_min * W)
+            x1 = int(self.zone_corridor_x_max * W)
+
+            zone_defs = [
+                ('nah',    self.zone_near_y_min, self.zone_near_y_max),
+                ('mittel', self.zone_mid_y_min,  self.zone_mid_y_max),
+                ('fern',   self.zone_far_y_min,  self.zone_far_y_max),
+            ]
+
+            results = {}
+            for name, y_min_f, y_max_f in zone_defs:
+                y0_z = int(y_min_f * H)
+                y1_z = int(y_max_f * H)
+                roi  = mask[y0_z:y1_z, x0:x1]
+                area = max(1, (y1_z - y0_z) * (x1 - x0))
+                results[name] = cv2.countNonZero(roi) / area > self.zone_pixel_threshold_frac
+
+            near_occ, mid_occ, far_occ = (
+                results['nah'], results['mittel'], results['fern'])
+
+            self.pub_zones.publish(Float32MultiArray(data=[
+                float(near_occ), float(mid_occ), float(far_occ)]))
+
+            rospy.loginfo_throttle(1.0,
+                f"[zones] nah={'X' if near_occ else 'O'}  "
+                f"mittel={'X' if mid_occ else 'O'}  "
+                f"fern={'X' if far_occ else 'O'}")
+
+            # Zonen als halbtransparente Rechtecke auf duck_bev zeichnen
+            dbg = self.debug_img_duck.copy()
+            for name, y_min_f, y_max_f in zone_defs:
+                y0_z  = int(y_min_f * H)
+                y1_z  = int(y_max_f * H)
+                occ   = results[name]
+                color = (0, 0, 255) if occ else (0, 200, 0)
+                overlay = dbg.copy()
+                cv2.rectangle(overlay, (x0, y0_z), (x1, y1_z), color, -1)
+                dbg = cv2.addWeighted(overlay, 0.25, dbg, 0.75, 0)
+                cv2.rectangle(dbg, (x0, y0_z), (x1, y1_z), color, 2)
+                cv2.putText(dbg, name, (x0 + 4, y0_z + 18),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+            self.debug_img_duck = dbg
+
+        except Exception as e:
+            rospy.logwarn_throttle(5.0, f"[zones] Fehler in _process_zones: {e}")
+
+
     def cbFindLane(self, image_msg):
         # Erste 3 Frames verwerfen (Kamera noch nicht stabil)
         if self.counter <= 3:
@@ -355,11 +435,12 @@ class DetectLaneNode:
             if self.pub_debug_bird.get_num_connections() > 0:
                 self._publish_compressed(self.pub_debug_bird, img)
 
-            # ── ENTEN: gleiche BEV-Ansicht weiterverwenden (vor CLAHE) ─────────
+            # ── ENTEN + ZONEN: gleiche BEV-Ansicht (vor CLAHE) ──────────────────
             if self.duck_enabled:
                 self._process_ducks(img)
             else:
                 self.pub_duck.publish(Float64(data=-99.0))
+            self._process_zones(img)  # immer aktiv; overlay auf debug_img_duck
 
             # ── Schritt 3: CLAHE – lokaler Helligkeitsausgleich ───────────────
             lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
@@ -371,28 +452,16 @@ class DetectLaneNode:
             # ── Schritt 4: HSV-Masken ─────────────────────────────────────────
             hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-            mask_yellow = cv2.inRange(hsv,
-                (self.hue_yellow_l, self.saturation_yellow_l, self.lightness_yellow_l),
-                (self.hue_yellow_h, self.saturation_yellow_h, self.lightness_yellow_h))
             mask_white = cv2.inRange(hsv,
                 (self.hue_white_l, self.saturation_white_l, self.lightness_white_l),
                 (self.hue_white_h, self.saturation_white_h, self.lightness_white_h))
 
             kernel = np.ones((5, 5), np.uint8)
-            mask_white  = cv2.morphologyEx(mask_white,  cv2.MORPH_CLOSE, kernel)
-            mask_yellow = cv2.morphologyEx(mask_yellow, cv2.MORPH_CLOSE, kernel)
+            mask_white = cv2.morphologyEx(mask_white, cv2.MORPH_CLOSE, kernel)
 
             # ── Schritt 5: Linienpositionen ───────────────────────────────────
-            white_alternative  = int(len(img[0]) * 0.95)
-            yellow_alternative = int(len(img[0]) * 0.05)
-            distance           = int(len(img) * 0.75)
-
-            center_yellow_raw = self.get_x_for_driving(
-                mask_yellow, distance, left_line=True,
-                last_known=self.last_yellow_position)
-            center_yellow, self.last_yellow_position = self._resolve_line_position(
-                center_yellow_raw, self.last_yellow_position,
-                yellow_alternative, self.max_frame_jump, label='Yellow')
+            white_alternative = int(len(img[0]) * 0.95)
+            distance          = int(len(img) * 0.75)
 
             center_white_raw = self.get_x_for_driving(
                 mask_white, distance, left_line=False,
@@ -401,14 +470,9 @@ class DetectLaneNode:
                 center_white_raw, self.last_white_position,
                 white_alternative, self.max_frame_jump, label='White')
 
-            if center_white <= center_yellow:
-                if center_white > int(len(img[0]) * 0.4):
-                    center_yellow = yellow_alternative
-                else:
-                    center_white = white_alternative
-
             # ── Schritt 6: Spurversatz berechnen ──────────────────────────────
-            lane_center = (center_white + center_yellow) / 2
+            # Zielposition = fester Abstand links von der weißen Linie
+            lane_center = center_white - self.white_follow_offset_px
             msg_error = Float64()
             msg_error.data = 1 - (lane_center / len(img) * 2)
             self.pub_lane.publish(msg_error)
@@ -419,30 +483,28 @@ class DetectLaneNode:
             self.pub_stop_line.publish(Bool(data=stop_line_detected))
 
             # ── Schritt 8: Debug-Variablen speichern ──────────────────────────
-            self.img              = img
-            self.lane_center      = lane_center
-            self.white_alternative  = white_alternative
-            self.yellow_alternative = yellow_alternative
-            self.center_white     = center_white
-            self.center_yellow    = center_yellow
-            self.debug_img_white  = mask_white
-            self.debug_img_yellow = mask_yellow
-            self.debug_img_red    = mask_red
+            self.img             = img
+            self.lane_center     = lane_center
+            self.white_alternative = white_alternative
+            self.center_white    = center_white
+            self.debug_img_white = mask_white
+            self.debug_img_red   = mask_red
 
             # ── Schritt 9: Annotiertes Bild ───────────────────────────────────
             image = cv2.circle(img, (int(lane_center), int(len(img) / 2)), 3, (255, 0, 0))
             image = cv2.line(image, (white_alternative, 0),
                              (white_alternative, self._crop_im_size), color=(255, 255, 255))
-            image = cv2.line(image, (yellow_alternative, 0),
-                             (yellow_alternative, self._crop_im_size), color=(255, 255, 0))
             image = cv2.line(image, (0, int(len(img)*0.75)+100),
                              (len(img[0]), int(len(img)*0.75)+100), color=(255, 255, 255))
             image = cv2.line(image, (0, int(len(img)*0.75)-100),
                              (len(img[0]), int(len(img)*0.75)-100), color=(255, 255, 255))
             image = cv2.line(image, (int(len(img[0])/2), 0),
                              (int(len(img[0])/2), len(image)), (0, 255, 0))
-            image = cv2.circle(image, (int(center_white),  int(len(img)*0.75)), 5, (255, 255, 255))
-            image = cv2.circle(image, (int(center_yellow), int(len(img)*0.75)), 5, (0, 255, 255))
+            image = cv2.circle(image, (int(center_white), int(len(img)*0.75)), 5, (255, 255, 255))
+            # Magenta-Linie = Sollposition (weiße Linie - Offset)
+            target_x = int(center_white - self.white_follow_offset_px)
+            image = cv2.line(image, (target_x, 0), (target_x, self._crop_im_size),
+                             color=(255, 0, 255))
 
             roi_top   = int(len(img)    * self.red_detection_zone)
             roi_left  = int(len(img[0]) * self.red_detection_x_start)
@@ -481,8 +543,6 @@ class DetectLaneNode:
                 debug_img = cv2.line(debug_img,
                     (self.white_alternative, 0), (self.white_alternative, 1000), color=(255, 255, 255))
                 debug_img = cv2.line(debug_img,
-                    (self.yellow_alternative, 0), (self.yellow_alternative, 1000), color=(255, 255, 0))
-                debug_img = cv2.line(debug_img,
                     (0, int(len(debug_img)*0.75)+100), (len(debug_img[0]), int(len(debug_img)*0.75)+100),
                     color=(255, 255, 255))
                 debug_img = cv2.line(debug_img,
@@ -491,9 +551,10 @@ class DetectLaneNode:
                 debug_img = cv2.line(debug_img,
                     (int(len(debug_img[0])/2), 0), (int(len(debug_img[0])/2), len(debug_img)), (0, 255, 0))
                 debug_img = cv2.circle(debug_img,
-                    (int(self.center_white),  int(len(debug_img)*0.75)), 5, (255, 255, 255))
-                debug_img = cv2.circle(debug_img,
-                    (int(self.center_yellow), int(len(debug_img)*0.75)), 5, (0, 255, 255))
+                    (int(self.center_white), int(len(debug_img)*0.75)), 5, (255, 255, 255))
+                target_x = int(self.center_white - self.white_follow_offset_px)
+                debug_img = cv2.line(debug_img, (target_x, 0), (target_x, self._crop_im_size),
+                                     color=(255, 0, 255))
                 roi_top   = int(len(debug_img)    * self.red_detection_zone)
                 roi_left  = int(len(debug_img[0]) * self.red_detection_x_start)
                 roi_right = int(len(debug_img[0]) * self.red_detection_x_end) - 1
@@ -503,9 +564,6 @@ class DetectLaneNode:
 
             if self.pub_debug_white.get_num_connections() > 0:
                 self._publish_compressed(self.pub_debug_white, self.debug_img_white)
-
-            if self.pub_debug_yellow.get_num_connections() > 0:
-                self._publish_compressed(self.pub_debug_yellow, self.debug_img_yellow)
 
             if self.pub_debug_red.get_num_connections() > 0:
                 self._publish_compressed(self.pub_debug_red, self.debug_img_red)
