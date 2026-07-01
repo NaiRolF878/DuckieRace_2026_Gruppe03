@@ -12,8 +12,11 @@
 #   man Lane beim Ausweichen abschalten, bliebe der Bot stehen.
 #
 # Übergänge:
-#   Lane → Obstacle : Ente erkannt        (/detect/duck ≠ -99)
-#   Obstacle → Lane : Ausweichen fertig   (/obstacle/done)
+#   Lane → Obstacle : Zone nah ODER mittel belegt  (/detect/zones)
+#   Obstacle → Lane : Ausweichen fertig             (/obstacle/done)
+#
+# Trigger ist /detect/zones (nicht /detect/duck), damit auch die gelbe Linie
+# als Objekt erkannt wird – sie erzeugt keinen Duck-Blob, belegt aber Zonen.
 #
 # Die rote Haltelinie wird NICHT hier behandelt – sie geht direkt von
 # detect_lane_node an control_lane_node (Halte-Automat dort).
@@ -23,7 +26,7 @@
 import os
 import rospy
 from enum import Enum
-from std_msgs.msg import Float64, Bool
+from std_msgs.msg import Float64, Bool, Float32MultiArray
 
 
 class ControlMode(Enum):
@@ -45,8 +48,8 @@ class SwitchControlNode:
             f'/{self._vehicle_name}/enable/obstacle', Bool, queue_size=1)
 
         # ── Subscriber ────────────────────────────────────────────────────────
-        rospy.Subscriber(f'/{self._vehicle_name}/detect/duck',
-                         Float64, self.cbDuckDetected, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/detect/zones',
+                         Float32MultiArray, self.cbZones, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/obstacle/done',
                          Bool, self.cbObstacleDone, queue_size=1)
 
@@ -54,9 +57,11 @@ class SwitchControlNode:
 
     # ── Callbacks ───────────────────────────────────────────────────────────────
 
-    def cbDuckDetected(self, msg):
-        if msg.data != -99.0 and self._mode == ControlMode.Lane:
-            rospy.loginfo(f"[switch] Ente erkannt (x={msg.data:.2f}) → Obstacle-Modus")
+    def cbZones(self, msg):
+        zones = list(msg.data) if len(msg.data) >= 3 else [0.0, 0.0, 0.0]
+        nah_oder_mittel = zones[0] > 0.5 or zones[1] > 0.5
+        if nah_oder_mittel and self._mode == ControlMode.Lane:
+            rospy.loginfo(f"[switch] Zone belegt (nah={zones[0]:.0f} mittel={zones[1]:.0f}) → Obstacle-Modus")
             self._mode = ControlMode.Obstacle
 
     def cbObstacleDone(self, msg):
