@@ -1,391 +1,252 @@
-# Challenge 3 – Watch out for Ducks: Technische Dokumentation
+# Konzept – Challenge 3: Watch out for Ducks
 
-> Für Teammitglieder, die in den Code einsteigen und verstehen wollen, wie alles zusammenspielt.
-
----
-
-## 1. Das Problem in einem Satz
-
-Der Bot soll Enten (und gelbe Linien) erkennen, ausweichen, und danach sicher auf die Spur zurückfinden – ohne die gelbe Mittellinie zu überfahren und ohne die Grundfunktion (Spurfolgen, rote Haltelinie) zu zerstören.
+Stand der Diskussion. Dieses Dokument hält die Strategie fest, **bevor** Code
+geschrieben wird. Es ist bewusst als Diskussions- und Testgrundlage gedacht,
+nicht als fertige Spezifikation.
 
 ---
 
-## 2. Strategie: Warum so und nicht anders?
+## 1. Grundidee in einem Satz
 
-### Das Kernproblem der alten Lösung
-
-Die alte Spurführung navigierte zwischen gelber Linie (links) und weißer Linie (rechts). Das hat zwei unlösbare Probleme erzeugt:
-
-- **Gelbe Linie ≈ gelbe Ente** – optisch nicht zu unterscheiden
-- Auf dem Wendeplatz gibt es keine gelbe Linie – der Bot hatte keine Referenz
-
-### Die neue Strategie
-
-**Nur noch die weiße Linie als Referenz** – die gelbe Linie wird komplett aus der Spurlogik entfernt.
-
-**Gelbe Linie = Objekt** – sie löst dasselbe Ausweichen aus wie eine Ente. Dadurch muss sie nie unterschieden werden – beide bekommen die gleiche Reaktion.
-
-**Zonenbasierte Erkennung** – statt Farbe wird Helligkeit genutzt. Helle Objekte auf dunklem Untergrund lösen aus. Das erkennt gelbe Enten, andersfarbige Enten, gelbe Linien – alles, was im Weg ist.
+Der Bot orientiert sich **nur an der weißen Seitenlinie** (fester seitlicher
+Abstand). Alles, was in einen definierten **Störbereich** vor dem Bot gerät –
+Ente **oder** gelbe Linie – löst ein **Ausweichen** aus, weg vom Objekt. Dadurch
+wird die gelbe Linie nie überfahren, ohne dass sie je gemessen werden muss.
 
 ---
 
-## 3. Architektur: Welche Dateien gibt es?
+## 2. Warum dieser Ansatz (Lehren aus den Tests)
 
-```
-src/packages/ducks/
-├── src/
-│   ├── detect_lane_node.py       ← Kamera: BEV, Spurerkennung, Zonen, Enten
-│   ├── control_lane_node.py      ← PID-Regler: fährt den Bot
-│   ├── control_obstacle_node.py  ← Zustandsautomat: Ausweichlogik
-│   ├── switch_control_node.py    ← Schalter: wer darf gerade steuern?
-│   ├── util.py                   ← Parameter-Loader (JSON → Python)
-│   ├── configuration_node.py     ← Live-Slider-GUI für Parameter
-│   └── camera_dashboard_node.py  ← 2×2 Debug-Dashboard
-│
-└── config/
-    ├── detect_lane_node.json      ← Parameter für Kamera/Erkennung
-    ├── control_lane_node.json     ← PID-Parameter, Haltelinien-Timing
-    └── control_obstacle_node.json ← Ausweich-Parameter (Offsets, Timeouts)
-```
+- Die alte Spurführung (Mitte zwischen gelb und weiß) hatte zwei Probleme:
+  gelbe Linie und gelbe Enten sind farblich nicht trennbar, und auf dem
+  Wendeplatz fehlt die gelbe Linie ganz.
+- Beobachtung beim Test: Mit reinem Follow-Lane ist der Bot **gut durch den
+  Wendeplatz gefahren**. Die weiße Linie reicht als Referenz.
+- Schlüsselerkenntnis: Wenn die gelbe Linie **dasselbe Ausweichen** auslöst wie
+  eine Ente, müssen Linie und Ente **nicht mehr unterschieden** werden – beide
+  bekommen dieselbe Reaktion (weg davon). Das löst das Trennungsproblem auf,
+  an dem alle vorherigen Ansätze gescheitert sind.
 
 ---
 
-## 4. Was macht jede Node?
+## 3. Spurführung (Follow-Lane)
 
-### `detect_lane_node.py` – Die Augen des Bots
+- Referenz ist **ausschließlich die weiße Linie**.
+- Der Bot hält einen **festen seitlichen Abstand** zur weißen Linie.
+- Die tatsächliche Spurbreite ist dabei egal – der Abstand zur weißen Linie
+  ist die einzige Regelgröße.
+- Das vorhandene `last_known`-Tracking der Linienposition bleibt wichtig, um
+  kurze Aussetzer (Linie zeitweise nicht sichtbar) zu überbrücken.
 
-Nimmt das Kamerabild und macht daraus Steuersignale:
-
-1. **Bird's-Eye-View (BEV)** – Bild wird perspektivisch entzerrt (400×400 px, Blick von oben)
-2. **Weiße Linie finden** – HSV-Filter → Position der weißen Linie im Bild
-3. **Spurversatz berechnen** – `error = 1 - (lane_center / 400 * 2)`, Bereich [-1, +1]
-   - `error > 0` → Bot zu weit links → muss nach rechts lenken
-   - `error < 0` → Bot zu weit rechts → muss nach links lenken
-4. **Weißlinien-Follow mit festem Offset** – Zielposition = weiße Linie minus `offset_px` Pixel
-5. **Rote Haltelinie erkennen** → Bool-Signal
-6. **Entenerkennung** → horizontale Position des Blobs (`duck_x`, -99 = kein Objekt)
-7. **Zonen-Belegung im BEV** – 3 Zonen (nah/mittel/fern) auf Helligkeit prüfen
-
-**Publizierte Topics:**
-
-| Topic | Typ | Inhalt |
-|-------|-----|--------|
-| `/tick/detect/lane` | `Float64` | Spurversatz [-1, +1] |
-| `/tick/detect/stop_line` | `Bool` | Rote Linie sichtbar? |
-| `/tick/detect/duck` | `Float64` | x-Position des Entenkopfs (-99 = kein Blob) |
-| `/tick/detect/zones` | `Float32MultiArray` | [nah, mittel, fern] je 0.0 oder 1.0 |
+**Offen / zu kalibrieren:**
+- Die weiße Linie ist **immer rechts**, solange der Bot im Follow-Modus ist –
+  das ist eine feste Annahme, keine Variable (siehe auch Abschnitt 7a: wechselt
+  sie die Seite, ist das ein Fehlerindikator für eine Sackgasse, kein normaler
+  Zustand). Der Rundkurs am Wendeplatz ändert nur die Krümmung der Linie,
+  nicht ihre Seite.
+- Genauer Sollabstand in BEV-Pixeln.
+- In engen Kurven (Wendeplatz) ist die weiße Linie stärker gekrümmt – das
+  Tracking muss damit zurechtkommen; ggf. mögliche Winkelverzerrung des
+  gemessenen Abstands beachten.
 
 ---
 
-### `control_lane_node.py` – Der Fahrer
+## 4. Störbereich & Zonen
 
-Diese Node ist die **einzige**, die den Fahrbefehl sendet. Sie berechnet aus dem Spurversatz mittels **PID-Regler** v (Geschwindigkeit) und omega (Lenkung).
+- Im Bird's-Eye-View werden **gestaffelte Zonen** vor dem Bot definiert:
+  **nah / mittel / fern**.
+- Die Zonen decken **nur den Fahrkorridor** ab (nicht die volle Bildbreite),
+  damit Objekte weit neben der Spur nicht unnötig auslösen.
+- Eine Zone gilt als **belegt**, wenn dort ein Objekt erkannt wird
+  (Ente oder gelbe Linie).
+- Staffelung erlaubt Vorausschau: ferne Zone = Frühwarnung (z.B. Tempo raus),
+  nahe Zone = Ausweichen auslösen.
 
-**Priorität der Fahrbefehle** (von oben nach unten, erstes Zutreffende gewinnt):
+**Erkennung der Objekte in den Zonen:**
+- Farb-robust über Helligkeit (helle Objekte auf dunklem Boden) – erkennt
+  gelbe UND andersfarbige (Bonus-)Enten.
+- Die gelbe Linie wird NICHT herausgefiltert – sie SOLL ja auslösen.
 
-```
-1. obstacle_stop = True      → v=0, omega=0  (Ente blockiert Weg, Stufe 6)
-2. StopState.Stopping        → v=0, omega=0  (rote Haltelinie erkannt)
-3. return_omega ≠ 0          → v=PID, omega=return_omega  (Encoder-Rückkehr, Stufe 5)
-4. Normalbetrieb             → v=PID, omega=PID
-```
-
-**Subscriptions:**
-
-| Topic | Kommt von | Wofür |
-|-------|-----------|-------|
-| `/tick/detect/lane` | detect_lane_node | Spurversatz → PID-Eingang |
-| `/tick/detect/stop_line` | detect_lane_node | Haltelinien-Automat |
-| `/tick/enable/lane` | switch_control_node | Node ein/aus |
-| `/tick/obstacle/error_offset` | control_obstacle_node | Ausweich-Offset (Stufe 4) |
-| `/tick/obstacle/return_omega` | control_obstacle_node | Encoder-Rückkehr omega (Stufe 5) |
-| `/tick/obstacle/stop` | control_obstacle_node | Vollstopp (Stufe 6) |
-
-**Der Ausweich-Offset** – das Kernprinzip des Ausweichens:
-
-```
-Normalbetrieb:  error = Spurversatz                → Bot folgt weißer Linie
-Ausweichen:     error = Spurversatz + error_offset  → Bot meint, er ist verschoben
-                                                       PID korrigiert → Bot weicht aus
-```
-
-Der Offset verschiebt die wahrgenommene Spurmitte. Der Bot "glaubt", er wäre zu weit rechts (oder links) und lenkt entsprechend.
+**Offen / zu kalibrieren:**
+- Geometrie der drei Zonen (Größe, Abstände, Breite des Korridors).
+- Wie viele belegte Pixel/Fläche = "Zone belegt".
 
 ---
 
-### `control_obstacle_node.py` – Der Stratege
+## 5. Ausweichen
 
-Enthält den **Zustandsautomaten** für das gesamte Ausweichmanöver. Sendet keine Fahrbefehle direkt – steuert nur über die drei Topics, die `control_lane_node` verarbeitet.
+- **Auslöser:** Objekt in einer Zone des Störbereichs.
+- **Richtung:** hängt davon ab, **von welcher Seite** das Objekt in den
+  Störbereich kommt – der Bot weicht zur freien Seite aus.
+- Die **gelbe Linie als Objekt** sorgt dafür, dass ein Ausweichen Richtung
+  gelb automatisch gestoppt/umgekehrt wird → gelbe Linie wird nie überfahren.
+- **Während des Ausweichens** wird das Manöver NICHT abgebrochen, auch wenn eine
+  weitere Ente in den Bereich kommt. Erst wenn der Korridor wieder frei ist.
+- Nach der letzten Sichtung fährt der Bot einen **festen Nachlauf** weiter,
+  um sicher am Hindernis vorbei zu sein, bevor die Rückkehr beginnt.
+
+**Sonderfall – kein Platz:**
+- Wenn der erlaubte Korridor (zwischen weißer Linie und gelber Grenze) komplett
+  blockiert ist: **Anhalten und warten**, bis wieder frei.
+  (Gegenspur ist NICHT erlaubt, gelbe Linie ist harte Grenze.)
 
 ---
 
-### `switch_control_node.py` – Der Schalter
+## 6. Rückkehr zur Spur (Encoder-gestützt)
 
-Entscheidet, ob `control_obstacle_node` aktiv ist. Publiziert `enable/lane` (immer True) und `enable/obstacle` (nur True wenn Objekt in Zonen erkannt).
+- Das Ausweichmanöver wird über die **Radencoder** mitgeschrieben
+  (zurückgelegte Drehung/Strecke).
+- Rückkehr: Der Bot dreht über die Encoder-Werte zurück – **bis die Kamera die
+  weiße Linie wieder sieht**. Die Kamera ist die Abbruchbedingung, der Encoder
+  treibt die Bewegung.
+- Dadurch ist die Encoder-Genauigkeit unkritisch: Schlupf verlängert die
+  Drehung höchstens minimal, das Ziel ("weiße Linie sichtbar") bleibt korrekt.
+- **Keine** festen Drehwinkel, **keine** festen Zeitwerte – ausdrücklich
+  Encoder-basiert.
 
-**Wichtig:** `control_lane_node` läuft immer! Nur `control_obstacle_node` wird ein/ausgeschaltet.
+**Reihenfolge der Rückkehr (wichtig):**
+1. Korridor frei (Zone leer) UND fester Nachlauf gefahren
+2. ERST DANN: per Encoder zurückdrehen, bis Kamera weiße Linie hat
+3. Übergang zurück in Follow-Lane (Kamera übernimmt Feinkorrektur)
+
+→ Nicht "weiße Linie kurz gesehen → sofort zurück", sonst Abbruch zu früh.
 
 ---
 
-## 5. Der Zustandsautomat (das Herzstück)
+## 7. Zustandsautomat
 
 ```
-                    ┌─────────────────────────────────────────────────┐
-                    │                                                 │
-                    ▼                                                 │
-              ┌──────────┐   nah/mittel       ┌──────────┐           │
-              │   IDLE   │ ─── belegt ──────► │  EVADE   │           │
-              │          │                    │ Ausweichen│           │
-              └──────────┘                    └──────────┘           │
-                    ▲                          │         │            │
-                    │                  frei    │     Timeout          │
-                    │                          ▼         ▼            │
-                    │                    ┌──────────┐ ┌──────────┐   │
-                    │                    │   PASS   │ │   WAIT   │   │
-                    │                    │ Nachlauf │ │  v = 0   │   │
-                    │                    └──────────┘ └──────────┘   │
-                    │                          │    frei / Timeout    │
-                    │               Nachlauf   │ ◄────────────────────┘
-                    │               abgelaufen ▼
-                    │                    ┌──────────┐
-                    └────────── fertig ─ │  RETURN  │
-                                         │ Encoder- │
-                                         │ Rückkehr │
-                                         └──────────┘
-```
+   ┌─────────────────────────────────────────────────────────┐
+   │                                                         │
+   ▼                                                         │
+FOLGEN ──Objekt in Zone──► AUSWEICHEN ──Korridor frei──► PASSIEREN
+(weiße Linie,              (weg vom Objekt,              (fester
+ fester Abstand)           Richtung = freie Seite,        Nachlauf)
+   ▲                       hält bis frei)                    │
+   │                                                         ▼
+   └──────────── ZURÜCKKEHREN ◄───────────────────────────────┘
+       (Encoder zurück, bis Kamera weiße Linie sieht)
 
-### Was in jedem Zustand passiert:
-
-#### IDLE – Normalbetrieb
-- `error_offset = 0` → kein Eingriff, Bot folgt der weißen Linie normal
-- Übergang → EVADE: Zone **nah** oder **mittel** ist belegt
-
-#### EVADE – Ausweichen
-- `error_offset = ±locked_offset` → Bot weicht zur freien Seite aus
-- Richtung wird beim Eintritt einmal festgelegt und bleibt für das gesamte Manöver **eingefroren** (auch wenn die Ente sich bewegt)
-- Gleichzeitig: Encoder-Ticks akkumulieren (für spätere Rückkehr)
-- Übergang → PASS: alle Zonen leer
-- Übergang → WAIT: Timeout überschritten (Bot ist zu lange am Ausweichen)
-
-#### WAIT – Anhalten (Stufe 6)
-- `obstacle/stop = True` → `control_lane_node` setzt v=0
-- Bot wartet bis Weg frei oder `wait_timeout_secs` abgelaufen
-- Übergang → PASS: Zonen leer ODER Timeout
-
-#### PASS – Nachlauf
-- `error_offset = locked_offset` (Offset bleibt noch aktiv, damit Bot sicher an Ente vorbeifährt)
-- Encoder-Ticks akkumulieren weiter
-- Übergang → EVADE: Ente taucht wieder auf
-- Übergang → RETURN: `nachlauf_secs` abgelaufen
-
-#### RETURN – Encoder-Rückkehr (Stufe 5)
-- `error_offset = 0` (kein Spurversatz-Eingriff mehr)
-- `return_omega` wird publiziert → Bot dreht in entgegengesetzter Richtung wie beim Ausweichen
-- Ticks werden heruntergezählt (gespiegelte Bewegung zur Rückkehr)
-- Übergang → IDLE: Kamera sieht weiße Linie (primär) ODER Encoder-Ticks aufgebraucht (Backup)
-- Übergang → EVADE: neue Ente erkannt
-
-### Ausweichrichtung – wie wird sie bestimmt?
-
-```python
-duck_x >= 0  →  Ente rechts von BEV-Mitte  →  offset negativ  →  nach links ausweichen
-duck_x <  0  →  Ente links  von BEV-Mitte  →  offset positiv  →  nach rechts ausweichen
-duck_x = -99 →  kein Blob (z.B. gelbe Linie) →  offset positiv  →  rechts als sicherer Standard
+   Sonderfall in AUSWEICHEN: Korridor ganz blockiert → ANHALTEN & WARTEN
 ```
 
 ---
 
-## 6. Die Zonen im Bird's-Eye-View
+## 7a. Sackgassen-Erkennung und Umfahren
 
-```
-BEV-Bild (400 × 400 px, Blick von oben)
+**Problem:** Bei dicht gestaffelten Enten (Hindernisse in einer durchgehenden
+Diagonale über den Korridor) können die Lücken zwischen ihnen zu eng sein, um
+hindurchzufahren. Der Bot versucht dann ggf. so weit auszuweichen/sich zu
+drehen, dass er sich faktisch "verkeilt" – eine Sackgasse. Kritisch dabei:
+Dreht sich der Bot zu weit, wechselt die weiße Linie die Bildseite, was die
+gesamte Spurführungs-Annahme ("weiß ist rechts") bricht UND der Streckenregel
+widerspricht, dass der Wendehammer nur in vorgegebener Richtung durchfahren
+werden darf (nicht an der Einfahrt wieder verlassen werden darf).
 
-  0 ─────────────────────────────── 400
-  │        [Fahrtrichtung]          │
-  │                                 │
-  │  ...... FERN (fern_y_min/max)   │  ← Frühwarnung
-  │  ...... MITTEL (mid_y_min/max)  │  ← Ausweichen auslösen
-  │  ...... NAH   (near_y_min/max)  │  ← Ausweichen auslösen
-  │                                 │
-  │         [Bot ist hier]          │
-400─────────────────────────────── 400
-  │← corridor_x_min   x_max →│
+**Erkennung (Indikator):**
+- Der Bot summiert während des Ausweichens fortlaufend seine Eigendrehung
+  (aus den Encodern).
+- Eine Sackgasse liegt vor, wenn diese akkumulierte Drehung zu groß wird UND/
+  ODER die weiße Linie auf der "falschen" Bildseite erscheint (sie sollte
+  immer rechts sein – erscheint sie links, hat sich der Bot zu weit gedreht).
+- Dieser Indikator ist eine reine Tatsachenfeststellung aus vorhandenen
+  Messgrößen, keine Vorhersage – robuster als der Versuch, eine Sackgasse im
+  Voraus zu erkennen.
 
-```
+**Reaktion – Außenrand-Fahren statt Rückwärtsfahren oder Drehen:**
+- Sobald der Indikator anschlägt, wechselt der Bot in einen eigenen Modus:
+  Er fährt NICHT zurück (kein Rückwärtsfahren ohne Rückwärtssicht) und dreht
+  sich NICHT weiter (würde die Streckenrichtung verletzen).
+- Stattdessen fährt er am ÄUSSEREN Rand der gesamten Hindernisreihe entlang
+  (nah an der gelben Grenze, ohne sie zu überfahren), statt zu versuchen,
+  durch einzelne Lücken zu navigieren.
+- **Mindeststrecke aus Encodern:** Die Strecke, die der Bot zurücklegen musste,
+  bis der Sackgassen-Indikator anschlug, wird als Mindestfahrstrecke für das
+  Außenrand-Fahren verwendet (plus Sicherheitsaufschlag, z.B. Faktor 1,5).
+  Das verhindert, dass der Bot sofort wieder in dieselbe Lücke einlenkt.
+- **Selbstkorrigierend durch laufende Erkennung:** Die normale Zonen-Erkennung
+  bleibt während des gesamten Außenrand-Fahrens aktiv. Schlägt sie nach
+  Ablauf der Mindeststrecke erneut an (Hindernis weiterhin im Weg), wird die
+  Mindeststrecke nicht neu berechnet, sondern einfach weiter am Rand entlang-
+  gefahren (ggf. mit wachsendem Sicherheitsaufschlag bei wiederholtem
+  Anschlagen). Dadurch muss die ursprüngliche Encoder-Schätzung nicht exakt
+  sein – sie muss nur das sofortige Zurückpendeln verhindern, den Rest
+  übernimmt die Kamera/Zonen-Erkennung als Wächter.
+- **Abbruch:** wie beim normalen Ausweichen – Korridor in der Zonen-Erkennung
+  durchgehend frei → zurück zu FOLGEN (weiße Linie, fester Abstand).
 
-- Die Zonen decken nur den **Fahrkorridor** ab (nicht das volle Bild)
-- Erkennung: Helligkeits-Threshold (helle Pixel > `pixel_threshold_frac` der Zonenfläche → belegt)
-- Erkennt alles Helle: gelbe Enten, andersfarbige Enten, gelbe Linie
-
----
-
-## 7. Encoder-Rückkehr – wie funktioniert das genau?
-
-### Das Problem mit Encodern beim Duckiebot
-
-Der Encoder liefert eine **kumulative Zählzahl** (`data`), die immer aufwärts zählt – egal ob vorwärts oder rückwärts gefahren wird. Die Richtung ist aus den Encoder-Daten allein **nicht** ablesbar.
-
-**Lösung:** Die Richtung wird aus dem Vorzeichen von `locked_offset` abgeleitet:
-- Bot hat nach links ausgewichen (`locked_offset < 0`) → Rückkehr nach rechts (`return_omega > 0`)
-- Bot hat nach rechts ausgewichen (`locked_offset > 0`) → Rückkehr nach links (`return_omega < 0`)
-
-### Ablauf
-
-```
-EVADE + PASS: delta_ticks = (Δlinks + Δrechts) / 2   →  accumulated_ticks += delta
-                                                          (jeder Schritt des Ausweichens wird gezählt)
-
-RETURN:       return_ticks_remaining = accumulated_ticks   (Start mit gespiegeltem Betrag)
-              jeder Schritt: return_ticks_remaining -= delta_ticks
-              Abbruch wenn:
-                a) |lane_error| < return_threshold für N aufeinanderfolgende Frames  (primär)
-                b) return_ticks_remaining ≤ 0                                         (Backup)
-```
-
-Die Encoder-Genauigkeit ist dabei **unkritisch**: Schlupf verlängert höchstens die Rückkehr minimal. Die Kamera als primäre Abbruchbedingung korrigiert alles.
-
----
-
-## 8. Parameter-Übersicht – was kann ich wo einstellen?
-
-Alle Parameter sind in den JSON-Dateien unter `config/` und können **live** über den `configuration_node` angepasst werden (kein Neustart nötig).
-
-### `detect_lane_node.json`
-
-| Gruppe | Parameter | Beschreibung |
-|--------|-----------|-------------|
-| `white_follow` | `offset_px` | Sollabstand zur weißen Linie in BEV-Pixeln (Standard: 150) |
-| `white` | `vl`, `vh`, `sl`, `sh` | HSV-Bereich für weiße Linie |
-| `duck` | `enabled` | Entenerkennung ein/aus |
-| `zones` | `corridor_x_min/max` | Breite des Fahrkorridors (0–1, relativ zu 400px) |
-| `zones` | `near/mid/far_y_min/max` | Lage der drei Zonen (0 = oben = fern, 1 = unten = nah) |
-| `zones` | `pixel_threshold_frac` | Anteil heller Pixel ab dem eine Zone als belegt gilt (Standard: 0.05 = 5%) |
-
-### `control_obstacle_node.json`
-
-| Parameter | Standard | Beschreibung |
-|-----------|----------|-------------|
-| `active` | 1 | Gesamte Ausweichlogik ein/aus |
-| `evade_offset` | 0.6 | Stärke des Ausweichens (wird zum Spurversatz addiert) |
-| `nachlauf_secs` | 1.5 s | Wie lange der Bot nach dem letzten Objekt-Kontakt noch mit Offset weiterfährt |
-| `evade_timeout_secs` | 5.0 s | Max. Zeit im EVADE-Zustand bevor WAIT ausgelöst wird |
-| `return_threshold` | 0.25 | Spurversatz unterhalb dem die Rückkehr als abgeschlossen gilt |
-| `return_stable_frames` | 5 | Wie viele Frames der Versatz < threshold sein muss (Entprellung) |
-| `return_omega` | 0.5 | Drehrate bei der Encoder-Rückkehr [rad/s] |
-| `wait_timeout_secs` | 3.0 s | Wie lange der Bot im WAIT-Zustand bleibt bevor er weiterfährt |
-
-### `control_lane_node.json`
-
-| Parameter | Beschreibung |
-|-----------|-------------|
-| `pid.p/i/d` | PID-Faktoren für Spurfolgen |
-| `pid.max_vel / min_vel` | Geschwindigkeitsgrenzen |
-| `stop_line.stop_duration` | Standzeit an roter Linie [s] |
-| `stop_line.cooldown_duration` | Wartezeit bis nächste rote Linie auslöst [s] |
+**Warum nicht Drehen oder Rückwärtsfahren:**
+- Drehen (bis keine Ente mehr sichtbar) würde "weiß ist rechts" umkehren und
+  den Bot zudem in die falsche Streckenrichtung bringen (Wendehammer darf nicht
+  an der Einfahrt verlassen werden).
+- Rückwärtsfahren ist riskant, weil die Kamera nach vorne zeigt – der Bot
+  könnte beim Zurücksetzen unbemerkt eine Ente touchieren oder die gelbe
+  Grenze verlassen. Eine "exakt rückwärts abspielen"-Variante scheitert daran,
+  dass die normale Abbruchbedingung (Kamera sieht Weiß) in der Sackgasse nicht
+  eindeutig ist (kurzes Weiß-Aufblitzen ≠ sicher draußen).
 
 ---
 
-## 9. ROS-Topic-Übersicht (vollständig)
+## 8. Technische Voraussetzungen (vor dem Bau prüfen!)
 
-> Alle Topics verwenden Prefix `/tick/` (Bot-Name = `tick`)
-
-```
-detect_lane_node
-    publish:  /tick/detect/lane          Float64        Spurversatz [-1,+1]
-              /tick/detect/stop_line     Bool           Rote Linie sichtbar
-              /tick/detect/duck          Float64        Enten-x-Position (-99 = kein Blob)
-              /tick/detect/zones         Float32MultiArray  [nah, mittel, fern]
-
-control_lane_node
-    subscribe: /tick/detect/lane         ← PID-Eingang
-               /tick/detect/stop_line    ← Haltelinien-Automat
-               /tick/enable/lane         ← Ein/Aus von switch_control_node
-               /tick/obstacle/error_offset ← Ausweich-Offset
-               /tick/obstacle/return_omega ← Encoder-Rückkehr-omega
-               /tick/obstacle/stop        ← Vollstopp-Signal
-    publish:  /tick/car_cmd_switch_node/cmd  Twist2DStamped  Fahrbefehl (v, omega)
-
-control_obstacle_node
-    subscribe: /tick/detect/zones        ← Auslöser
-               /tick/detect/duck         ← Richtungsbestimmung
-               /tick/detect/lane         ← Abbruchbedingung RETURN
-               /tick/enable/obstacle     ← Ein/Aus von switch_control_node
-               /tick/left_wheel_encoder_node/tick   WheelEncoderStamped
-               /tick/right_wheel_encoder_node/tick  WheelEncoderStamped
-    publish:  /tick/obstacle/error_offset  Float64  Ausweich-Offset
-              /tick/obstacle/return_omega  Float64  Rückkehr-omega
-              /tick/obstacle/stop          Bool     Vollstopp-Signal
-              /tick/obstacle/done          Bool     Ausweichen abgeschlossen
-
-switch_control_node
-    subscribe: /tick/detect/zones        ← Umschalten Lane→Obstacle
-               /tick/obstacle/done       ← Umschalten Obstacle→Lane
-    publish:  /tick/enable/lane          Bool  (immer True)
-              /tick/enable/obstacle      Bool  (True wenn Zonen belegt)
-```
+1. **Radencoder-Topics** – VERIFIZIERT:
+   - `/track/left_wheel_encoder_node/tick`
+   - `/track/right_wheel_encoder_node/tick`
+   - Typ: `duckietown_msgs/WheelEncoderStamped`, Feld `data` (kumulative Ticks),
+     Feld `resolution` = 135 (Ticks/Umdrehung, beide Räder).
+   - **Keine Richtungserkennung:** `data` zählt bei JEDER Bewegung aufwärts,
+     egal ob vor- oder rückwärts. Drehrichtung MUSS aus dem gesendeten
+     Fahrbefehl (Vorzeichen v/omega) abgeleitet werden.
+2. **Kinematik** (aus rosparam, bot-spezifisch kalibriert):
+   - radius = 0.0318 m, baseline = 0.1 m, trim = 0.0, gain = 1.0 (Standard).
+   - Strecke pro Tick ≈ 1.48 mm. Drehwinkel: Δθ = (s_rechts − s_links) / baseline.
+3. **Fahrbefehl-Ausgabe:** `/track/car_cmd_switch_node/cmd`
+   (`duckietown_msgs/Twist2DStamped`, Felder v, omega). NICHT auf andere
+   car_cmd-Topics schreiben (joy_mapper, lane_controller, etc. – die werden
+   vom switch_node ignoriert/überschrieben).
+4. Weiße Linie zuverlässig sichtbar – auch auf dem Wendeplatz?
+5. Latenz im Griff (buff_size gesetzt, kein Bildstau).
 
 ---
 
-## 10. Debug-Möglichkeiten
+## 9. Offene Punkte / Risiken
 
-### Debug-Bilder (Topics)
-
-| Topic | Inhalt |
-|-------|--------|
-| `/debug/original` | Rohbild der Kamera |
-| `/debug/annotated` | Bild mit erkannten Linien eingezeichnet |
-| `/debug/bird_view` | BEV ohne Annotation |
-| `/debug/lane_white` | Maske der weißen Linie |
-| `/debug/lane_red` | Maske der roten Linie |
-| `/debug/duck_bev` | BEV mit Zonen und Enten-Bounding-Box |
-
-```bash
-# Debug-Bild anzeigen (auf dem Bot ausführen oder mit richtigem ROS_MASTER_URI):
-rosrun image_view image_view image:=/debug/duck_bev
-```
-
-### Zustand des Ausweich-Automaten verfolgen
-
-```bash
-# Zeigt alle 2s den aktuellen Zustand + Werte im Terminal:
-rostopic echo /tick/obstacle/error_offset
-rostopic echo /tick/obstacle/stop
-rostopic echo /tick/detect/zones
-```
-
-### Log-Meldungen im Terminal
-
-`control_obstacle_node` loggt alle Zustandswechsel:
-```
-[Evade] Auslösung – rechts, Offset +0.60
-[Evade] Korridor frei → PASS
-[Evade] Nachlauf vorbei → RETURN (akkum. 87 Ticks)
-[Evade] Rückkehr fertig (Kamera) → IDLE
-```
+- **Weiße Linie verschwindet beim Ausweichen nach innen** → während des
+  Manövers evtl. keine Spurreferenz. Wird durch "erst Korridor frei + Nachlauf,
+  dann zurück" abgefedert, sollte aber im Test beobachtet werden.
+- **Tracking der weißen Linie** am Wendeplatz (starke Krümmung im Rundkurs) –
+  bleibt die Erkennung stabil rechts, oder reißt das Tracking ab? (Die Seite
+  selbst ist eine feste Annahme, siehe Abschnitt 3 – wechselt sie tatsächlich,
+  ist das der Sackgassen-Fehlerfall aus Abschnitt 7a, kein Normalzustand.)
+- **Zonen-Geometrie** ist reine Kalibriersache, am Bot zu justieren.
+- **Anhalten-und-warten**: Laut Einschätzung der Prüfer gibt es **immer genug
+  Platz** → dieser Sonderfall ist praktisch unkritisch, keine eigene
+  Vorbeitast-Logik nötig. ABER: Ein Erkennungsfehler (Schatten, Reflex, gelbe
+  Linie falsch interpretiert) könnte den Korridor fälschlich als blockiert
+  melden und den Bot dauerhaft anhalten lassen.
+  **Gewählte Lösung:** Ein **Sicherheits-Timeout** im Anhalten-Zustand – steht
+  der Bot zu lange, **fährt er vorsichtig weiter / versucht das Ausweichen
+  erneut**, statt dauerhaft stehen zu bleiben. Absicherung gegen Fehlerkennung,
+  nicht gegen echte Blockaden.
+- **Gelbe Linie als Trigger**: Sensitivität so einstellen, dass sie zuverlässig
+  auslöst, ohne dass der Bot ständig "vor der eigenen Spur flüchtet".
+- **Sackgassen-Mechanismus (Abschnitt 7a)** ist noch nicht am Bot getestet –
+  Schwellwert für "zu viel Drehung" und Sicherheitsaufschlag-Faktor sind reine
+  Kalibrierwerte.
 
 ---
 
-## 11. Häufige Probleme & Lösungen
+## 10. Empfohlene Baureihenfolge (für die knappen Testtage)
 
-| Problem | Ursache | Lösung |
-|---------|---------|--------|
-| Bot weicht aus, obwohl keine Ente da | `pixel_threshold_frac` zu niedrig | Wert erhöhen (z.B. 0.08–0.12) |
-| Bot erkennt Ente nicht | `pixel_threshold_frac` zu hoch | Wert senken; Zonen-Position prüfen |
-| Rückkehr zu kurz / zu weit | `return_omega` falsch | Anpassen; primär greift die Kamera |
-| Bot dreht sich beim Rückkehren zu stark | `return_omega` zu hoch | Senken (z.B. 0.3) |
-| Bot hält dauerhaft an (WAIT) | Erkennung falsch positiv | `wait_timeout_secs` kürzer; `pixel_threshold_frac` prüfen |
-| Nachlauf zu lang/kurz | `nachlauf_secs` | Anpassen nach Fahrgeschwindigkeit |
-| Weiße Linie wird nicht gefunden | HSV-Parameter `white.vl/vh` falsch | Via Configuration-Node live anpassen |
+1. **Encoder verifizieren** (Topics da? Werte plausibel?). ✅ ERLEDIGT.
+2. **Follow-Lane auf weiße Linie + festen Abstand** umbauen, isoliert testen.
+3. **Zonen-Erkennung** im BEV (Debug-Bild: Zonen + belegt/frei anzeigen),
+   ohne Ausweichen – nur visuell prüfen, ob Zonen korrekt belegt werden.
+4. **Ausweichen** dazu (Richtung nach Objektseite), mit kamerabasierter
+   Rückkehr zuerst.
+5. **Encoder-Rückkehr** ergänzen, wenn der Rest stabil läuft.
+6. **Gelbe Linie als Trigger** scharf schalten und Sonderfall "anhalten" testen.
+7. **Sackgassen-Erkennung & Außenrand-Fahren** (Abschnitt 7a) ergänzen, wenn
+   der Rest stabil läuft.
 
----
-
-## 12. Schnellübersicht: Dateien und ihre Kernaufgabe
-
-```
-detect_lane_node.py   →  Kamera auswerten, Signale publizieren
-control_lane_node.py  →  PID rechnen, Fahrbefehl senden (EINZIGE Stelle!)
-control_obstacle.py   →  Zustandsautomat, Ausweich-Offset berechnen
-switch_control.py     →  enable/lane + enable/obstacle schalten
-util.py               →  JSON-Parameter laden (nie direkt anfassen)
-config/*.json         →  Alle einstellbaren Werte, live änderbar
-```
+Jede Stufe einzeln testbar halten (Schalter zum Aktivieren/Deaktivieren).
