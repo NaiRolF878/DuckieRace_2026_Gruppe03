@@ -2,9 +2,11 @@
 
 Wendeplatz mit starren Enten befahren, ohne eine umzufahren. Baut auf der
 Spurführung aus Challenge 1 (Lane Following + rote Haltelinie) auf und ergänzt
-Entenerkennung und ein Ausweichmanöver.
+Zonen-Erkennung und einen vollständigen Ausweich-Automaten.
 
-Plattform: Duckiebot mit ROS 1 (Noetic) unter Ubuntu 20.04. Ohne Duckietown-Shell.
+Plattform: Duckiebot **tick** mit ROS 1 (Noetic) unter Ubuntu 20.04. Ohne Duckietown-Shell.
+
+> Ausführliche Strategie- und Code-Dokumentation: **[CHALLENGE3_DOKU.md](CHALLENGE3_DOKU.md)**
 
 ---
 
@@ -17,20 +19,18 @@ Nebeneinander-Anordnung erhalten bleiben.
 ```
 ducks/
 ├── src/
-│   ├── detect_lane_node.py        # Spurversatz + rote Haltelinie (Basis aus Ch.1)
-│   ├── detect_duck_node.py        # Entenerkennung (Hough + Gelb + BEV-Helligkeit)
-│   ├── control_lane_node.py       # PID-Spurregelung + Stop-Line-Automat
-│   ├── control_obstacle_node.py   # Ausweichlogik (EvadeState-Automat)
-│   ├── switch_control_node.py     # Umschaltung Lane <-> Obstacle
-│   ├── camera_dashboard_node.py   # Debug-Visualisierung (2x2-Dashboard)
+│   ├── detect_lane_node.py        # Kamera: BEV, weiße Linie, Zonen, Enten
+│   ├── control_lane_node.py       # PID-Spurregelung + Haltelinien-Automat
+│   ├── control_obstacle_node.py   # Ausweich-Zustandsautomat (5 Zustände)
+│   ├── switch_control_node.py     # Umschaltung Lane ↔ Obstacle
+│   ├── camera_dashboard_node.py   # Debug-Visualisierung (2×2-Dashboard)
 │   ├── configuration_node.py      # Live-Parameter-GUI (tkinter)
 │   ├── util.py                    # Parameter laden/mergen, Live-Updates
 │   └── ducks.sh                   # Launcher (startet alle Nodes)
 └── config/
-    ├── detect_lane_node.json
-    ├── detect_duck_node.json
-    ├── control_lane_node.json
-    └── control_obstacle_node.json
+    ├── detect_lane_node.json      # HSV, BEV-Trapez, Zonen, white_follow
+    ├── control_lane_node.json     # PID, Haltelinien-Timing
+    └── control_obstacle_node.json # Ausweich-Parameter, Timeouts, Encoder-Rückkehr
 ```
 
 ---
@@ -40,17 +40,16 @@ ducks/
 Voraussetzung: die Umgebungsvariable `VEHICLE_NAME` muss gesetzt sein.
 
 ```bash
-export VEHICLE_NAME=dorette        # eigenen Bot-Namen eintragen
+export VEHICLE_NAME=tick
 cd ducks/src
 ./ducks.sh
 ```
 
-Der Launcher startet sechs Nodes als Hintergrundprozesse und beendet sie
-gemeinsam bei `Ctrl-C`: `detect_lane`, `detect_duck`, `control_lane`,
-`control_obstacle`, `switch_control` und `camera_dashboard`.
+Der Launcher startet alle Nodes als Hintergrundprozesse und beendet sie
+gemeinsam bei `Ctrl-C`.
 
-`configuration_node.py` wird NICHT automatisch gestartet (eigene GUI). Bei
-Bedarf separat starten:
+`configuration_node.py` wird **nicht** automatisch gestartet (eigene GUI, optional).
+Bei Bedarf separat starten:
 
 ```bash
 python3 configuration_node.py
@@ -60,137 +59,144 @@ python3 configuration_node.py
 
 ## Funktionsweise
 
-### Wahrnehmung
+### Wahrnehmung (`detect_lane_node.py`)
 
-`detect_lane_node` liefert den Spurversatz auf `/detect/lane` (Bereich
-`[-1, +1]`) und die rote Haltelinie auf `/detect/stop_line`. Die Spurerkennung
-arbeitet im Bird's-Eye-View (BEV), einer perspektivisch entzerrten 400×400-Ansicht.
+Verarbeitet das Kamerabild vollständig in einer einzigen Node:
 
-`detect_duck_node` erkennt Enten über **zwei Verfahren, die gleichzeitig
-anschlagen müssen** (reduziert Fehlalarme):
+1. **Bird's-Eye-View (BEV)** – perspektivisch entzerrtes 400×400-px-Bild
+2. **Weiße Linie** – HSV-Filter → Position der rechten Fahrbahnmarkierung
+3. **Spurversatz** – `lane_center = center_white - offset_px`, normiert auf [-1, +1]
+4. **Rote Haltelinie** – zwei HSV-Bereiche decken den roten Farbton ab
+5. **Entenerkennung** – Helligkeits-Threshold im BEV → x-Position des Blobs
+6. **Zonen-Belegung** – drei Zonen (nah/mittel/fern) prüfen Helligkeit im Fahrkorridor
 
-1. **Originalbild:** Hough-Kreise, gefiltert über einen Gelbanteil im Kreis.
-   Läuft nur auf der unteren Bildhälfte (Fahrweg), spart Rechenzeit und
-   unterdrückt Fehlkreise am Horizont.
-2. **BEV-ROI:** Helligkeitsprüfung. Freie Fahrbahn ist dunkel; eine Ente hebt
-   die mittlere Helligkeit im ROI über den Schwellwert.
+Erkennt alles Helle auf dunklem Untergrund: **gelbe Enten, andersfarbige Enten
+und die gelbe Mittellinie** – ohne Farbunterscheidung. Dadurch muss die gelbe Linie
+nie von einer Ente unterschieden werden; beide lösen dieselbe Reaktion aus.
 
-Veröffentlicht wird die Position der nächsten Ente auf `/detect/duck`
-(`-99.0` = keine Ente) und der freie Platz links/rechts der Ente im BEV auf
-`/detect/duck_space`.
+### Ausweichen (`control_obstacle_node.py`)
 
-### Ausweichen
-
-`control_obstacle_node` enthält den **EvadeState-Automaten**:
+Enthält den **5-Zustands-Automaten**:
 
 ```
-Idle  ──Ente erkannt──▶  Evading  ──Ente passiert──▶  Returning  ──fertig──▶  Idle
+         Zone nah/mittel        Zonen leer        Nachlauf ab
+IDLE ───────belegt────────► EVADE ──────────► PASS ───────────► RETURN ──fertig──► IDLE
+                              │                  ↑
+                           Timeout          frei / Timeout
+                              ▼                  │
+                            WAIT (v=0) ──────────┘
 ```
 
-Richtungswahl anhand des freien Platzes:
+- **IDLE:** Normalbetrieb, kein Eingriff
+- **EVADE:** Ausweich-Offset aktiv, Encoder-Ticks werden akkumuliert
+- **WAIT:** Bot stoppt vollständig (Korridor blockiert, Stufe 6); Timeout erzwingt Weiterfahrt
+- **PASS:** Offset bleibt aktiv (Nachlauf), Ticks akkumulieren weiter
+- **RETURN:** Offset = 0, Encoder-basierte Rückkehr aktiv bis Kamera weiße Linie findet (Stufe 5)
 
-| Situation                | Reaktion                                  |
-|--------------------------|-------------------------------------------|
-| Mehr Platz rechts        | rechts ausweichen                         |
-| Mehr Platz links         | links ausweichen                          |
-| Etwa gleich viel Platz   | links (StVO: links überholen)             |
-| Kein Platz auf beiden    | Gegenspurübernahme (links, größerer Offset)|
+Die Node sendet **keine Fahrbefehle direkt**, sondern publiziert drei Steuersignale:
+- `error_offset` – verschiebt die wahrgenommene Spurmitte → PID lenkt automatisch
+- `return_omega` – überschreibt PID-omega während Encoder-Rückkehr
+- `stop` – setzt v=0 im WAIT-Zustand
 
-Die Node berechnet die Spurregelung **nicht selbst**, sondern published nur
-einen additiven Lenk-Offset auf `/obstacle/error_offset`. `control_lane_node`
-addiert diesen zum Spurfehler. So bleibt die PID-Regelung an einer einzigen
-Stelle. Der Offset wird über eine Rampe sanft auf- und wieder abgebaut.
+**Ausweichrichtung** wird beim Eintritt in EVADE einmalig eingefroren:
+- Ente rechts von BEV-Mitte → nach links ausweichen (negativer Offset)
+- Ente links von BEV-Mitte → nach rechts ausweichen (positiver Offset)
+- Kein Blob (z.B. gelbe Linie) → nach rechts als sicherer Standard
 
-Damit das Manöver nicht abbricht, während der Bot noch neben der Ente steht
-(die Ente wandert beim Ausweichen aus dem Bild), wird das Ausweichen nach der
-letzten Entensichtung noch für `evade_hold` Sekunden gehalten. Die einmal
-gewählte Richtung wird dabei eingefroren.
+### Spurführung (`control_lane_node.py`)
 
-### Rückkehr zur Spur
+**Einzige Node**, die den Fahrbefehl an den Bot sendet. Priorität:
 
-Zwei Modi, umschaltbar über den Parameter `return_mode`:
+```
+1. obstacle/stop = True      →  v=0, omega=0             (WAIT-Zustand)
+2. Rote Haltelinie erkannt   →  v=0, omega=0             (Haltelinien-Automat)
+3. return_omega ≠ 0          →  v=PID, omega=return_omega (Encoder-Rückkehr)
+4. Normalbetrieb             →  v=PID, omega=PID
+```
 
-- **`pid` (Default, 0):** Kamerabasiert. Der Offset wird auf 0 gerampt, die
-  Spur-PID-Regelung findet die Linie selbst wieder. Selbstkorrigierend.
-- **`odometry` (1):** Befehls-Integration. Das tatsächlich gesendete `omega`
-  wird während des Ausweichens aufintegriert und bei der Rückkehr spiegelbildlich
-  ausgeglichen. Hinweis: Dies ist kein Encoder-Feedback, sondern eine Integration
-  der gesendeten Befehle – Radschlupf bleibt unsichtbar und summiert sich als
-  Fehler. Nur verwenden, wenn der kamerabasierte Modus die Linie beim Ausweichen
-  ganz verliert.
+### Umschaltung (`switch_control_node.py`)
 
-### Umschaltung
+| Übergang | Auslöser |
+|----------|----------|
+| Lane → Obstacle | Zone **nah** oder **mittel** belegt (`/detect/zones`) |
+| Obstacle → Lane | Ausweichen abgeschlossen (`/obstacle/done`) |
 
-`switch_control_node` schaltet zwischen Lane- und Obstacle-Modus:
-
-- **Lane → Obstacle:** Ente erkannt (`/detect/duck` ≠ -99)
-- **Obstacle → Lane:** Ausweichen abgeschlossen (`/obstacle/done`)
-
-`/enable/lane` bleibt auch im Obstacle-Modus aktiv, weil `control_lane_node`
-die Fahrt (inkl. addiertem Offset) weiterhin ausführt. `/enable/obstacle`
-steuert nur, ob die Obstacle-Node einen Offset erzeugen darf.
+`/enable/lane` bleibt auch im Obstacle-Modus **immer aktiv**, weil
+`control_lane_node` die eigentliche Fahrt (inkl. addiertem Offset) ausführt.
 
 ---
 
 ## Topic-Übersicht
 
-| Topic                         | Typ                 | Von → Nach                          |
-|-------------------------------|---------------------|-------------------------------------|
-| `/detect/lane`                | Float64             | detect_lane → control_lane          |
-| `/detect/stop_line`           | Bool                | detect_lane → control_lane          |
-| `/detect/duck`                | Float64             | detect_duck → control_obstacle, switch_control |
-| `/detect/duck_space`          | Float32MultiArray   | detect_duck → control_obstacle      |
-| `/obstacle/error_offset`      | Float64             | control_obstacle → control_lane     |
-| `/obstacle/done`              | Bool                | control_obstacle → switch_control   |
-| `/enable/lane`                | Bool                | switch_control → control_lane       |
-| `/enable/obstacle`            | Bool                | switch_control → control_obstacle   |
-| `/car_cmd_switch_node/cmd`    | Twist2DStamped      | control_lane → Bot (+ Odometrie-Mitlesen) |
+Alle Topics mit Prefix `/tick/` (Bot-Name).
 
-Debug-Bilder (`CompressedImage`): `/debug/original`, `/debug/annotated`
-(BEV), `/debug/lane_yellow`, `/debug/lane_white`, `/debug/duck`,
-`/debug/duck_bev`.
+| Topic | Typ | Von → Nach |
+|-------|-----|-----------|
+| `/tick/detect/lane` | `Float64` | detect_lane → control_lane |
+| `/tick/detect/stop_line` | `Bool` | detect_lane → control_lane |
+| `/tick/detect/duck` | `Float64` | detect_lane → control_obstacle |
+| `/tick/detect/zones` | `Float32MultiArray` | detect_lane → control_obstacle, switch_control |
+| `/tick/obstacle/error_offset` | `Float64` | control_obstacle → control_lane |
+| `/tick/obstacle/return_omega` | `Float64` | control_obstacle → control_lane |
+| `/tick/obstacle/stop` | `Bool` | control_obstacle → control_lane |
+| `/tick/obstacle/done` | `Bool` | control_obstacle → switch_control |
+| `/tick/enable/lane` | `Bool` | switch_control → control_lane |
+| `/tick/enable/obstacle` | `Bool` | switch_control → control_obstacle |
+| `/tick/car_cmd_switch_node/cmd` | `Twist2DStamped` | control_lane → Bot |
+
+Debug-Bilder (`CompressedImage`): `/tick/debug/original`, `/tick/debug/annotated`,
+`/tick/debug/bird_view`, `/tick/debug/lane_white`, `/tick/debug/lane_red`,
+`/tick/debug/duck_bev`.
 
 ---
 
 ## Parameter justieren
 
-Alle Parameter liegen in den JSON-Dateien unter `config/` und lassen sich zur
-Laufzeit über `configuration_node.py` per Schieberegler ändern. Jeder Bot kann
-über einen eigenen Block (z.B. `"dorette": {...}`) vom `default` abweichende
-Werte erhalten; nicht genannte Werte werden aus `default` übernommen.
+Alle Parameter liegen in `config/*.json` und lassen sich zur Laufzeit über
+`configuration_node.py` per Schieberegler ändern (kein Neustart nötig).
+Es gibt nur noch einen `"default"`-Block – keine bot-spezifischen Abschnitte.
 
 Wichtige Stellschrauben:
 
-- **`detect_duck_node`** – `duck` (HSV-Bereich der Entenfarbe, Richtung
-  Orange voreingestellt), `bev.brightness_threshold` (Helligkeitsschwelle),
-  `hough` (Kreiserkennung), `hough.roi_top` (ab wo gesucht wird).
-- **`control_obstacle_node`** – `evade.evade_offset` (Stärke des Ausweichens),
-  `evade.evade_hold` (wie lange das Manöver gehalten wird),
-  `evade.return_mode` (0 = pid, 1 = odometry), `evade.space_threshold`.
-- **`control_lane_node`** – `pid` (P/I/D), `max_vel`/`min_vel`,
-  `stop_line.stop_duration`/`cooldown_duration`.
+**`detect_lane_node.json`**
+- `white_follow.offset_px` – Sollabstand zur weißen Linie in BEV-Pixeln (Standard: 150)
+- `white.vl / vh` – Helligkeitsbereich für weiße Linie (HSV value)
+- `zones.pixel_threshold_frac` – ab wann eine Zone als belegt gilt (Standard: 0.05 = 5%)
+- `zones.corridor_x_min/max` – Breite des überwachten Fahrkorridors
+
+**`control_obstacle_node.json`**
+- `evade.evade_offset` – Stärke des Ausweich-Offsets (Standard: 0.6)
+- `evade.nachlauf_secs` – Nachlauf nach letzter Objekt-Sichtung (Standard: 1.5 s)
+- `evade.return_omega` – Drehrate bei Encoder-Rückkehr (Standard: 0.5 rad/s)
+- `evade.evade_timeout_secs` – Max. Zeit im EVADE bevor WAIT (Standard: 5.0 s)
+- `evade.wait_timeout_secs` – Max. Wartezeit im WAIT (Standard: 3.0 s)
+- `evade.active` – Gesamte Ausweichlogik ein (1) / aus (0)
+
+**`control_lane_node.json`**
+- `pid.p / i / d` – PID-Faktoren für Spurfolgen
+- `pid.max_vel / min_vel` – Geschwindigkeitsgrenzen (m/s)
+- `stop_line.stop_duration` – Standzeit an roter Linie (s)
+- `stop_line.cooldown_duration` – Wartezeit bis nächste rote Linie auslöst (s)
 
 ---
 
-## Kalibrierung am Bot (Reihenfolge)
+## Kalibrierung am Bot (empfohlene Reihenfolge)
 
-1. **BEV-Trapez prüfen.** `crop_image`-Eckpunkte in `detect_duck_node.json`
-   müssen mit denen in `detect_lane_node.json` übereinstimmen, sonst passt die
-   Platzmessung geometrisch nicht zur Spur.
-2. **Entenfarbe.** Im Dashboard `/debug/duck` und `/debug/duck_bev` ansehen und
-   die `duck`-HSV-Werte so einstellen, dass nur die Ente (nicht die gelbe
-   Mittellinie) als rote Box erkannt wird.
-3. **Helligkeitsschwelle.** `brightness_threshold` so wählen, dass eine Ente im
-   ROI sicher anschlägt, leere Fahrbahn aber nicht.
-4. **`evade_hold`.** An Geschwindigkeit und Entengröße anpassen: zu kurz → Bot
-   lenkt zu früh zurück, zu lang → fährt unnötig weit auf der falschen Bahn.
-5. **Rückkehrmodus.** Mit `pid` beginnen. Nur auf `odometry` wechseln, wenn der
-   Bot die Linie beim Ausweichen sichtbar ganz verliert.
+1. **Weiße Linie prüfen.** `/tick/debug/lane_white` ansehen – nur die weiße
+   Fahrbahnmarkierung soll hell erscheinen. `white.vl/vh` anpassen.
 
-### Vorzeichen-Check (Odometrie)
+2. **Spurabstand einstellen.** `white_follow.offset_px` so wählen, dass der Bot
+   mittig in seiner Fahrspur fährt (150 px ist Startwert, größer = näher an Linie).
 
-Die Odometrie-Rückkehr nimmt an, dass `omega > 0` einer Linksdrehung entspricht
-(ROS-Standard). Im Log beim Linksausweichen prüfen, ob `Gierintegral` positiv
-wird. Falls nicht, ist die Konvention des Bots umgekehrt – die Rückkehr
-funktioniert dann trotzdem, da das Integral nur gegen sich selbst ausgeglichen
-wird, aber der Check schafft Klarheit.
+3. **Zonen kalibrieren.** `/tick/debug/duck_bev` ansehen – farbige Rechtecke
+   zeigen die drei Zonen. Geometrie anpassen bis die Zonen den tatsächlichen
+   Fahrkorridor abdecken.
+
+4. **Helligkeitsschwelle einstellen.** Ente im Weg → Zone soll auf 1 springen.
+   Leere Fahrbahn → Zone soll 0 bleiben. `pixel_threshold_frac` justieren.
+
+5. **Ausweichstärke einstellen.** `evade_offset` bestimmt, wie weit der Bot
+   ausweicht. Zu niedrig → streift Ente; zu hoch → verlässt Fahrbahn.
+
+6. **Rückkehr einstellen.** `return_omega` und `return_threshold` so wählen,
+   dass der Bot nach dem Manöver sauber zurück auf die weiße Linie findet.
