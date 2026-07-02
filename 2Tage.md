@@ -1,196 +1,268 @@
-# 8 Konstruktion und technische Auslegung
-
-## 8.1 Zielsetzung
-
-Nach Auswahl des Vorzugskonzepts erfolgt die konstruktive Auslegung der Mud Bucket.
-
-Ziel dieses Kapitels ist die nachvollziehbare Herleitung der wesentlichen Auslegungsparameter für die Konzeptphase. Die dargestellten Berechnungen bilden die Grundlage für die anschließende CAD-Konstruktion sowie für weiterführende Festigkeits-, Funktions- und Sicherheitsnachweise.
-
-Da sich das System zum Zeitpunkt der Erstellung noch in der Konzeptentwicklung befindet, werden einzelne Randbedingungen zunächst durch begründete Annahmen beschrieben. Diese Werte dienen als Startpunkt für die Konstruktion und werden im weiteren Entwicklungsverlauf durch CAD-Daten, Berechnungen, Versuche oder Lieferanteninformationen verifiziert.
-
----
-
-# 8.2 Auslegungsrandbedingungen
-
-Die konstruktive Auslegung erfolgt auf Grundlage der in Tabelle 8-1 definierten Randbedingungen.
-
-## Tabelle 8-1: Auslegungsrandbedingungen
-
-| Parameter | Wert | Status | Begründung |
-|-----------|------|:------:|------------|
-| Einsatzbereich | Wet Tripping | Festgelegt | Projektdefinition |
-| Pipe Body | 2⅞" bis 6⅝" Drill Pipe | Festgelegt | Projektdefinition |
-| Rohrverbindungen | API Standard Connections | Festgelegt | API Spec 7 |
-| Bemessungsfall | Range 3 Double | Festgelegt | Größter Standard-Anwendungsfall |
-| Umgebungstemperatur | −20 °C bis +40 °C | Festgelegt | Einsatzgebiet |
-| Werkstoff | S355J2 | Festgelegt | Unternehmensstandard |
-| Hydraulikdruck | max. 150 bar | Festgelegt | Standardhydraulik |
-| Bladderdruck | 2 bar | Vorläufig | Vergleichbare Systeme |
-| Maximaler Innendruck | 6 bar | Vorläufig | Berechnung A2 |
-| Axiale Bladderbreite | 50 mm | Vorläufig | CAD-Konzept |
-| Radiale Bladderhöhe | 50 mm | Vorläufig | Nutgeometrie und Bladderbefestigung |
-| Freiraum nach Trennung | 100 mm | Festgelegt | Projektvorgabe |
-| Fertigungsreserve | 0 mm | Festgelegt | Funktionale Mindestabmessung |
-
----
-
-# 8.3 Auslegungsgeometrie
-
-## 8.3.1 Bemessungsfall
-
-Die Mud Bucket wird für Standard Drill Pipes gemäß API 5DP im Größenbereich von 2⅞" bis 6⅝" ausgelegt.
-
-Als Bemessungsfall wird die größte innerhalb dieses Größenbereichs vorkommende Standardverbindung verwendet.
-
-Dadurch wird sichergestellt, dass sämtliche kleineren Rohrgrößen ohne konstruktive Änderungen innerhalb des vorgesehenen Arbeitsbereiches verwendet werden können.
-
-Die geometrischen Kenndaten der Tool Joints werden den Tabellen der API Spec 7 entnommen.
-
----
-
-## 8.3.2 Bemessungstabelle
-
-Die Tabelle enthält die für die Konzeptphase verwendeten Bemessungswerte.
-
-| Pipe Body | Verbindung | Tool Joint OD DF | Pin Length LP | Box Length LB | Combined Length L | Bemessungsfall |
-|-----------|------------|-----------------:|--------------:|--------------:|------------------:|:--------------:|
-| 2⅞" | NC31 | 4.125" | 10.50" | 5.75" | 16.25" | |
-| 3½" | NC38 | 5.000" | 12.00" | 6.50" | 18.50" | |
-| 4½" | NC50 | 6.625" | 14.00" | 7.50" | 21.50" | |
-| 5" | NC56 | 7.250" | 15.50" | 8.00" | 23.50" | |
-| 5½" | NC61 | 8.250" | 16.50" | 8.50" | 25.00" | |
-| 6⅝" | 6⅝ FH | 8.625" | 18.00" | 9.00" | 27.00" | ✓ |
-
-> **Hinweis:** Die dargestellten Werte dienen als Arbeitsgrundlage für die Konzeptphase und werden vor Abschluss der Konstruktion mit den Originalwerten der API Spec 7-2 abgeglichen.
-
----
-
-# 8.4 Berechnungen
-
-Die nachfolgenden Berechnungen dienen der überschlägigen Auslegung der Mud Bucket während der Konzeptphase.
-
-Ziel ist die Ermittlung belastbarer Ausgangswerte für die CAD-Konstruktion sowie die nachfolgende konstruktive Detailauslegung.
-
----
-
-# A1 – Ermittlung der funktionalen Mindestlänge der Mud Bucket
+# A2 – Ermittlung des maximalen hydrostatischen Innendrucks
 
 ## Ziel
 
-Ermittlung der funktional erforderlichen Mindestlänge der Mud Bucket, damit der Trennvorgang einer Drill-Pipe-Verbindung vollständig innerhalb des Gehäuses erfolgen kann.
+Ziel dieser Berechnung ist die Ermittlung des maximal zu erwartenden Innendrucks innerhalb der Mud Bucket.
+
+Der ermittelte Druck dient als Lastannahme für die Dimensionierung des Gehäuses sowie für die Berechnung der auf das Schließsystem wirkenden Kräfte.
+
+---
+
+## Lastfall
+
+Der betrachtete Lastfall beschreibt einen vollständig verstopften Ablauf der Mud Bucket während eines Wet-Tripping-Vorgangs.
+
+Es wird angenommen, dass:
+
+- keine aktive Förderung durch die Spülpumpen erfolgt,
+- der Ablauf der Mud Bucket vollständig blockiert ist,
+- die Bohrspülung ausschließlich durch die hydrostatische Flüssigkeitssäule innerhalb des Bohrgestänges belastet wird.
+
+Da während des Trennvorgangs keine Pumpenleistung anliegt, stellt dieser Lastfall den maximal zu erwartenden Innendruck für die Konzeptphase dar.
+
+---
+
+## Annahmen
+
+| Parameter | Symbol | Wert |
+|-----------|--------|------:|
+| Bemessungsfall | – | Range 3 Double |
+| Flüssigkeitssäule | h | 28 m |
+| Dichte der Bohrspülung | ρ | 2.000 kg/m³ |
+| Erdbeschleunigung | g | 9,81 m/s² |
 
 ---
 
 ## Berechnungsgrundlage
 
-Als Bemessungsfall wird die größte innerhalb des Auslegungsbereichs vorkommende Standardverbindung verwendet.
-
-Die funktionale Mindestlänge setzt sich aus den folgenden Bereichen zusammen:
-
-1. **Combined Length (L)**  
-   Aufnahme der vollständig verschraubten bzw. gelösten Verbindung.
-
-2. **Box Length (LB)**  
-   Zusätzlicher Hub, den der Pin zurücklegen muss, um die Box vollständig zu verlassen.
-
-3. **Funktionsfreiraum**  
-   Nach vollständigem Trennen der Verbindung wird ein Freiraum von 100 mm vorgesehen. Dieser berücksichtigt den Übergabebereich zwischen Pipe Handler und Top Drive.
-
-4. **Bladder links und rechts**  
-   Vorläufige axiale Breite von jeweils 50 mm.
-
-5. **Fertigungsreserve**  
-   Für die Ermittlung der funktionalen Mindestlänge wird zunächst keine Fertigungsreserve berücksichtigt.
-
----
-
-## Berechnungsformel
+Der hydrostatische Druck ergibt sich aus
 
 \[
-L_{MB}
-=
-L
-+
-LB
-+
-100
-+
-2 \cdot B_{Bladder}
-+
-2 \cdot R_{Fertigung}
+p=\rho \cdot g \cdot h
 \]
-
-mit
-
-| Symbol | Bedeutung |
-|---------|-----------|
-| \(L_{MB}\) | Funktionale Mindestlänge der Mud Bucket |
-| \(L\) | Combined Length |
-| \(LB\) | Box Length |
-| \(B_{Bladder}\) | Axiale Bladderbreite |
-| \(R_{Fertigung}\) | Fertigungsreserve |
-
----
-
-## Eingangsgrößen
-
-| Parameter | Wert |
-|-----------|------:|
-| Combined Length (L) | 685,8 mm |
-| Box Length (LB) | 228,6 mm |
-| Freiraum | 100 mm |
-| Bladder links | 50 mm |
-| Bladder rechts | 50 mm |
-| Fertigungsreserve | 0 mm |
 
 ---
 
 ## Berechnung
 
 \[
+p
+=
+2000
+\cdot
+9,81
+\cdot
+28
+=
+549\,360\;Pa
+\]
+
+\[
+p
+=
+0,549\;MPa
+=
+5,49\;bar
+\]
+
+Für die weitere Auslegung wird konservativ auf
+
+> **6 bar**
+
+aufgerundet.
+
+---
+
+## Ergebnis
+
+Als Bemessungsdruck für sämtliche weiteren Berechnungen wird angesetzt
+
+> **p = 6 bar**
+
+---
+
+## Diskussion der Annahmen
+
+Die Berechnung berücksichtigt ausschließlich den hydrostatischen Druck der im Bohrgestänge befindlichen Bohrspülung.
+
+Dynamische Druckspitzen, die beispielsweise durch Pumpenbetrieb oder schnelle Bewegungen des Gestänges entstehen können, werden in der Konzeptphase nicht berücksichtigt.
+
+Sicherheitsbeiwerte werden bewusst nicht auf den Lastfall selbst angewendet, sondern erst bei der Auslegung der jeweiligen Bauteile berücksichtigt. Dadurch wird eine doppelte Berücksichtigung von Sicherheitsreserven vermieden.
+
+---
+
+# A2.1 – Ermittlung der resultierenden Öffnungskraft
+
+## Ziel
+
+Auf Grundlage des Bemessungsdrucks wird die resultierende Öffnungskraft auf die obere Gehäusehälfte bestimmt.
+
+Diese Kraft bildet die Grundlage für die spätere Dimensionierung der Hydraulikzylinder sowie der Scharnierlagerung.
+
+---
+
+## Innendurchmesser der Mud Bucket
+
+Der vorläufige Innendurchmesser ergibt sich aus dem größten Tool-Joint-Durchmesser sowie der beidseitigen radialen Bladderhöhe.
+
+| Parameter | Wert |
+|-----------|------:|
+| Größter Tool Joint OD | 219,1 mm |
+| Radiale Bladderhöhe | 50 mm |
+
+\[
+D_i
+=
+219,1
++
+2 \cdot 50
+=
+319,1\;mm
+\]
+
+---
+
+## Projizierte Druckfläche
+
+Für die überschlägige Berechnung wird eine gleichmäßige Druckverteilung auf die projizierte Innenfläche angenommen.
+
+\[
+A
+=
 L_{MB}
+\cdot
+D_i
+\]
+
+\[
+A
 =
-685,8
-+
-228,6
-+
-100
-+
-50
-+
-50
-+
-0
+1115
+\cdot
+319,1
 =
-1114,4 \; \text{mm}
+355\,797\;mm^2
+\]
+
+\[
+A
+=
+0,356\;m^2
+\]
+
+---
+
+## Öffnungskraft
+
+Die resultierende Kraft ergibt sich aus
+
+\[
+F
+=
+p
+\cdot
+A
+\]
+
+\[
+F
+=
+0,6
+\cdot
+355\,797
+=
+213\,478\;N
+\]
+
+\[
+F
+\approx
+214\;kN
 \]
 
 ---
 
 ## Ergebnis
 
-Die Berechnung ergibt eine funktionale Mindestlänge von
+Die gesamte resultierende Öffnungskraft beträgt
 
-> **L<sub>MB,min</sub> = 1115 mm**
+> **F = 214 kN**
 
-Dieser Wert stellt die konstruktive Untergrenze für die Mud Bucket dar.
+Diese Kraft wirkt gleichmäßig verteilt auf die obere Gehäusehälfte.
 
-Die tatsächliche Gehäuselänge kann im weiteren Entwicklungsverlauf aufgrund konstruktiver Randbedingungen, Fertigungsanforderungen oder Bauraumoptimierungen geringfügig größer ausfallen.
+Sie stellt **nicht** die erforderliche Hydraulikzylinderkraft dar.
 
-Die funktionale Herleitung der Mindestlänge bleibt hiervon unberührt.
+Für die Dimensionierung der Hydraulikzylinder ist zusätzlich das Momentengleichgewicht um die Scharnierachse zu betrachten.
 
 ---
 
-## Zusammenfassung A1
+# A3 – Vorbereitung der Dimensionierung der Hydraulikzylinder
 
-| Ergebnis | Wert |
-|-----------|------:|
-| Funktionale Mindestlänge | **1115 mm** |
-| Bemessungsfall | 6⅝" FH |
-| Combined Length | 685,8 mm |
-| Box Length | 228,6 mm |
-| Freiraum | 100 mm |
-| Axiale Bladderbreite | 2 × 50 mm |
-| Fertigungsreserve | 0 mm |
+## Ziel
 
-Die ermittelte Mindestlänge bildet die Grundlage für die weitere konstruktive Auslegung der Mud Bucket und dient insbesondere als Eingangsgröße für die Druck- und Kraftberechnungen der folgenden Abschnitte.
+Ziel der folgenden Berechnung ist die Ermittlung der erforderlichen Schließkraft der Hydraulikzylinder.
+
+Da die Öffnungskraft nicht direkt in den Zylindern wirkt, erfolgt die Dimensionierung über das statische Momentengleichgewicht.
+
+---
+
+## Berechnungsprinzip
+
+Die aus dem Innendruck resultierende Öffnungskraft greift im Schwerpunkt der projizierten Druckfläche an.
+
+Die Hydraulikzylinder erzeugen ein entgegengesetztes Schließmoment.
+
+Für den Gleichgewichtszustand gilt
+
+\[
+\sum M = 0
+\]
+
+Hierzu werden im nächsten Entwicklungsschritt die tatsächlichen Hebelarme aus dem CAD-Modell bestimmt.
+
+---
+
+## Erforderliche CAD-Parameter
+
+Für die Berechnung werden folgende geometrische Größen benötigt:
+
+- Lage der Scharnierachse
+- Angriffspunkt der resultierenden Druckkraft
+- Lage der Zylinderanlenkung
+- Öffnungswinkel der Gehäusehälfte
+- Anzahl der Hydraulikzylinder
+- Einbaulage der Zylinder
+
+Erst nach Vorliegen dieser Daten kann die erforderliche Zylinderkraft berechnet werden.
+
+---
+
+# Zusammenfassung der vorläufigen Auslegungsparameter
+
+| Parameter | Wert | Status |
+|-----------|------:|:------:|
+| Funktionale Mindestlänge | 1115 mm | Berechnet |
+| Größter Tool Joint OD | 219,1 mm | API |
+| Vorläufiger Innendurchmesser | 319,1 mm | Berechnet |
+| Maximaler Innendruck | 6 bar | Berechnet |
+| Projizierte Druckfläche | 0,356 m² | Berechnet |
+| Resultierende Öffnungskraft | 214 kN | Berechnet |
+| Erforderliche Zylinderkraft | folgt | CAD |
+
+---
+
+# 8.5 Ergebnisse des Kapitels
+
+Im Rahmen der Konzeptentwicklung wurden die wesentlichen geometrischen und mechanischen Randbedingungen der Mud Bucket festgelegt.
+
+Die wichtigsten Ergebnisse lauten:
+
+- Funktionale Mindestlänge der Mud Bucket: **1115 mm**
+- Vorläufiger Innendurchmesser: **319 mm**
+- Bemessungsdruck: **6 bar**
+- Resultierende Öffnungskraft: **214 kN**
+- Grundlagen für die Auslegung der Hydraulikzylinder geschaffen
+
+Die dargestellten Berechnungen bilden die Grundlage für die weitere konstruktive Entwicklung sowie die Dimensionierung der tragenden Komponenten.
+
+Die endgültige Auslegung der Hydraulikzylinder erfolgt nach Abschluss der CAD-Konstruktion auf Grundlage der tatsächlichen Hebelverhältnisse.
