@@ -6,7 +6,11 @@
 #
 # Stufe 4 – Ausweichen:
 #   Trigger : /detect/zones [nah, mittel, fern] – nah ODER mittel → EVADE
-#   Richtung: /detect/duck x beim EVADE-Eintritt, für Manöver gesperrt
+#   Richtung + Stärke: aus /detect/corridor_occupancy (Lückenprofil, nah+mittel-
+#   Band) beim EVADE-Eintritt bestimmt, für die Dauer des Manövers eingefroren.
+#   Offset zeigt zur Mitte der breitesten freien Lücke, Stärke proportional zum
+#   Abstand von der Korridormitte (min. evade_offset_min). Fallback auf die alte
+#   duck_x-Heuristik, falls kein Profil vorliegt oder der Korridor komplett belegt ist.
 #
 # Stufe 5 – Encoder-Rückkehr:
 #   Während EVADE+PASS: Radencoder-Ticks akkumulieren (data zählt IMMER aufwärts,
@@ -58,6 +62,7 @@ class ControlObstacleNode:
         self.lane_error     = 0.0
         self.zones          = [0.0, 0.0, 0.0]
         self.duck_x         = -99.0
+        self.corridor_occ   = []   # Lückenprofil von detect_lane_node (Stufe 4b)
 
         # ── Encoder-Zustand (Stufe 5) ─────────────────────────────────────────
         # data zählt bei JEDER Bewegung aufwärts – Richtung aus Fahrbefehl!
@@ -71,6 +76,7 @@ class ControlObstacleNode:
         # Defaults (defensiv überschrieben durch JSON)
         self.active               = True
         self.evade_offset         = 0.6
+        self.evade_offset_min     = 0.25
         self.nachlauf_secs        = 1.5
         self.evade_timeout_secs   = 5.0
         self.return_threshold     = 0.25
@@ -95,6 +101,8 @@ class ControlObstacleNode:
                          Float32MultiArray,   self.cbZones,        queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/detect/duck',
                          Float64,             self.cbDuck,         queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/detect/corridor_occupancy',
+                         Float32MultiArray,   self.cbCorridorOccupancy, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/detect/lane',
                          Float64,             self.cbLane,         queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/enable/obstacle',
@@ -118,6 +126,7 @@ class ControlObstacleNode:
 
         self.active               = int(g("evade", "active",               1))    == 1
         self.evade_offset         =     g("evade", "evade_offset",         0.6)
+        self.evade_offset_min     =     g("evade", "evade_offset_min",     0.25)
         self.nachlauf_secs        =     g("evade", "nachlauf_secs",        1.5)
         self.evade_timeout_secs   =     g("evade", "evade_timeout_secs",   5.0)
         self.return_threshold     =     g("evade", "return_threshold",     0.25)
@@ -135,6 +144,9 @@ class ControlObstacleNode:
 
     def cbDuck(self, msg):
         self.duck_x = msg.data
+
+    def cbCorridorOccupancy(self, msg):
+        self.corridor_occ = list(msg.data)
 
     def cbLane(self, msg):
         self.lane_error = msg.data
@@ -155,13 +167,66 @@ class ControlObstacleNode:
         """True wenn Zone nah ODER mittel belegt."""
         return self.zones[0] > 0.5 or self.zones[1] > 0.5
 
+    def _find_best_gap(self, occ):
+        """
+        Sucht die breiteste zusammenhängende freie Lücke im Korridor-Belegungsprofil.
+        Rückgabe: (center_frac, width_frac) in [0,1] über den Korridor,
+        oder None wenn kein Bin frei ist (Korridor komplett belegt).
+        """
+        n = len(occ)
+        if n == 0:
+            return None
+        best_width = 0
+        best_start = 0
+        i = 0
+        while i < n:
+            if occ[i] < 0.5:
+                j = i
+                while j < n and occ[j] < 0.5:
+                    j += 1
+                width = j - i
+                if width > best_width:
+                    best_width = width
+                    best_start = i
+                i = j
+            else:
+                i += 1
+        if best_width == 0:
+            return None
+        center_bin = best_start + best_width / 2.0
+        return (center_bin / n, best_width / n)
+
+    def _offset_from_gap(self, gap):
+        """
+        Wandelt eine gefundene Lücke (center_frac, width_frac) in einen Ausweich-Offset:
+        Richtung + Stärke proportional zum Abstand der Lückenmitte von der
+        Korridormitte (0.5). Lücke am Rand → voller evade_offset, Lücke nahe der
+        Mitte → evade_offset_min als Untergrenze (verhindert ein zu schwaches
+        Ausweichen bei einer knapp mittigen Lücke).
+        """
+        center_frac, _width_frac = gap
+        center_signed = (center_frac - 0.5) * 2.0   # -1 (links) .. +1 (rechts)
+        magnitude = max(self.evade_offset_min, min(abs(center_signed), 1.0) * self.evade_offset)
+        return magnitude if center_signed >= 0.0 else -magnitude
+
     def _determine_direction(self):
         """
-        Ausweichrichtung aus duck_x beim EVADE-Eintritt:
-          duck_x >= 0  → Objekt rechts von BEV-Mitte → nach links  (neg. Offset)
-          duck_x <  0  → Objekt links  von BEV-Mitte → nach rechts (pos. Offset)
-          duck_x = -99 → kein Blob (z.B. gelbe Linie) → rechts als sichere Seite
+        Ausweichrichtung + -stärke beim EVADE-Eintritt:
+          1. Primär: breiteste freie Lücke im Korridor-Belegungsprofil
+             (/detect/corridor_occupancy) → Offset zeigt zur Lückenmitte,
+             Stärke proportional zum Abstand von der Korridormitte.
+          2. Fallback (kein Profil oder Korridor komplett belegt): alte
+             duck_x-Heuristik – Objekt rechts → links ausweichen, sonst rechts.
         """
+        gap = self._find_best_gap(self.corridor_occ) if self.corridor_occ else None
+        if gap is not None:
+            offset = self._offset_from_gap(gap)
+            rospy.loginfo(
+                f"[Evade] Luecke bei {gap[0]*100:.0f}% der Korridorbreite "
+                f"(Breite {gap[1]*100:.0f}%) → Offset {offset:+.2f}")
+            return offset
+
+        rospy.logwarn("[Evade] Kein Profil / Korridor komplett belegt – Fallback auf duck_x")
         if self.duck_x != -99.0 and self.duck_x >= 0.0:
             return -self.evade_offset
         return +self.evade_offset
