@@ -8,10 +8,10 @@ from std_msgs.msg import Float64, Bool, Float32MultiArray
 from sensor_msgs.msg import CompressedImage
 import util
 
-#from duckietown.dtros import DTROS, NodeType
 
 class DetectLaneNode:
     OCC_BINS = 40  # Auflösung des Enten-Belegungsprofils (x-Spalten)
+    GAP_BINS = 20  # Auflösung des Korridor-Lückenprofils (x-Spalten, nur Fahrkorridor)
 
     def __init__(self, node_name):
         # ROS-Node initialisieren
@@ -80,15 +80,17 @@ class DetectLaneNode:
             f'/{self._vehicle_name}/detect/stop_line', Bool, queue_size=1)
 
         # ── Enten-Publisher (Challenge 3) ─────────────────────────────────────
-        # Belegungsprofil über die Fahrbahnbreite [0..1] je x-Spalte
-        self.pub_duck_occupancy = rospy.Publisher(
-            f'/{self._vehicle_name}/detect/duck_occupancy', Float32MultiArray, queue_size=1)
-        # Trigger/Kompatibilität: x der nächsten Ente [-1,1]; -99 = keine
+        # x der nächsten Ente [-1,1]; -99 = keine
         self.pub_duck = rospy.Publisher(
             f'/{self._vehicle_name}/detect/duck', Float64, queue_size=1)
         # Zonen-Belegung [nah, mittel, fern] ∈ {0.0, 1.0}
         self.pub_zones = rospy.Publisher(
             f'/{self._vehicle_name}/detect/zones', Float32MultiArray, queue_size=1)
+        # Korridor-Lückenprofil (GAP_BINS Spalten, nur Fahrkorridor, nah+mittel-Band,
+        # gleiche Maske wie Zonen → gelbe Linie zählt als belegt). Für control_obstacle_node,
+        # um den Ausweich-Offset aus der tatsächlich freien Lücke zu berechnen.
+        self.pub_corridor_occupancy = rospy.Publisher(
+            f'/{self._vehicle_name}/detect/corridor_occupancy', Float32MultiArray, queue_size=1)
 
         # ── Debug-Publisher ───────────────────────────────────────────────────
         self.pub_debug_original  = rospy.Publisher(
@@ -312,10 +314,9 @@ class DetectLaneNode:
             w      = bev_bgr.shape[1]
             mask   = self._duck_object_mask(bev_bgr)
             blobs  = self._duck_blobs(mask)
-            occ    = self._duck_occupancy(blobs, w)
+            occ    = self._duck_occupancy(blobs, w)  # nur fuers Debug-Bild (Balken unten)
             duck_x = self._duck_nearest_x(blobs, w)
 
-            self.pub_duck_occupancy.publish(Float32MultiArray(data=occ.tolist()))
             self.pub_duck.publish(Float64(data=duck_x))
 
             if blobs:
@@ -346,6 +347,23 @@ class DetectLaneNode:
     # ──────────────────────────────────────────────────────────────────────────
     #  ZONEN-ERKENNUNG (Stufe 3) – drei Bereiche im Fahrkorridor
     # ──────────────────────────────────────────────────────────────────────────
+
+    def _corridor_gap_profile(self, mask, x0, x1, y0, y1):
+        # Bins den Fahrkorridor (nah+mittel-Band) in GAP_BINS Spalten und markiert
+        # jede Spalte als belegt/frei – dieselbe Maske wie die Zonen (gelbe Linie
+        # zählt also mit als Hindernis, keine separate Farbfilterung).
+        profile = np.zeros(self.GAP_BINS, dtype=np.float32)
+        band_w = x1 - x0
+        if band_w <= 0 or y1 <= y0:
+            return profile
+        band = mask[y0:y1, x0:x1]
+        for i in range(self.GAP_BINS):
+            bx0 = int(i / self.GAP_BINS * band_w)
+            bx1 = max(bx0 + 1, int((i + 1) / self.GAP_BINS * band_w))
+            col  = band[:, bx0:bx1]
+            area = max(1, col.shape[0] * col.shape[1])
+            profile[i] = 1.0 if (cv2.countNonZero(col) / area) > self.zone_pixel_threshold_frac else 0.0
+        return profile
 
     def _process_zones(self, bev_bgr):
         try:
@@ -389,6 +407,14 @@ class DetectLaneNode:
                 f"mittel={'X' if mid_occ else 'O'}  "
                 f"fern={'X' if far_occ else 'O'}")
 
+            # ── Korridor-Lückenprofil (nah+mittel-Band zusammen) ──────────────
+            # Für control_obstacle_node: Ausweich-Offset aus der tatsächlich
+            # freien Lücke statt aus einem festen Wert berechnen.
+            y0_gap = int(self.zone_mid_y_min * H)
+            y1_gap = int(self.zone_near_y_max * H)
+            gap_profile = self._corridor_gap_profile(mask, x0, x1, y0_gap, y1_gap)
+            self.pub_corridor_occupancy.publish(Float32MultiArray(data=gap_profile.tolist()))
+
             # Zonen als halbtransparente Rechtecke auf duck_bev zeichnen
             dbg = self.debug_img_duck.copy()
             for name, y_min_f, y_max_f in zone_defs:
@@ -402,6 +428,17 @@ class DetectLaneNode:
                 cv2.rectangle(dbg, (x0, y0_z), (x1, y1_z), color, 2)
                 cv2.putText(dbg, name, (x0 + 4, y0_z + 18),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+
+            # Lückenprofil als Balken am unteren Korridorrand (für Kalibrierung)
+            bar_h = 10
+            for i in range(self.GAP_BINS):
+                bx0 = x0 + int(i / self.GAP_BINS * (x1 - x0))
+                bx1 = x0 + int((i + 1) / self.GAP_BINS * (x1 - x0))
+                color = (0, 0, 255) if gap_profile[i] > 0.5 else (0, 200, 0)
+                cv2.rectangle(dbg, (bx0, y1_gap - bar_h), (bx1, y1_gap), color, -1)
+            cv2.putText(dbg, "Luecke", (x0 + 4, y1_gap - bar_h - 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+
             self.debug_img_duck = dbg
 
         except Exception as e:
