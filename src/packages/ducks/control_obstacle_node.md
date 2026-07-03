@@ -2,13 +2,15 @@
 
 Dokumentation der Parameter in `control_obstacle_node.json` für die Node `control_obstacle_node`.
 
+> Für die Gesamtarchitektur, den Zustandsautomaten und die Ausweichrichtung-
+> Berechnung siehe **[CHALLENGE3_DOKU.md](CHALLENGE3_DOKU.md)**. Diese Datei
+> beschreibt nur die einzelnen JSON-Parameter.
+
 ## Zweck
 
-`control_obstacle_node` entscheidet, wie der Duckiebot beim Erkennen eines Hindernisses (Ente) ausweichen soll. Die Node berechnet keinen eigenen Lenkwinkel, sondern gibt einen additiven Offset auf `/obstacle/error_offset` aus, den `control_lane_node` zur normalen Spurregelung hinzufügt.
+`control_obstacle_node` entscheidet, wie der Duckiebot beim Erkennen eines Hindernisses (Ente oder gelbe Linie) ausweichen soll. Die Node berechnet keinen eigenen Lenkwinkel, sondern gibt einen additiven Offset auf `/obstacle/error_offset` aus, den `control_lane_node` zur normalen Spurregelung hinzufügt.
 
 ## Struktur der JSON
-
-Die Datei folgt diesem Schema:
 
 ```json
 {
@@ -16,13 +18,15 @@ Die Datei folgt diesem Schema:
   "parameters": {
     "default": {
       "evade": {
-        "active": { "default": 1, "min": 0, "max": 1 },
-        "evade_offset": { "default": 0.6, "min": 0.0, "max": 2.0 },
-        "oncoming_offset": { "default": 1.0, "min": 0.0, "max": 2.0 },
-        "ramp_step": { "default": 0.05, "min": 0.0, "max": 1.0 },
-        "evade_hold": { "default": 2.0, "min": 0.0, "max": 10.0 },
-        "gap_min_bins": { "default": 6, "min": 1, "max": 40 },
-        "edge_min_bins": { "default": 5, "min": 1, "max": 40 }
+        "active":               { "default": 1,    "min": 0,   "max": 1    },
+        "evade_offset":         { "default": 0.6,  "min": 0.0, "max": 2.0  },
+        "evade_offset_min":     { "default": 0.25, "min": 0.0, "max": 2.0  },
+        "nachlauf_secs":        { "default": 1.5,  "min": 0.0, "max": 10.0 },
+        "evade_timeout_secs":   { "default": 5.0,  "min": 1.0, "max": 30.0 },
+        "return_threshold":     { "default": 0.25, "min": 0.0, "max": 1.0  },
+        "return_stable_frames": { "default": 5,    "min": 1,   "max": 30   },
+        "return_omega":         { "default": 0.5,  "min": 0.0, "max": 3.0  },
+        "wait_timeout_secs":    { "default": 3.0,  "min": 0.5, "max": 15.0 }
       }
     }
   }
@@ -32,81 +36,69 @@ Die Datei folgt diesem Schema:
 ## Parameterbeschreibung
 
 ### `active`
-
 - Typ: `0` oder `1`
-- Bedeutung: Schaltet das Ausweichverhalten ein oder aus.
 - `1`: Node gibt bei Erkennung einen Offset aus.
-- `0`: Node gibt immer `0` als Offset aus.
-- Anwendungsfall: Teste Lane-Following ohne Ausweichen, aber mit aktiver Hindernis-Erkennung.
+- `0`: Node gibt immer `0` als Offset aus (Erkennung in `detect_lane_node` läuft trotzdem weiter).
+- Anwendungsfall: Lane-Following isoliert testen, ohne Ausweichen.
 
 ### `evade_offset`
-
 - Standard: `0.6`
-- Bedeutung: Stärke des seitlichen Ausweich-Offsets bei normalem Ausweichen.
-- Verhalten: Wird verwendet, wenn ein freier Rand breit genug ist oder eine innere Lücke benutzt wird.
-- Effekt: Größerer Wert bedeutet stärkeres Ausweichen nach links oder rechts.
+- Maximale Stärke des seitlichen Ausweich-Offsets – wird verwendet, wenn die
+  gefundene freie Lücke am Rand des Fahrkorridors liegt.
+- Größerer Wert → stärkeres Ausweichen nach links oder rechts.
 
-### `oncoming_offset`
+### `evade_offset_min`
+- Standard: `0.25`
+- Minimale Stärke des Offsets – wird verwendet, wenn die freie Lücke nahe der
+  Korridormitte liegt. Verhindert ein zu schwaches Ausweichen bei einer knapp
+  mittigen Lücke.
 
-- Standard: `1.0`
-- Bedeutung: Offset für die Notfall-Strategie, wenn kein ausreichender freier Weg vorhanden ist.
-- Verhalten: Führt zu einem stärkeren Links-Offset, um die Ente notfalls auf der Gegenspur zu umfahren.
-- Effekt: Erhöht die Größe des Ausweichmanövers in kritischen Situationen.
+### `nachlauf_secs`
+- Standard: `1.5`
+- Zeit in Sekunden, die der Ausweich-Offset nach der letzten Objekt-Sichtung
+  noch gehalten wird (Zustand `PASS`), bevor die Encoder-Rückkehr beginnt.
+- Zu kurz → Bot kehrt zurück, bevor er sicher am Hindernis vorbei ist.
 
-### `ramp_step`
+### `evade_timeout_secs`
+- Standard: `5.0`
+- Maximale Zeit im Zustand `EVADE`, bevor in `WAIT` (Anhalten) gewechselt wird.
 
-- Standard: `0.05`
-- Bedeutung: Schrittweite für die sanfte Anpassung des aktuellen Offsets in Richtung Ziel-Offset.
-- Verhalten: Der Offset wird nicht auf einmal gesetzt, sondern in kleinen Schritten gerampt.
-- Effekt: Kleinere Werte führen zu ruhigeren, langsameren Übergängen. Größere Werte machen das Ausweichen und Zurückfahren abrupt.
+### `return_threshold`
+- Standard: `0.25`
+- Schwellwert für den Spurversatz (`/detect/lane`), unterhalb dessen die
+  Rückkehr als abgeschlossen gilt (Kamera sieht die weiße Linie wieder).
 
-### `evade_hold`
-
-- Standard: `2.0`
-- Bedeutung: Zeit in Sekunden, die das Ausweichmanöver nach der letzten Duck-Erkennung gehalten wird.
-- Verhalten: Hält das Ausweichen auch dann aufrecht, wenn die Ente kurzzeitig nicht mehr erkannt wird, weil sie aus dem Bild wandert.
-- Effekt: Ein zu kleiner Wert kann dazu führen, dass der Bot zu früh zurück auf die Spur lenkt. Ein zu großer Wert verlängert das Ausweichen unnötig.
-
-### `gap_min_bins`
-
-- Standard: `6`
-- Bedeutung: Mindestbreite einer inneren freien Lücke im Erkennungsprofil, damit sie als Ausweichweg genutzt wird.
-- Verhalten: Nur Lücken mit mindestens dieser Breite werden als mögliche Durchfahrten angenommen.
-- Effekt: Größere Werte reduzieren die Bereitschaft, durch schmale Lücken zu fahren.
-
-### `edge_min_bins`
-
+### `return_stable_frames`
 - Standard: `5`
-- Bedeutung: Mindestbreite eines freien Randbereichs (links oder rechts), um den Rand auszuweichen.
-- Verhalten: Wenn der erste oder letzte freie Bereich im Profil mindestens so breit ist, wird dieser Rand bevorzugt benutzt.
-- Effekt: Höhere Werte machen die Node vorsichtiger gegenüber Randausweichbewegungen.
+- Anzahl aufeinanderfolgender Frames, die der Spurversatz unter
+  `return_threshold` bleiben muss, bevor die Rückkehr als fertig gilt
+  (Entprellung gegen kurze Fehlerkennungen).
 
-## Ausweichstrategie
+### `return_omega`
+- Standard: `0.5` rad/s
+- Drehrate während der Encoder-gestützten Rückkehr (Zustand `RETURN`).
 
-Die Node trifft Entscheidungen in dieser Reihenfolge:
+### `wait_timeout_secs`
+- Standard: `3.0`
+- Maximale Wartezeit im Zustand `WAIT`, bevor trotz weiterhin belegter Zone
+  erzwungen mit `PASS` fortgefahren wird (Sicherung gegen dauerhafte
+  Fehlerkennung, siehe `konzept_challenge3.md` Abschnitt 9).
 
-1. Prüft, ob ein linker oder rechter Rand breit genug ist (`edge_min_bins`). Wenn ja, weicht sie außen vorbei.
-2. Wenn kein Rand breit genug ist, sucht sie die breiteste innere Lücke, die mindestens `gap_min_bins` breit ist.
-3. Wenn kein Platz gefunden wird, wählt sie die Notfallstrategie mit `oncoming_offset`.
+## Ausweichstrategie (Kurzfassung)
 
-Das Ergebnis ist ein beschriebener Ausweichgrund plus ein Ziel-Offset.
+1. `control_obstacle_node` sucht in `/detect/corridor_occupancy` (Lückenprofil
+   über den Fahrkorridor, von `detect_lane_node` berechnet) die breiteste freie
+   Lücke.
+2. Der Offset zeigt zur Mitte dieser Lücke; die Stärke skaliert zwischen
+   `evade_offset_min` und `evade_offset`, je nachdem wie weit die Lücke von der
+   Korridormitte entfernt liegt.
+3. Ist kein Profil vorhanden oder der Korridor komplett belegt (keine Lücke
+   gefunden), fällt die Node auf die einfachere `duck_x`-Heuristik zurück
+   (Objekt rechts → links ausweichen, sonst rechts).
 
-## Verhalten des Zustandsautomaten
-
-- `Idle`: Kein Ausweichen aktiv, Offset ist `0`.
-- `Evading`: Sobald eine Ente erkannt wurde, rammelt der Offset langsam auf den Zielwert.
-- `Returning`: Wenn die Ente weg ist, wird der Offset auf `0` zurückgerampt.
+Details zum Zustandsautomaten (`IDLE → EVADE → [WAIT] → PASS → RETURN`) stehen
+in `CHALLENGE3_DOKU.md`, Abschnitt 5.
 
 ## Hinweis zu JSON-Kommentaren
 
 Standard-JSON erlaubt keine Kommentare. Wenn du trotzdem erklärenden Text in der Datei haben möchtest, kannst du stattdessen ein Feld wie `description` oder `help` hinzufügen.
-
-Beispiel:
-
-```json
-{
-  "description": "Parameter für control_obstacle_node: Ausweichverhalten, Rampen und Lückenbreiten.",
-  "debug_image_topics": [],
-  "parameters": { ... }
-}
-```
