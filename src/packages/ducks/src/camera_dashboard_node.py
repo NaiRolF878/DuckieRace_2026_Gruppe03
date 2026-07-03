@@ -4,7 +4,7 @@
 #
 # Schlankes 2x2-Dashboard:
 #   [ Bird's-Eye-View ] [ Enten-BEV (Belegung) ]
-#   [ Gelbe Maske     ] [ Weisse Maske         ]
+#   [ Rote Maske      ] [ Weisse Maske         ]
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -24,7 +24,7 @@ class CameraDashboardNode:
 
         self._img_bev    = self._blank("Warte auf Bird's-Eye-View ...")
         self._img_duck   = self._blank("Warte auf Enten-BEV ...")
-        self._img_yellow = self._blank("Warte auf Gelb-Maske ...")
+        self._img_red    = self._blank("Warte auf Rot-Maske ...")
         self._img_white  = self._blank("Warte auf Weiss-Maske ...")
 
         self._duck_x    = -99.0
@@ -35,8 +35,8 @@ class CameraDashboardNode:
                          CompressedImage, self._cb_bev, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/debug/duck_bev',
                          CompressedImage, self._cb_duck, queue_size=1)
-        rospy.Subscriber(f'/{self._vehicle_name}/debug/lane_yellow',
-                         CompressedImage, self._cb_yellow, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/debug/lane_red',
+                         CompressedImage, self._cb_red, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/debug/lane_white',
                          CompressedImage, self._cb_white, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/detect/duck',
@@ -72,9 +72,9 @@ class CameraDashboardNode:
     def _cb_duck(self, m):
         img = self._decode(m)
         if img is not None: self._img_duck = self._to_tile(img, "Enten-BEV")
-    def _cb_yellow(self, m):
+    def _cb_red(self, m):
         img = self._decode(m)
-        if img is not None: self._img_yellow = self._to_tile(img, "Gelb")
+        if img is not None: self._img_red = self._to_tile(img, "Rot")
     def _cb_white(self, m):
         img = self._decode(m)
         if img is not None: self._img_white = self._to_tile(img, "Weiss")
@@ -85,7 +85,7 @@ class CameraDashboardNode:
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
             top = np.hstack([self._img_bev, self._img_duck])
-            bot = np.hstack([self._img_yellow, self._img_white])
+            bot = np.hstack([self._img_red, self._img_white])
             dash = np.vstack([top, bot])
 
             mode = "OBSTACLE" if self._obstacle else "LANE"
