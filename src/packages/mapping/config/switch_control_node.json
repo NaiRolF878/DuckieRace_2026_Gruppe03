@@ -1,0 +1,19 @@
+{
+    "debug_image_topics": [],
+    "parameters": {
+        "default": {
+            "timing": {
+                "stop_duration": {
+                    "default": 2.0,
+                    "min": 0.0,
+                    "max": 5.0
+                },
+                "turning_timeout": {
+                    "default": 8.0,
+                    "min": 1.0,
+                    "max": 20.0
+                }
+            }
+        }
+    }
+}

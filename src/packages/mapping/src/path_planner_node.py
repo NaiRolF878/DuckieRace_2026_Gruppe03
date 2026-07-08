@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+# ─────────────────────────────────────────────────────────────────────────────
+# path_planner_node.py  (Challenge 4 – Mapping & Path Finding)
+#
+# Phase 2 (Planung) und Phase 3 (Delivery).
+#
+# Laedt mapping_node.json DIREKT (wie graph_state_node/explore_control_node) fuer
+# die vollstaendige Graph-Topologie. Dijkstra (nur heapq/collections/itertools,
+# Kantengewicht 1) berechnet Kuerzeste-Wege-Distanzen zwischen dem
+# delivery_start_node und allen Tor-Positionen (aus gate_map).
+#
+# Ein Tor gilt als "Position" wie folgt: gate_map[g] = {"node": N, "tag": T}
+# bedeutet, das Tor liegt auf der Kante die man von N aus ueber Tag T befaehrt.
+# Um das Tor abzuliefern, muss der Bot also (a) nach N navigieren und (b) dort
+# exakt Tag T nehmen - das ist immer genau 1 Schritt mehr als die
+# Dijkstra-Distanz zu N. Nach dem Abliefern steht der Bot am anderen Ende
+# dieser Kante (graph[N][T][0]).
+#
+# Tag-ID -> Wort: wie explore_control_node - Uebersetzung ueber
+# /graph/exit_directions (von graph_state_node). Die naechste Ausfahrt wird,
+# wie dort, JEDEN Tick frisch aus dem aktuellen Zustand neu berechnet (robust
+# gegen Zeitverzoegerungen), NICHT einmalig zwischengespeichert.
+#
+# Phase-Ownership: /navigation/phase wird nur waehrend aktiver Delivery
+# publiziert (Phase 3). Die "Planung" (Phase 2) laeuft im Hintergrund bereits
+# waehrend phase=="waiting" (von explore_control_node gesetzt), damit der
+# geplante Pfad im Debug-Fenster VOR dem Druecken von "Delivery starten"
+# bereits sichtbar ist (delivery_progress wird immer publiziert).
+# ─────────────────────────────────────────────────────────────────────────────
+
+import heapq
+import itertools
+import json
+import os
+import rospy
+from std_msgs.msg import String, Bool
+
+
+class PathPlannerNode:
+    def __init__(self, node_name):
+        rospy.init_node(node_name)
+        self._vehicle_name = os.environ['VEHICLE_NAME']
+
+        self._load_map()
+
+        self.gate_map          = {}
+        self.current_node      = None
+        self.current_edge      = None
+        self.exit_directions   = {}
+        # Sicherer Default bis die erste echte /navigation/phase-Nachricht eintrifft:
+        # "exploration" (wie explore_control_node selbst startet), NICHT "waiting" -
+        # sonst koennte die Planungssperre (phase != "exploration") in einem sehr
+        # kurzen Fenster direkt nach dem Start faelschlich durchlaessig sein.
+        self.phase             = "exploration"
+        self.start_delivery_requested = False
+
+        self.planned_order = []   # Liste von Gate-IDs (String), geplante Reihenfolge
+        self.remaining     = []
+        self.delivered     = []
+        self.delivery_active = False
+        self._last_planned_keys = None
+
+        rospy.Subscriber(f'/{self._vehicle_name}/graph/gate_map',
+                         String, self.cbGateMap, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/graph/current_node',
+                         String, self.cbCurrentNode, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/graph/current_edge',
+                         String, self.cbCurrentEdge, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/graph/exit_directions',
+                         String, self.cbExitDirections, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/navigation/start_delivery',
+                         Bool, self.cbStartDelivery, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/navigation/phase',
+                         String, self.cbPhase, queue_size=1)
+
+        self.pub_next_direction = rospy.Publisher(
+            f'/{self._vehicle_name}/navigation/next_direction', String, queue_size=1)
+        self.pub_phase = rospy.Publisher(
+            f'/{self._vehicle_name}/navigation/phase', String, queue_size=1)
+        self.pub_delivery_progress = rospy.Publisher(
+            f'/{self._vehicle_name}/navigation/delivery_progress', String, queue_size=1)
+
+        rospy.loginfo(f"[{node_name}] Bereit. Delivery-Start: {self.delivery_start_node}")
+
+    # ── Config laden ─────────────────────────────────────────────────────────
+
+    def _load_map(self):
+        path = os.path.join(os.path.dirname(__file__), "../config/mapping_node.json")
+        with open(path, 'r') as f:
+            config = json.load(f)
+        self.graph               = config["graph"]
+        self.delivery_start_node = config.get("delivery_start_node", config["mapping_start_node"])
+        self.path_planning       = config.get("path_planning", {})
+
+    # ── Callbacks ─────────────────────────────────────────────────────────────
+
+    def cbGateMap(self, msg):
+        try:
+            self.gate_map = json.loads(msg.data) if msg.data else {}
+        except (ValueError, json.JSONDecodeError):
+            rospy.logwarn("[path_planner] Ungueltiges gate_map-JSON")
+
+    def cbCurrentNode(self, msg):
+        self.current_node = msg.data
+
+    def cbCurrentEdge(self, msg):
+        try:
+            self.current_edge = json.loads(msg.data) if msg.data else None
+        except (ValueError, json.JSONDecodeError):
+            self.current_edge = None
+            return
+        self._check_delivered()
+
+    def cbExitDirections(self, msg):
+        try:
+            self.exit_directions = json.loads(msg.data)
+        except (ValueError, json.JSONDecodeError):
+            rospy.logwarn("[path_planner] Ungueltiges exit_directions-JSON")
+
+    def cbStartDelivery(self, msg):
+        if msg.data:
+            self.start_delivery_requested = True
+
+    def cbPhase(self, msg):
+        if not self.delivery_active:
+            self.phase = msg.data
+
+    # ── Dijkstra (nur heapq/collections/itertools) ──────────────────────────────
+
+    def _dijkstra(self, start):
+        dist = {start: 0}
+        prev = {}
+        pq = [(0, start)]
+        done = set()
+        while pq:
+            d, node = heapq.heappop(pq)
+            if node in done:
+                continue
+            done.add(node)
+            for tag, (neighbor, _neighbor_tag) in self.graph.get(node, {}).items():
+                nd = d + 1
+                if nd < dist.get(neighbor, float('inf')):
+                    dist[neighbor] = nd
+                    prev[neighbor] = (node, tag)
+                    heapq.heappush(pq, (nd, neighbor))
+        return dist, prev
+
+    def _shortest_path_tags(self, start, goal):
+        # Liste der Tag-IDs (String) fuer jede Kreuzung von start bis goal.
+        # None wenn goal nicht erreichbar, [] wenn start == goal.
+        if start == goal:
+            return []
+        dist, prev = self._dijkstra(start)
+        if goal not in dist:
+            return None
+        tags = []
+        node = goal
+        while node != start:
+            p_node, tag = prev[node]
+            tags.append(tag)
+            node = p_node
+        tags.reverse()
+        return tags
+
+    def _gate_entry_and_exit(self, gate_id):
+        entry = self.gate_map[gate_id]
+        node, tag = entry["node"], entry["tag"]
+        exit_node = self.graph[node][tag][0]
+        return node, tag, exit_node
+
+    def _gate_distance(self, from_node, gate_id):
+        entry_node, _tag, _exit_node = self._gate_entry_and_exit(gate_id)
+        if from_node == entry_node:
+            return 1
+        dist, _ = self._dijkstra(from_node)
+        if entry_node not in dist:
+            return None
+        return dist[entry_node] + 1
+
+    # ── Reihenfolge-Planung ──────────────────────────────────────────────────
+
+    def _plan_optimal(self, start_node, gate_ids):
+        best_order, best_dist = None, None
+        for perm in itertools.permutations(gate_ids):
+            total, pos, feasible = 0, start_node, True
+            for g in perm:
+                d = self._gate_distance(pos, g)
+                if d is None:
+                    feasible = False
+                    break
+                total += d
+                _, _, pos = self._gate_entry_and_exit(g)
+            if feasible and (best_dist is None or total < best_dist):
+                best_dist, best_order = total, perm
+        return list(best_order) if best_order is not None else list(gate_ids)
+
+    def _plan_nearest_neighbor(self, start_node, gate_ids):
+        remaining, pos, order = list(gate_ids), start_node, []
+        while remaining:
+            best_g, best_d = None, None
+            for g in remaining:
+                d = self._gate_distance(pos, g)
+                if d is not None and (best_d is None or d < best_d):
+                    best_g, best_d = g, d
+            if best_g is None:
+                order.extend(remaining)  # Rest nicht erreichbar - unveraendert anhaengen
+                break
+            order.append(best_g)
+            remaining.remove(best_g)
+            _, _, pos = self._gate_entry_and_exit(best_g)
+        return order
+
+    def _compute_order(self, start_node, gate_ids):
+        mode = self.path_planning.get("mode", "nearest_neighbor")
+        if mode == "optimal" and len(gate_ids) > 10:
+            fallback = self.path_planning.get("fallback", "nearest_neighbor")
+            rospy.logwarn(f"[path_planner] {len(gate_ids)} Tore > 10 -> "
+                          f"wechsle von 'optimal' auf '{fallback}'")
+            mode = fallback
+        if mode == "optimal":
+            return self._plan_optimal(start_node, gate_ids)
+        return self._plan_nearest_neighbor(start_node, gate_ids)
+
+    # ── Delivery-Ausfuehrung ──────────────────────────────────────────────────
+
+    def _check_delivered(self):
+        if not self.current_edge or not self.remaining:
+            return
+        for g in list(self.remaining):
+            node, tag, _exit_node = self._gate_entry_and_exit(g)
+            if self.current_edge.get("from") == node and self.current_edge.get("tag") == tag:
+                self.remaining.remove(g)
+                self.delivered.append(g)
+                rospy.loginfo(f"[path_planner] Tor {g} abgefahren "
+                              f"({len(self.delivered)}/{len(self.planned_order)})")
+
+    def _decide_next_tag(self):
+        if not self.remaining or self.current_node is None:
+            return None
+        target_gate = self.remaining[0]
+        entry_node, tag, _exit_node = self._gate_entry_and_exit(target_gate)
+        if self.current_node == entry_node:
+            return tag
+        path_tags = self._shortest_path_tags(self.current_node, entry_node)
+        if not path_tags:
+            return None
+        return path_tags[0]
+
+    # ── Hauptschleife ─────────────────────────────────────────────────────────
+
+    def run(self):
+        rate = rospy.Rate(10)
+        while not rospy.is_shutdown():
+            if not self.delivery_active and self.phase != "exploration":
+                current_keys = frozenset(self.gate_map.keys())
+                if current_keys and current_keys != self._last_planned_keys:
+                    self.planned_order = self._compute_order(self.delivery_start_node, list(current_keys))
+                    self.remaining = list(self.planned_order)
+                    self.delivered = []
+                    self._last_planned_keys = current_keys
+                    rospy.loginfo(f"[path_planner] Geplante Reihenfolge: {self.planned_order}")
+
+                if self.start_delivery_requested and self.planned_order:
+                    self.delivery_active = True
+                    self.phase = "delivery"
+                    rospy.loginfo("[path_planner] Delivery gestartet")
+
+            if self.delivery_active:
+                exit_tag = self._decide_next_tag()
+                word = self.exit_directions.get(exit_tag, "") if exit_tag is not None else ""
+                self.pub_next_direction.publish(String(data=word))
+                self.pub_phase.publish(String(data=self.phase))
+
+            self.pub_delivery_progress.publish(String(data=json.dumps({
+                "done": self.delivered,
+                "remaining": self.remaining,
+                "planned_order": self.planned_order,
+            })))
+            rate.sleep()
+
+
+if __name__ == '__main__':
+    node = PathPlannerNode('path_planner_node')
+    node.run()
+    rospy.spin()

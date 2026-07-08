@@ -1,0 +1,31 @@
+{
+  "debug_image_topics": [
+    "/debug/apriltag"
+  ],
+
+  "tag_families": ["tagStandard52h13"],
+
+  "tag_directions": {
+    "1": ["left", "straight", "right"],
+    "2": ["right", "left"],
+    "3": ["straight", "left"],
+    "4": ["straight", "right"]
+  },
+
+  "parameters": {
+    "default": {
+      "tag_memory": {
+        "seconds":  {"default": 3.0,  "min": 0.0, "max": 10.0},
+        "min_area": {"default": 1500, "min": 0,   "max": 20000}
+      },
+      "tag_filter": {
+        "stability_frames":   {"default": 3,    "min": 1,   "max": 10},
+        "pos_filter_enabled": {"default": 1,    "min": 0,   "max": 1},
+        "pos_x_min":          {"default": 0.5,  "min": 0.0, "max": 1.0},
+        "pos_x_max":          {"default": 1.0,  "min": 0.0, "max": 1.0},
+        "pos_y_max":          {"default": 0.85, "min": 0.1, "max": 1.0},
+        "min_area":           {"default": 200,  "min": 0,   "max": 5000}
+      }
+    }
+  }
+}

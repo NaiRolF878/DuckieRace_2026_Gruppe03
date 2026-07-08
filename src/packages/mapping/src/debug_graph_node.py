@@ -1,0 +1,443 @@
+#!/usr/bin/env python3
+# ─────────────────────────────────────────────────────────────────────────────
+# debug_graph_node.py  (Challenge 4 – Mapping & Path Finding)
+#
+# tkinter-Dashboard mit Echtzeit-Visualisierung: erstellte Karte (abgefahrene
+# Kanten), gewaehlter Delivery-Pfad, aktuelle Bot-Position.
+#
+# Laedt mapping_node.json DIREKT fuer die statische Graph-Topologie und das
+# Layout (node_positions bzw. automatisches Kreislayout). Der Delivery-Pfad
+# (Ebene 3) wird aus der geplanten Tor-Reihenfolge (delivery_progress) mit
+# einer lokalen Dijkstra-Berechnung in eine Knotenfolge uebersetzt - rein fuer
+# die Visualisierung, unabhaengig von path_planner_node's eigener Planung.
+#
+# ROS-Callbacks aktualisieren AUSSCHLIESSLICH State-Variablen. Das Zeichnen
+# passiert ausschliesslich in update_canvas() im Hauptthread (root.after).
+# ─────────────────────────────────────────────────────────────────────────────
+
+import heapq
+import json
+import math
+import os
+import tkinter as tk
+from tkinter import ttk
+import cv2
+import rospy
+from std_msgs.msg import String, Bool
+
+
+class DebugGraphNode:
+    GATE_COLORS = {
+        5: "#FF00FF", 6: "#00FFFF", 7: "#FF8800", 8: "#FFFF00", 9: "#FF0000",
+        10: "#AA00FF", 11: "#88FF00", 12: "#FF44AA", 13: "#00FFAA",
+    }
+
+    NODE_RADIUS = 20
+    SELF_LOOP_RADIUS = 18   # Radius des kleinen Loop-Kreises fuer Selbstschleifen
+    SELF_LOOP_GAP = 4       # Abstand zwischen Knoten-Kreis und Loop-Kreis
+
+    def __init__(self, node_name):
+        rospy.init_node(node_name)
+        self._vehicle_name = os.environ['VEHICLE_NAME']
+
+        self._load_map()
+        self.edges = self._build_edges()
+        self.node_positions = self._compute_node_positions()
+
+        # ── State (wird NUR von ROS-Callbacks geschrieben) ─────────────────────
+        self.current_node      = ""
+        self.current_edge      = None
+        self.visited_edges     = []
+        self.gate_map          = {}
+        self.phase              = "exploration"
+        self.exploration_done   = False
+        self.delivery_progress  = {"done": [], "remaining": [], "planned_order": []}
+
+        self._last_drawn_planned_order = None
+
+        rospy.Subscriber(f'/{self._vehicle_name}/graph/current_node',
+                         String, self.cbCurrentNode, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/graph/current_edge',
+                         String, self.cbCurrentEdge, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/graph/visited_edges',
+                         String, self.cbVisitedEdges, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/graph/gate_map',
+                         String, self.cbGateMap, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/navigation/phase',
+                         String, self.cbPhase, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/navigation/exploration_done',
+                         Bool, self.cbExplorationDone, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/navigation/delivery_progress',
+                         String, self.cbDeliveryProgress, queue_size=1)
+
+        self.pub_start_delivery = rospy.Publisher(
+            f'/{self._vehicle_name}/navigation/start_delivery', Bool, queue_size=1)
+
+        self._build_gui()
+        rospy.loginfo(f"[{node_name}] Bereit.")
+
+    # ── Config / Graph laden ──────────────────────────────────────────────────
+
+    def _load_map(self):
+        path = os.path.join(os.path.dirname(__file__), "../config/mapping_node.json")
+        with open(path, 'r') as f:
+            config = json.load(f)
+        self.graph               = config["graph"]
+        self.delivery_start_node = config.get("delivery_start_node", config["mapping_start_node"])
+        self._node_positions_cfg = config.get("debug_layout", {}).get("node_positions", {})
+
+    def _build_edges(self):
+        seen = set()
+        edges = []
+        for node, exits in self.graph.items():
+            for tag, (neighbor, neighbor_tag) in exits.items():
+                neighbor_tag = str(neighbor_tag)
+                if node != neighbor:
+                    if node <= neighbor:
+                        key = (node, tag)
+                        a_node, a_tag, b_node, b_tag = node, tag, neighbor, neighbor_tag
+                    else:
+                        key = (neighbor, neighbor_tag)
+                        a_node, a_tag, b_node, b_tag = neighbor, neighbor_tag, node, tag
+                else:
+                    # Selbstschleife (z.B. Wendeschleife): Knotenvergleich
+                    # disambiguiert nicht - nach Tag normalisieren, damit beide
+                    # Richtungen als EINE Kante gezeichnet werden (konsistent
+                    # mit graph_state_node/explore_control_node).
+                    if tag <= neighbor_tag:
+                        key = (node, tag)
+                        a_node, a_tag, b_node, b_tag = node, tag, neighbor, neighbor_tag
+                    else:
+                        key = (neighbor, neighbor_tag)
+                        a_node, a_tag, b_node, b_tag = neighbor, neighbor_tag, node, tag
+                if key in seen:
+                    continue
+                seen.add(key)
+                edges.append({"node_a": a_node, "tag_a": a_tag, "node_b": b_node, "tag_b": b_tag})
+        return edges
+
+    def _compute_node_positions(self):
+        # Kreislayout immer als Basis berechnen (nicht nur wenn node_positions
+        # komplett leer ist). Konfigurierte Positionen ueberschreiben dann nur
+        # die genannten Knoten - fehlt in mapping_node.json versehentlich ein
+        # einzelner Knoten, faellt er auf seine Kreislayout-Position zurueck
+        # statt beim Start mit KeyError abzustuerzen.
+        nodes = sorted(self.graph.keys())
+        n = len(nodes)
+        cx, cy, r = 450, 300, 220
+        positions = {}
+        for i, node in enumerate(nodes):
+            angle = math.radians(360.0 * i / n) if n else 0.0
+            positions[node] = (cx + r * math.sin(angle), cy - r * math.cos(angle))
+        for node, pos in self._node_positions_cfg.items():
+            if node in positions:
+                positions[node] = tuple(pos)
+        return positions
+
+    def _self_loop_bbox(self, node):
+        # Bounding-Box eines kleinen Kreises oberhalb des Knotens, der eine
+        # Selbstschleife (Kante mit node_a == node_b) darstellt - eine normale
+        # Linie waere hier eine Strecke der Laenge 0 (unsichtbar).
+        x, y = self.node_positions[node]
+        cy = y - self.NODE_RADIUS - self.SELF_LOOP_GAP - self.SELF_LOOP_RADIUS
+        r = self.SELF_LOOP_RADIUS
+        return (x - r, cy - r, x + r, cy + r)
+
+    def _self_loop_anchor(self, node):
+        # Punkt auf dem Loop-Kreis, an dem z.B. ein Tor-Symbol platziert wird.
+        x, y = self.node_positions[node]
+        cy = y - self.NODE_RADIUS - self.SELF_LOOP_GAP - self.SELF_LOOP_RADIUS
+        return (x, cy - self.SELF_LOOP_RADIUS)
+
+    def _find_edge_for(self, node, tag):
+        for edge in self.edges:
+            if (edge["node_a"] == node and edge["tag_a"] == tag) or \
+               (edge["node_b"] == node and edge["tag_b"] == tag):
+                return edge
+        return None
+
+    # ── Lokale Dijkstra (nur fuer Ebene-3-Visualisierung) ───────────────────────
+
+    def _dijkstra_nodes(self, start, goal):
+        if start == goal:
+            return [start]
+        dist = {start: 0}
+        prev = {}
+        pq = [(0, start)]
+        done = set()
+        while pq:
+            d, node = heapq.heappop(pq)
+            if node in done:
+                continue
+            done.add(node)
+            if node == goal:
+                break
+            for tag, (neighbor, _nt) in self.graph.get(node, {}).items():
+                nd = d + 1
+                if nd < dist.get(neighbor, float('inf')):
+                    dist[neighbor] = nd
+                    prev[neighbor] = node
+                    heapq.heappush(pq, (nd, neighbor))
+        if goal not in dist:
+            return None
+        path = [goal]
+        while path[-1] != start:
+            path.append(prev[path[-1]])
+        path.reverse()
+        return path
+
+    def _build_delivery_route_nodes(self, planned_order):
+        if not planned_order:
+            return []
+        route = [self.delivery_start_node]
+        pos = self.delivery_start_node
+        for gate_id in planned_order:
+            info = self.gate_map.get(gate_id)
+            if info is None:
+                continue
+            entry, tag = info["node"], info["tag"]
+            segment = self._dijkstra_nodes(pos, entry)
+            if segment is None:
+                continue
+            route.extend(segment[1:])
+            exit_node = self.graph.get(entry, {}).get(tag, [None])[0]
+            if exit_node is None:
+                continue
+            route.append(exit_node)
+            pos = exit_node
+        return route
+
+    # ── ROS-Callbacks (nur State aktualisieren, NIE tkinter aufrufen) ──────────
+
+    def cbCurrentNode(self, msg):
+        self.current_node = msg.data
+
+    def cbCurrentEdge(self, msg):
+        try:
+            self.current_edge = json.loads(msg.data) if msg.data else None
+        except (ValueError, json.JSONDecodeError):
+            self.current_edge = None
+
+    def cbVisitedEdges(self, msg):
+        try:
+            self.visited_edges = json.loads(msg.data)
+        except (ValueError, json.JSONDecodeError):
+            pass
+
+    def cbGateMap(self, msg):
+        try:
+            self.gate_map = json.loads(msg.data) if msg.data else {}
+        except (ValueError, json.JSONDecodeError):
+            pass
+
+    def cbPhase(self, msg):
+        self.phase = msg.data
+
+    def cbExplorationDone(self, msg):
+        self.exploration_done = msg.data
+
+    def cbDeliveryProgress(self, msg):
+        try:
+            self.delivery_progress = json.loads(msg.data)
+        except (ValueError, json.JSONDecodeError):
+            pass
+
+    # ── GUI-Aufbau ────────────────────────────────────────────────────────────
+
+    def _build_gui(self):
+        self.root = tk.Tk()
+        self.root.title("Duckie Graph Dashboard")
+        self.root.geometry("1200x650")
+        self.root.protocol("WM_DELETE_WINDOW", self.shutdown)
+
+        self.canvas = tk.Canvas(self.root, width=900, height=600, bg="white",
+                                 highlightthickness=0)
+        self.canvas.pack(side="left", fill="y")
+
+        self.panel = tk.Frame(self.root, width=280)
+        self.panel.pack(side="right", fill="both", expand=True)
+        self.panel.pack_propagate(False)
+
+        self.lbl_phase = tk.Label(self.panel, anchor="w", justify="left")
+        self.lbl_phase.pack(fill="x", padx=10, pady=(10, 2))
+        self.lbl_position = tk.Label(self.panel, anchor="w", justify="left")
+        self.lbl_position.pack(fill="x", padx=10, pady=2)
+        self.lbl_edge = tk.Label(self.panel, anchor="w", justify="left", wraplength=260)
+        self.lbl_edge.pack(fill="x", padx=10, pady=2)
+        self.lbl_progress = tk.Label(self.panel, anchor="w", justify="left", wraplength=260)
+        self.lbl_progress.pack(fill="x", padx=10, pady=2)
+        self.lbl_gates = tk.Label(self.panel, anchor="w", justify="left", wraplength=260)
+        self.lbl_gates.pack(fill="x", padx=10, pady=2)
+        self.lbl_planned = tk.Label(self.panel, anchor="w", justify="left", wraplength=260)
+        self.lbl_planned.pack(fill="x", padx=10, pady=2)
+
+        ttk.Separator(self.panel, orient="horizontal").pack(fill="x", padx=10, pady=10)
+
+        btn_frame = tk.Frame(self.panel, width=200, height=50)
+        btn_frame.pack(padx=10, pady=(0, 10))
+        btn_frame.pack_propagate(False)
+        self.btn_start_delivery = tk.Button(
+            btn_frame, text="Delivery starten", bg="#44AA44", fg="white",
+            state="disabled", command=self._on_start_delivery_click)
+        self.btn_start_delivery.pack(fill="both", expand=True)
+
+        self.lbl_delivered = tk.Label(self.panel, anchor="w", justify="left", wraplength=260)
+        self.lbl_delivered.pack(fill="x", padx=10, pady=2)
+
+        self._draw_static_graph()
+        self.root.after(200, self.update_canvas)
+
+    def _on_start_delivery_click(self):
+        self.pub_start_delivery.publish(Bool(data=True))
+        rospy.loginfo("[debug_graph] 'Delivery starten' gedrueckt")
+
+    # ── Canvas: Ebene 1 (statisch, einmalig) ────────────────────────────────────
+
+    def _draw_static_graph(self):
+        for edge in self.edges:
+            if edge["node_a"] == edge["node_b"]:
+                self.canvas.create_oval(*self._self_loop_bbox(edge["node_a"]),
+                                         outline="#555555", width=2)
+                continue
+            x1, y1 = self.node_positions[edge["node_a"]]
+            x2, y2 = self.node_positions[edge["node_b"]]
+            self.canvas.create_line(x1, y1, x2, y2, fill="#555555", width=2)
+        for node, (x, y) in self.node_positions.items():
+            self.canvas.create_oval(x - 20, y - 20, x + 20, y + 20,
+                                     fill="#666666", outline="")
+            self.canvas.create_text(x, y, text=node, fill="white")
+
+    # ── Canvas: Ebene 2/3 + dynamische Elemente (bei jedem Update neu) ─────────
+
+    def _redraw_visited(self):
+        self.canvas.delete("visited")
+        visited_set = {tuple(e) for e in self.visited_edges}
+        for edge in self.edges:
+            if (edge["node_a"], edge["tag_a"]) not in visited_set:
+                continue
+            if edge["node_a"] == edge["node_b"]:
+                self.canvas.create_oval(*self._self_loop_bbox(edge["node_a"]),
+                                         outline="#00CC44", width=3, tags="visited")
+                continue
+            x1, y1 = self.node_positions[edge["node_a"]]
+            x2, y2 = self.node_positions[edge["node_b"]]
+            self.canvas.create_line(x1, y1, x2, y2, fill="#00CC44", width=3,
+                                     tags="visited")
+
+    def _redraw_planned_path(self):
+        self.canvas.delete("planned")
+        planned_order = self.delivery_progress.get("planned_order", [])
+        route = self._build_delivery_route_nodes(planned_order)
+        for i in range(len(route) - 1):
+            a, b = route[i], route[i + 1]
+            if a not in self.node_positions or b not in self.node_positions:
+                continue
+            if a == b:
+                # Route fuehrt ueber eine Selbstschleife (Wendeschleife)
+                self.canvas.create_oval(*self._self_loop_bbox(a),
+                                         outline="#4488FF", width=3, dash=(8, 4),
+                                         tags="planned")
+                continue
+            x1, y1 = self.node_positions[a]
+            x2, y2 = self.node_positions[b]
+            self.canvas.create_line(x1, y1, x2, y2, fill="#4488FF", width=3,
+                                     dash=(8, 4), arrow=tk.LAST, tags="planned")
+
+    def _redraw_gates(self):
+        self.canvas.delete("gates")
+        delivered_set = set(self.delivery_progress.get("done", []))
+        for gate_id, info in self.gate_map.items():
+            edge = self._find_edge_for(info.get("node"), info.get("tag"))
+            if edge is None:
+                continue
+            if edge["node_a"] == edge["node_b"]:
+                mx, my = self._self_loop_anchor(edge["node_a"])
+            else:
+                x1, y1 = self.node_positions[edge["node_a"]]
+                x2, y2 = self.node_positions[edge["node_b"]]
+                mx, my = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+            try:
+                color = self.GATE_COLORS.get(int(gate_id), "#FFFFFF")
+            except ValueError:
+                color = "#FFFFFF"
+            self.canvas.create_rectangle(mx - 6, my - 10, mx + 6, my + 10,
+                                          fill=color, outline="black", tags="gates")
+            self.canvas.create_text(mx, my + 18, text=gate_id, fill="black", tags="gates")
+            if gate_id in delivered_set:
+                self.canvas.create_text(mx, my - 16, text="✓", fill="black",
+                                         font=("Arial", 12, "bold"), tags="gates")
+
+    def _redraw_bot(self):
+        self.canvas.delete("bot")
+        if self.current_node in self.node_positions:
+            x, y = self.node_positions[self.current_node]
+            self.canvas.create_oval(x - 24, y - 24, x + 24, y + 24,
+                                     fill="#FFCC00", outline="", tags="bot")
+            self.canvas.create_text(x, y, text=self.current_node, fill="black", tags="bot")
+
+    # ── Status-Panel ─────────────────────────────────────────────────────────
+
+    def _update_labels(self):
+        self.lbl_phase.config(text=f"Phase: {self.phase}")
+        self.lbl_position.config(text=f"Bot-Position: {self.current_node or '-'}")
+
+        edge_txt = "-"
+        if self.current_edge:
+            frm = self.current_edge.get("from")
+            tag = self.current_edge.get("tag")
+            neighbor = self.graph.get(frm, {}).get(tag, [None])[0]
+            if neighbor:
+                edge_txt = f"{frm} → {neighbor} (Tag {tag})"
+        self.lbl_edge.config(text=f"Aktuelle Kante: {edge_txt}")
+
+        self.lbl_progress.config(
+            text=f"Karten-Fortschritt: {len(self.visited_edges)} / {len(self.edges)} Kanten besucht")
+
+        if self.gate_map:
+            gate_lines = [f"  {gid}: {info.get('node')} / Tag {info.get('tag')}"
+                          for gid, info in sorted(self.gate_map.items())]
+        else:
+            gate_lines = ["  -"]
+        self.lbl_gates.config(text="Gefundene Tore:\n" + "\n".join(gate_lines))
+
+        planned = self.delivery_progress.get("planned_order", [])
+        self.lbl_planned.config(
+            text="Geplante Reihenfolge:\n  " + (", ".join(planned) if planned else "-"))
+
+        done = self.delivery_progress.get("done", [])
+        if done:
+            delivered_txt = "\n".join(f"  ✓ {g}" for g in done)
+        else:
+            delivered_txt = "  -"
+        self.lbl_delivered.config(text="Abgefahrene Tore:\n" + delivered_txt)
+
+        self.btn_start_delivery.config(state="normal" if self.exploration_done else "disabled")
+
+    # ── Haupt-Update (Main-Thread, 5 Hz) ─────────────────────────────────────
+
+    def update_canvas(self):
+        self._redraw_visited()
+
+        planned_order = self.delivery_progress.get("planned_order", [])
+        if planned_order != self._last_drawn_planned_order:
+            self._redraw_planned_path()
+            self._last_drawn_planned_order = list(planned_order)
+
+        self._redraw_gates()
+        self._redraw_bot()
+        self._update_labels()
+
+        self.root.after(200, self.update_canvas)
+
+    def shutdown(self):
+        rospy.signal_shutdown("GUI geschlossen")
+        cv2.destroyAllWindows()
+        self.root.destroy()
+
+    def run(self):
+        self.root.mainloop()
+
+
+if __name__ == '__main__':
+    node = DebugGraphNode('debug_graph_node')
+    node.run()
