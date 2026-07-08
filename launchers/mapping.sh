@@ -3,30 +3,19 @@
 source /opt/ros/noetic/setup.bash
 source devel/setup.bash
 
-trap "kill 0" EXIT
-
-# --- core lane system (Basis für Bewegung) ---
-rosrun follow_lane detect_lane_node.py &
-rosrun follow_lane switch_control_node.py &
-
-sleep 3
-
-rosrun follow_lane control_lane_node.py &
-
-# --- gate detection (mapping perception) ---
-rosrun mapping detect_gate_node.py &
-
-sleep 2
-
-# --- mapping logic (Graph-Aufbau) ---
-rosrun mapping mapping_node.py &
-
-sleep 2
-
-# --- path planning (entscheidet nächste Ziele) ---
-rosrun mapping pathfinding_node.py &
-
-# --- optional: waypoint execution (falls getrennt von lane control) ---
-rosrun mapping waypoint_navigation_node.py &
-
+# ── Wahrnehmung ──────────────────────────────────────────────────────────────
+rosrun mapping detect_lane_node.py &
+rosrun mapping detect_apriltag_node.py &
+# ── Graph-Zustand + Phasen-Logik + Dashboard ────────────────────────────────
+rosrun mapping graph_state_node.py &
+rosrun mapping switch_control_node.py &
+rosrun mapping explore_control_node.py &
+rosrun mapping path_planner_node.py &
+rosrun mapping debug_graph_node.py &
+# rosrun mapping camera_dashboard_node.py &
+# ── Steuerung (erst starten wenn detect_lane Werte liefert) ──────────────────
+sleep 5
+rosrun mapping control_lane_node.py &
+rosrun mapping control_intersection_node.py &
+# Auf alle Nodes warten (blockiert bis Strg+C)
 wait
