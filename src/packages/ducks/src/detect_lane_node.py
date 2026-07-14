@@ -40,13 +40,18 @@ class DetectLaneNode:
         self.duck_enabled         = True
         self.duck_roi_top         = 0.35
         self.duck_roi_bottom      = 1.00
-        self.duck_brightness_thr  = 90
-        self.duck_use_otsu        = 1
         self.duck_min_area        = 250
         self.duck_min_w           = 12
         self.duck_min_h           = 12
-        self.duck_line_max_aspect = 4.0
         self.debug_img_duck       = blank_color
+
+        # ── Hindernis-Farbbereiche (gelb/grün) – Defaults VOR init_parameters ──
+        self.yellow_hl, self.yellow_hh = 20, 35
+        self.yellow_sl, self.yellow_sh = 80, 255
+        self.yellow_vl, self.yellow_vh = 80, 255
+        self.green_hl, self.green_hh   = 40, 85
+        self.green_sl, self.green_sh   = 60, 255
+        self.green_vl, self.green_vh   = 40, 255
 
         # ── Weiß-Follow-Modus (Stufe 2) ──────────────────────────────────────
         self.white_follow_offset_px = 150
@@ -157,12 +162,22 @@ class DetectLaneNode:
         self.duck_enabled         = int(gd("duck", "enabled", 1)) == 1
         self.duck_roi_top         = gd("duck", "roi_top", 0.35)
         self.duck_roi_bottom      = gd("duck", "roi_bottom", 1.0)
-        self.duck_brightness_thr  = gd("duck", "brightness_threshold", 90)
-        self.duck_use_otsu        = int(gd("duck", "use_otsu", 1))
         self.duck_min_area        = gd("duck", "min_area", 250)
         self.duck_min_w           = gd("duck", "min_w", 12)
         self.duck_min_h           = gd("duck", "min_h", 12)
-        self.duck_line_max_aspect = gd("duck", "line_max_aspect", 4.0)
+
+        self.yellow_hl = gd("obstacle_color", "yellow_hl", 20)
+        self.yellow_hh = gd("obstacle_color", "yellow_hh", 35)
+        self.yellow_sl = gd("obstacle_color", "yellow_sl", 80)
+        self.yellow_sh = gd("obstacle_color", "yellow_sh", 255)
+        self.yellow_vl = gd("obstacle_color", "yellow_vl", 80)
+        self.yellow_vh = gd("obstacle_color", "yellow_vh", 255)
+        self.green_hl  = gd("obstacle_color", "green_hl",  40)
+        self.green_hh  = gd("obstacle_color", "green_hh",  85)
+        self.green_sl  = gd("obstacle_color", "green_sl",  60)
+        self.green_sh  = gd("obstacle_color", "green_sh",  255)
+        self.green_vl  = gd("obstacle_color", "green_vl",  40)
+        self.green_vh  = gd("obstacle_color", "green_vh",  255)
 
         self.white_follow_offset_px = gd("white_follow", "offset_px", 150)
 
@@ -259,21 +274,28 @@ class DetectLaneNode:
     #  ENTEN-ERKENNUNG (Challenge 3) – integriert, nutzt dasselbe BEV-Bild
     # ──────────────────────────────────────────────────────────────────────────
 
+    def _color_obstacle_mask(self, bev_bgr):
+        # Hindernis = gelb ODER grün (Enten + gelbe Mittellinie zählen gleich,
+        # unbunte Reflexionen/Kleberest fallen automatisch raus).
+        blurred = cv2.GaussianBlur(bev_bgr, (5, 5), 0)
+        hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
+        mask_yellow = cv2.inRange(hsv,
+            (self.yellow_hl, self.yellow_sl, self.yellow_vl),
+            (self.yellow_hh, self.yellow_sh, self.yellow_vh))
+        mask_green = cv2.inRange(hsv,
+            (self.green_hl, self.green_sl, self.green_vl),
+            (self.green_hh, self.green_sh, self.green_vh))
+        mask = cv2.bitwise_or(mask_yellow, mask_green)
+        return cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+
     def _duck_object_mask(self, bev_bgr):
-        # Farb-robust: helle Objekte (Enten) auf dunklem Boden.
-        gray = cv2.cvtColor(bev_bgr, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        if self.duck_use_otsu:
-            _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        else:
-            _, mask = cv2.threshold(gray, int(self.duck_brightness_thr), 255, cv2.THRESH_BINARY)
+        mask = self._color_obstacle_mask(bev_bgr)
         h = mask.shape[0]
         y0 = max(0, int(h * self.duck_roi_top))
         y1 = min(h, int(h * self.duck_roi_bottom))
         mask[:y0, :] = 0
         if y1 < h:
             mask[y1:, :] = 0
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
         return mask
 
     def _duck_blobs(self, mask):
@@ -288,8 +310,6 @@ class DetectLaneNode:
                 continue
             if w < self.duck_min_w or h < self.duck_min_h:
                 continue
-            if w > 0 and (h / float(w)) > self.duck_line_max_aspect:
-                continue  # linienartig → verwerfen
             blobs.append((int(x), int(y), int(w), int(h)))
         return blobs
 
@@ -369,14 +389,8 @@ class DetectLaneNode:
         try:
             H, W = bev_bgr.shape[:2]
 
-            # Helligkeitsmaske (gleicher Ansatz wie Enten, aber ohne ROI-Beschnitt)
-            gray = cv2.cvtColor(bev_bgr, cv2.COLOR_BGR2GRAY)
-            gray = cv2.GaussianBlur(gray, (5, 5), 0)
-            if self.duck_use_otsu:
-                _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            else:
-                _, mask = cv2.threshold(gray, int(self.duck_brightness_thr), 255, cv2.THRESH_BINARY)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+            # Farbmaske (gleiche Gelb/Grün-Erkennung wie Enten, aber ohne ROI-Beschnitt)
+            mask = self._color_obstacle_mask(bev_bgr)
 
             # Korridor x-Grenzen (fest in BEV-Pixeln)
             x0 = int(self.zone_corridor_x_min * W)
