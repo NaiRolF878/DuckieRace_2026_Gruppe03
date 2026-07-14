@@ -31,7 +31,7 @@
 import os
 import rospy
 from enum import Enum
-from std_msgs.msg import Float64, Bool, Float32MultiArray
+from std_msgs.msg import Float64, Bool, Float32MultiArray, String
 from duckietown_msgs.msg import WheelEncoderStamped
 import util
 
@@ -58,6 +58,7 @@ class ControlObstacleNode:
         self.pass_start     = None
         self.wait_start     = None
         self.return_stable  = 0
+        self.free_stable    = 0    # Zonen-frei-Zähler (EVADE/WAIT → PASS)
         self.return_omega_value = 0.0
         self.lane_error     = 0.0
         self.zones          = [0.0, 0.0, 0.0]
@@ -83,6 +84,7 @@ class ControlObstacleNode:
         self.return_stable_frames = 5
         self.return_omega         = 0.5
         self.wait_timeout_secs    = 3.0
+        self.free_stable_frames   = 5
 
         util.init_parameters(node_name, self.cbUpdateParameters)
 
@@ -95,6 +97,9 @@ class ControlObstacleNode:
             f'/{self._vehicle_name}/obstacle/stop', Bool, queue_size=1)
         self.pub_done = rospy.Publisher(
             f'/{self._vehicle_name}/obstacle/done', Bool, queue_size=1)
+        # Aktueller Zustand (Idle/Evade/Wait/Pass/Return) – für Debug-Overlays
+        self.pub_state = rospy.Publisher(
+            f'/{self._vehicle_name}/obstacle/state', String, queue_size=1)
 
         # ── Subscriber ────────────────────────────────────────────────────────
         rospy.Subscriber(f'/{self._vehicle_name}/detect/zones',
@@ -133,6 +138,7 @@ class ControlObstacleNode:
         self.return_stable_frames = int(g("evade", "return_stable_frames", 5))
         self.return_omega         =     g("evade", "return_omega",         0.5)
         self.wait_timeout_secs    =     g("evade", "wait_timeout_secs",    3.0)
+        self.free_stable_frames   = int(g("evade", "free_stable_frames",   5))
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
@@ -251,6 +257,7 @@ class ControlObstacleNode:
             if self._zones_active():
                 self.locked_offset = self._determine_direction()
                 self.evade_start   = now
+                self.free_stable   = 0
                 self.state         = EvadeState.Evade
                 rospy.loginfo(
                     f"[Evade] Auslösung – "
@@ -262,27 +269,43 @@ class ControlObstacleNode:
             self.accumulated_ticks += delta_ticks
             elapsed = (now - self.evade_start).to_sec()
 
+            if self._zones_active():
+                self.free_stable = 0
+            else:
+                self.free_stable += 1
+
             if elapsed > self.evade_timeout_secs:
                 rospy.logwarn(f"[Evade] Timeout {elapsed:.1f}s → WAIT")
-                self.wait_start = now
-                self.state      = EvadeState.Wait
-            elif not self._zones_active():
-                rospy.loginfo("[Evade] Korridor frei → PASS")
-                self.pass_start = now
-                self.state      = EvadeState.Pass
+                self.wait_start  = now
+                self.state       = EvadeState.Wait
+                self.free_stable = 0
+            elif self.free_stable >= self.free_stable_frames:
+                rospy.loginfo(
+                    f"[Evade] Korridor frei ({self.free_stable} Frames stabil) → PASS")
+                self.pass_start  = now
+                self.state       = EvadeState.Pass
+                self.free_stable = 0
 
         elif self.state == EvadeState.Wait:
             self.current_offset = 0.0   # kein Offset während Stillstand
             elapsed = (now - self.wait_start).to_sec()
 
-            if not self._zones_active():
-                rospy.loginfo("[Evade] WAIT: Korridor frei → PASS")
-                self.pass_start = now
-                self.state      = EvadeState.Pass
+            if self._zones_active():
+                self.free_stable = 0
+            else:
+                self.free_stable += 1
+
+            if self.free_stable >= self.free_stable_frames:
+                rospy.loginfo(
+                    f"[Evade] WAIT: Korridor frei ({self.free_stable} Frames stabil) → PASS")
+                self.pass_start  = now
+                self.state       = EvadeState.Pass
+                self.free_stable = 0
             elif elapsed >= self.wait_timeout_secs:
                 rospy.logwarn("[Evade] WAIT Timeout – erzwinge PASS")
-                self.pass_start = now
-                self.state      = EvadeState.Pass
+                self.pass_start  = now
+                self.state       = EvadeState.Pass
+                self.free_stable = 0
 
         elif self.state == EvadeState.Pass:
             self.current_offset     = self.locked_offset
@@ -292,6 +315,7 @@ class ControlObstacleNode:
             if self._zones_active():
                 rospy.loginfo("[Evade] PASS: Objekt wieder da → EVADE")
                 self.evade_start = now
+                self.free_stable = 0
                 self.state       = EvadeState.Evade
             elif elapsed >= self.nachlauf_secs:
                 rospy.loginfo(
@@ -315,6 +339,7 @@ class ControlObstacleNode:
                 self.locked_offset      = self._determine_direction()
                 self.evade_start        = now
                 self.accumulated_ticks  = 0.0
+                self.free_stable        = 0
                 self.state              = EvadeState.Evade
                 return
 
@@ -350,6 +375,7 @@ class ControlObstacleNode:
             self.pub_return_omega.publish(Float64(data=self.return_omega_value))
             # Stop-Signal: True nur im WAIT-Zustand (Stufe 6)
             self.pub_stop.publish(Bool(data=(self.state == EvadeState.Wait)))
+            self.pub_state.publish(String(data=self.state.name))
 
             rospy.loginfo_throttle(2.0,
                 f"[Evade] {self.state.name}  "
