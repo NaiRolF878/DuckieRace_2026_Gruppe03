@@ -3,7 +3,6 @@
         "/debug/original",
         "/debug/annotated",
         "/debug/bird_view",
-        "/debug/lane_croped",
         "/debug/lane_white",
         "/debug/lane_red",
         "/debug/duck_bev"
