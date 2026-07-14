@@ -13,7 +13,7 @@ import rospy
 import numpy as np
 import cv2
 from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import Float64, Bool
+from std_msgs.msg import Float64, Bool, String
 
 
 class CameraDashboardNode:
@@ -27,9 +27,9 @@ class CameraDashboardNode:
         self._img_red    = self._blank("Warte auf Rot-Maske ...")
         self._img_white  = self._blank("Warte auf Weiss-Maske ...")
 
-        self._duck_x    = -99.0
-        self._stop_line = False
-        self._obstacle  = False
+        self._duck_x        = -99.0
+        self._stop_line     = False
+        self._obstacle_state = "Idle"
 
         rospy.Subscriber(f'/{self._vehicle_name}/debug/bird_view',
                          CompressedImage, self._cb_bev, queue_size=1)
@@ -43,8 +43,8 @@ class CameraDashboardNode:
                          Float64, self._cb_duck_x, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/detect/stop_line',
                          Bool, self._cb_stop, queue_size=1)
-        rospy.Subscriber(f'/{self._vehicle_name}/enable/obstacle',
-                         Bool, lambda m: setattr(self, '_obstacle', m.data), queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/obstacle/state',
+                         String, lambda m: setattr(self, '_obstacle_state', m.data), queue_size=1)
 
         rospy.loginfo(f"[{node_name}] Dashboard gestartet.")
 
@@ -88,9 +88,15 @@ class CameraDashboardNode:
             bot = np.hstack([self._img_red, self._img_white])
             dash = np.vstack([top, bot])
 
-            mode = "OBSTACLE" if self._obstacle else "LANE"
-            mcol = (0, 165, 255) if self._obstacle else (0, 255, 0)
-            cv2.putText(dash, mode, (10, dash.shape[0] - 12),
+            state_colors = {
+                "Idle":   (0, 255, 0),
+                "Evade":  (0, 165, 255),
+                "Wait":   (0, 0, 255),
+                "Pass":   (0, 165, 255),
+                "Return": (255, 165, 0),
+            }
+            mcol = state_colors.get(self._obstacle_state, (255, 255, 255))
+            cv2.putText(dash, self._obstacle_state.upper(), (10, dash.shape[0] - 12),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, mcol, 2, cv2.LINE_AA)
             if self._stop_line:
                 cv2.putText(dash, "STOP-LINIE", (140, dash.shape[0] - 12),
