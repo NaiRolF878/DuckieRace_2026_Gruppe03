@@ -29,10 +29,6 @@ class DetectLaneNode:
         # Platzhalter für Debug-Variablen
         blank       = np.zeros((self._crop_im_size, self._crop_im_size), dtype=np.uint8)
         blank_color = np.zeros((self._crop_im_size, self._crop_im_size, 3), dtype=np.uint8)
-        self.img              = blank_color
-        self.lane_center      = self._crop_im_size / 2
-        self.white_alternative = int(self._crop_im_size * 0.95)
-        self.center_white      = int(self._crop_im_size * 0.95)
         self.debug_img_white   = blank
         self.debug_img_red     = blank
 
@@ -104,8 +100,6 @@ class DetectLaneNode:
             f'/{self._vehicle_name}/debug/bird_view',   CompressedImage, queue_size=1)
         self.pub_debug_annotated = rospy.Publisher(
             f'/{self._vehicle_name}/debug/annotated',   CompressedImage, queue_size=1)
-        self.pub_debug_lane      = rospy.Publisher(
-            f'/{self._vehicle_name}/debug/lane_croped', CompressedImage, queue_size=1)
         self.pub_debug_white     = rospy.Publisher(
             f'/{self._vehicle_name}/debug/lane_white',  CompressedImage, queue_size=1)
         self.pub_debug_red       = rospy.Publisher(
@@ -288,8 +282,10 @@ class DetectLaneNode:
         mask = cv2.bitwise_or(mask_yellow, mask_green)
         return cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
 
-    def _duck_object_mask(self, bev_bgr):
-        mask = self._color_obstacle_mask(bev_bgr)
+    def _duck_object_mask(self, obstacle_mask):
+        # ROI-Zuschnitt auf einer bereits berechneten Farbmaske (Kopie, damit
+        # der Aufrufer dieselbe Maske noch unbeschnitten weiterverwenden kann).
+        mask = obstacle_mask.copy()
         h = mask.shape[0]
         y0 = max(0, int(h * self.duck_roi_top))
         y1 = min(h, int(h * self.duck_roi_bottom))
@@ -328,11 +324,13 @@ class DetectLaneNode:
         cx = nearest[0] + nearest[2] / 2.0
         return (cx / width) * 2.0 - 1.0
 
-    def _process_ducks(self, bev_bgr):
+    def _process_ducks(self, bev_bgr, obstacle_mask):
         # Vollständige Enten-Auswertung auf demselben BEV-Bild wie die Spur.
+        # obstacle_mask: bereits berechnete Farbmaske (aus cbFindLane), wird
+        # hier nur noch auf die Enten-ROI zugeschnitten – keine Neuberechnung.
         try:
             w      = bev_bgr.shape[1]
-            mask   = self._duck_object_mask(bev_bgr)
+            mask   = self._duck_object_mask(obstacle_mask)
             blobs  = self._duck_blobs(mask)
             occ    = self._duck_occupancy(blobs, w)  # nur fuers Debug-Bild (Balken unten)
             duck_x = self._duck_nearest_x(blobs, w)
@@ -385,12 +383,11 @@ class DetectLaneNode:
             profile[i] = 1.0 if (cv2.countNonZero(col) / area) > self.zone_pixel_threshold_frac else 0.0
         return profile
 
-    def _process_zones(self, bev_bgr):
+    def _process_zones(self, bev_bgr, mask):
+        # mask: bereits berechnete Farbmaske (aus cbFindLane, ohne ROI-Beschnitt) –
+        # gleiche Gelb/Grün-Erkennung wie bei den Enten, keine Neuberechnung.
         try:
             H, W = bev_bgr.shape[:2]
-
-            # Farbmaske (gleiche Gelb/Grün-Erkennung wie Enten, aber ohne ROI-Beschnitt)
-            mask = self._color_obstacle_mask(bev_bgr)
 
             # Korridor x-Grenzen (fest in BEV-Pixeln)
             x0 = int(self.zone_corridor_x_min * W)
@@ -487,11 +484,13 @@ class DetectLaneNode:
                 self._publish_compressed(self.pub_debug_bird, img)
 
             # ── ENTEN + ZONEN: gleiche BEV-Ansicht (vor CLAHE) ──────────────────
+            # Farbmaske (gelb/grün) nur EINMAL berechnen, für beide weiterverwenden.
+            obstacle_mask = self._color_obstacle_mask(img)
             if self.duck_enabled:
-                self._process_ducks(img)
+                self._process_ducks(img, obstacle_mask)
             else:
                 self.pub_duck.publish(Float64(data=-99.0))
-            self._process_zones(img)  # immer aktiv; overlay auf debug_img_duck
+            self._process_zones(img, obstacle_mask)  # immer aktiv; overlay auf debug_img_duck
 
             # ── Schritt 3: CLAHE – lokaler Helligkeitsausgleich ───────────────
             lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
@@ -534,10 +533,6 @@ class DetectLaneNode:
             self.pub_stop_line.publish(Bool(data=stop_line_detected))
 
             # ── Schritt 8: Debug-Variablen speichern ──────────────────────────
-            self.img             = img
-            self.lane_center     = lane_center
-            self.white_alternative = white_alternative
-            self.center_white    = center_white
             self.debug_img_white = mask_white
             self.debug_img_red   = mask_red
 
@@ -586,32 +581,6 @@ class DetectLaneNode:
             if self.counter <= 3:
                 rate.sleep()
                 continue
-
-            if self.pub_debug_lane.get_num_connections() > 0:
-                debug_img = self.img.copy()
-                debug_img = cv2.circle(debug_img,
-                    (int(self.lane_center), int(len(debug_img)/2)), 3, (255, 0, 0))
-                debug_img = cv2.line(debug_img,
-                    (self.white_alternative, 0), (self.white_alternative, 1000), color=(255, 255, 255))
-                debug_img = cv2.line(debug_img,
-                    (0, int(len(debug_img)*0.75)+100), (len(debug_img[0]), int(len(debug_img)*0.75)+100),
-                    color=(255, 255, 255))
-                debug_img = cv2.line(debug_img,
-                    (0, int(len(debug_img)*0.75)-100), (len(debug_img[0]), int(len(debug_img)*0.75)-100),
-                    color=(255, 255, 255))
-                debug_img = cv2.line(debug_img,
-                    (int(len(debug_img[0])/2), 0), (int(len(debug_img[0])/2), len(debug_img)), (0, 255, 0))
-                debug_img = cv2.circle(debug_img,
-                    (int(self.center_white), int(len(debug_img)*0.75)), 5, (255, 255, 255))
-                target_x = int(self.center_white - self.white_follow_offset_px)
-                debug_img = cv2.line(debug_img, (target_x, 0), (target_x, self._crop_im_size),
-                                     color=(255, 0, 255))
-                roi_top   = int(len(debug_img)    * self.red_detection_zone)
-                roi_left  = int(len(debug_img[0]) * self.red_detection_x_start)
-                roi_right = int(len(debug_img[0]) * self.red_detection_x_end) - 1
-                debug_img = cv2.rectangle(debug_img,
-                    (roi_left, roi_top), (roi_right, self._crop_im_size-1), (0, 0, 255), 2)
-                self._publish_compressed(self.pub_debug_lane, debug_img)
 
             if self.pub_debug_white.get_num_connections() > 0:
                 self._publish_compressed(self.pub_debug_white, self.debug_img_white)
