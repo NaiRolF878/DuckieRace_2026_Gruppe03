@@ -104,8 +104,6 @@ class ControlLaneNode:
         self.obstacle_stop = msg.data
 
     def cbUpdateParameters(self, parameters):
-        print("PARAMETER EMPFANGEN:")
-        print(parameters)
         self.kp      = parameters["pid"]["p"]["default"]
         self.ki      = parameters["pid"]["i"]["default"]
         self.kd      = parameters["pid"]["d"]["default"]
