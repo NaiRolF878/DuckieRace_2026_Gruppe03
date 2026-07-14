@@ -609,6 +609,10 @@ class DetectLaneNode:
             if self.pub_debug_duck.get_num_connections() > 0:
                 self._publish_compressed(self.pub_debug_duck, self.debug_img_duck)
 
+            # Lokales Debug-Fenster (nur für Standalone-Tests) – bei Bedarf auskommentieren
+            cv2.imshow("duck_bev", self.debug_img_duck)
+            cv2.waitKey(1)
+
             rate.sleep()
 
 
