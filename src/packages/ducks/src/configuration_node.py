@@ -208,10 +208,8 @@ class ConfigurationNode:
             self.image_subscriber.unregister()
         cv2.destroyAllWindows()
         self.root.destroy()
-        #rospy.signal_shutdown('User ended program')
 
 
 if __name__ == '__main__':
     node = ConfigurationNode('configuration_node')
     node.run()
-    #rospy.spin()
