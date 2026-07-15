@@ -44,7 +44,6 @@
                 "detection_x_end":   {"default": 1.0, "min": 0.0, "max": 1.0}
             },
             "duck": {
-                "enabled":            {"default":   1, "min": 0,   "max":     1},
                 "roi_top":            {"default": 0.35,"min": 0.0, "max":   1.0},
                 "roi_bottom":         {"default": 1.0, "min": 0.0, "max":   1.0},
                 "min_area":           {"default": 250, "min": 0,   "max": 20000},
@@ -79,7 +78,7 @@
                 "mid_y_max":            {"default": 0.70, "min": 0.0, "max": 1.0},
                 "near_y_min":           {"default": 0.70, "min": 0.0, "max": 1.0},
                 "near_y_max":           {"default": 0.95, "min": 0.0, "max": 1.0},
-                "pixel_threshold_frac": {"default": 0.2, "min": 0.0, "max": 1.0}
+                "pixel_threshold_frac": {"default": 0.05, "min": 0.0, "max": 1.0}
             }
         }
     }
