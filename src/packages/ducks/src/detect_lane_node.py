@@ -9,9 +9,54 @@ from sensor_msgs.msg import CompressedImage
 import util
 
 
+class _Kalman1D:
+    # Einfacher 1D-Kalman-Filter (Position + Geschwindigkeit) zum Glätten der
+    # Enten-x-Position und Überbrücken kurzer Erkennungsaussetzer (z.B. Ente
+    # kurz außerhalb des Sichtbereichs) statt sofort auf "keine Ente" zu springen.
+    def __init__(self, process_var, measurement_var):
+        self.q = process_var
+        self.r = measurement_var
+        self.x = 0.0
+        self.v = 0.0
+        self.p = np.eye(2) * 1000.0
+        self.initialized = False
+
+    def reset(self):
+        self.initialized = False
+        self.v = 0.0
+        self.p = np.eye(2) * 1000.0
+
+    def predict(self, dt):
+        self.x += self.v * dt
+        F = np.array([[1.0, dt], [0.0, 1.0]])
+        Q = np.array([[dt**3 / 3, dt**2 / 2],
+                       [dt**2 / 2, dt]]) * self.q
+        self.p = F @ self.p @ F.T + Q
+        return self.x
+
+    def update(self, z):
+        if not self.initialized:
+            self.x, self.v = z, 0.0
+            self.p = np.eye(2)
+            self.initialized = True
+            return self.x
+        H = np.array([1.0, 0.0])
+        state = np.array([self.x, self.v])
+        y = z - H @ state
+        S = H @ self.p @ H.T + self.r
+        K = (self.p @ H) / S
+        state = state + K * y
+        self.p = self.p - np.outer(K, H @ self.p)
+        self.x, self.v = state
+        return self.x
+
+
 class DetectLaneNode:
     OCC_BINS = 40  # Auflösung des Enten-Belegungsprofils (x-Spalten)
     GAP_BINS = 20  # Auflösung des Korridor-Lückenprofils (x-Spalten, nur Fahrkorridor)
+    # Morphologie-Kernel ändern sich nie – einmal anlegen statt pro Frame neu.
+    _MORPH_KERNEL_3 = np.ones((3, 3), np.uint8)
+    _MORPH_KERNEL_5 = np.ones((5, 5), np.uint8)
 
     def __init__(self, node_name):
         # ROS-Node initialisieren
@@ -26,11 +71,15 @@ class DetectLaneNode:
         self.counter             = 0     # Frame-Zähler: erste 3 Frames verwerfen
         self.last_white_position  = None  # Frame-Tracking für weiße Linie
 
+        # CLAHE-Objekt ändert sich nie – einmal anlegen statt pro Frame neu.
+        self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
         # Platzhalter für Debug-Variablen
         blank       = np.zeros((self._crop_im_size, self._crop_im_size), dtype=np.uint8)
         blank_color = np.zeros((self._crop_im_size, self._crop_im_size, 3), dtype=np.uint8)
-        self.debug_img_white   = blank
-        self.debug_img_red     = blank
+        self.debug_img_white     = blank
+        self.debug_img_red       = blank
+        self.debug_img_annotated = blank_color
 
         # ── Enten-Erkennung (Challenge 3) – Defaults VOR init_parameters ──────
         self.duck_enabled         = True
@@ -40,6 +89,15 @@ class DetectLaneNode:
         self.duck_min_w           = 12
         self.duck_min_h           = 12
         self.debug_img_duck       = blank_color
+        self.debug_img_duck_original = blank_color
+
+        # Kalman-Filter für die Enten-x-Position (Glättung + Aussetzer-Überbrückung)
+        self.duck_kf_process_var     = 0.01
+        self.duck_kf_measurement_var = 0.05
+        self.duck_kf_max_missed      = 5
+        self._duck_kf           = _Kalman1D(self.duck_kf_process_var, self.duck_kf_measurement_var)
+        self._duck_kf_last_t    = None
+        self._duck_missed_count = 0
 
         # ── Hindernis-Farbbereiche (gelb/grün) – Defaults VOR init_parameters ──
         self.yellow_hl, self.yellow_hh = 20, 35
@@ -53,8 +111,10 @@ class DetectLaneNode:
         self.white_follow_offset_px = 150
 
         # ── Zonen-Erkennung (Stufe 3) ─────────────────────────────────────────
-        self.zone_corridor_x_min       = 0.05
-        self.zone_corridor_x_max       = 0.90
+        # Korridor "wandert" mit der tatsächlichen Fahrlinie (lane_center) mit,
+        # symmetrische Breite = Bot-Breite + Ausweich-Spielraum, NICHT die ganze
+        # Spur – reicht dadurch nie über die eigene Spur hinaus (siehe Diskussion).
+        self.zone_corridor_width_px    = 200
         self.zone_far_y_min            = 0.20
         self.zone_far_y_max            = 0.45
         self.zone_mid_y_min            = 0.45
@@ -109,9 +169,12 @@ class DetectLaneNode:
             f'/{self._vehicle_name}/debug/lane_white',  CompressedImage, queue_size=1)
         self.pub_debug_red       = rospy.Publisher(
             f'/{self._vehicle_name}/debug/lane_red',    CompressedImage, queue_size=1)
-        # Enten-Debug-Bild (BEV mit Boxen + Belegungsbalken)
+        # Enten-Debug-Bild (BEV mit Zonen + Belegungsbalken + projizierten Positionen)
         self.pub_debug_duck      = rospy.Publisher(
             f'/{self._vehicle_name}/debug/duck_bev',    CompressedImage, queue_size=1)
+        # Enten-Debug-Bild (Originalbild mit erkannten Boxen, vor der BEV-Transformation)
+        self.pub_debug_duck_original = rospy.Publisher(
+            f'/{self._vehicle_name}/debug/duck_original', CompressedImage, queue_size=1)
 
 
     def cbUpdateParameters(self, parameters):
@@ -134,6 +197,8 @@ class DetectLaneNode:
         self.bottom_left_y  = parameters["crop_image"]["bottom_left_y"]["default"]
         self.bottom_right_x = parameters["crop_image"]["bottom_right_x"]["default"]
         self.bottom_right_y = parameters["crop_image"]["bottom_right_y"]["default"]
+        # Homographie nur hier (Start + Kalibrier-Änderung) neu berechnen, nicht pro Frame.
+        self._bev_M = self._compute_bev_matrix()
 
         # Rote Haltelinie – zwei HSV-Bereiche
         self.hue_red_l        = parameters["red"]["hl"]["default"]
@@ -165,6 +230,12 @@ class DetectLaneNode:
         self.duck_min_w           = gd("duck", "min_w", 12)
         self.duck_min_h           = gd("duck", "min_h", 12)
 
+        self.duck_kf_process_var     = gd("duck", "kf_process_var", 0.01)
+        self.duck_kf_measurement_var = gd("duck", "kf_measurement_var", 0.05)
+        self.duck_kf_max_missed      = int(gd("duck", "kf_max_missed_frames", 5))
+        self._duck_kf.q = self.duck_kf_process_var
+        self._duck_kf.r = self.duck_kf_measurement_var
+
         self.yellow_hl = gd("obstacle_color", "yellow_hl", 20)
         self.yellow_hh = gd("obstacle_color", "yellow_hh", 35)
         self.yellow_sl = gd("obstacle_color", "yellow_sl", 80)
@@ -180,8 +251,7 @@ class DetectLaneNode:
 
         self.white_follow_offset_px = gd("white_follow", "offset_px", 150)
 
-        self.zone_corridor_x_min       = gd("zones", "corridor_x_min",       0.05)
-        self.zone_corridor_x_max       = gd("zones", "corridor_x_max",       0.90)
+        self.zone_corridor_width_px    = gd("zones", "corridor_width_px",  200)
         self.zone_far_y_min            = gd("zones", "far_y_min",            0.20)
         self.zone_far_y_max            = gd("zones", "far_y_max",            0.45)
         self.zone_mid_y_min            = gd("zones", "mid_y_min",            0.45)
@@ -195,9 +265,11 @@ class DetectLaneNode:
         self.obstacle_state = msg.data
 
 
-    def crop_img(self, img):
-        # Bird's-Eye-View Transformation: Trapez der Fahrspur → Quadrat (Draufsicht)
-        img = img.copy()
+    def _compute_bev_matrix(self):
+        # Homographie Original-Kamerabild → BEV-Quadrat. Wird NUR in
+        # cbUpdateParameters() aufgerufen (Start + Kalibrier-Änderungen über die
+        # GUI), NICHT pro Frame – das Ergebnis liegt in self._bev_M gecacht,
+        # da sich die Kalibrierwerte sonst so gut wie nie ändern.
         pts1 = np.float32([
             [self.top_left_x,     self.top_left_y],
             [self.top_right_x,    self.top_right_y],
@@ -210,8 +282,22 @@ class DetectLaneNode:
             [0,                  self._crop_im_size],
             [self._crop_im_size, self._crop_im_size],
         ])
-        M = cv2.getPerspectiveTransform(pts1, pts2)
-        return cv2.warpPerspective(img, M, (self._crop_im_size, self._crop_im_size))
+        return cv2.getPerspectiveTransform(pts1, pts2)
+
+    def crop_img(self, img):
+        # Bird's-Eye-View Transformation: Trapez der Fahrspur → Quadrat (Draufsicht).
+        # warpPerspective liest nur aus img, verändert es nie – keine Kopie nötig.
+        return cv2.warpPerspective(img, self._bev_M, (self._crop_im_size, self._crop_im_size))
+
+    def _project_points_to_bev(self, points):
+        # points: Liste von (x, y) im Original-Kamerabild → BEV-Pixelkoordinaten,
+        # per derselben (gecachten) Homographie wie crop_img(). Für Enten-
+        # Bodenkontaktpunkte, damit die Objekterkennung im unverzerrten
+        # Originalbild laufen kann, aber die Position trotzdem im
+        # Fahrkorridor-Koordinatensystem landet.
+        pts = np.float32(points).reshape(-1, 1, 2)
+        bev_pts = cv2.perspectiveTransform(pts, self._bev_M)
+        return [(float(p[0][0]), float(p[0][1])) for p in bev_pts]
 
 
     def get_x_for_driving(self, mask, distance, left_line, last_known=None):
@@ -289,7 +375,7 @@ class DetectLaneNode:
             (self.green_hl, self.green_sl, self.green_vl),
             (self.green_hh, self.green_sh, self.green_vh))
         mask = cv2.bitwise_or(mask_yellow, mask_green)
-        return cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        return cv2.morphologyEx(mask, cv2.MORPH_OPEN, self._MORPH_KERNEL_3)
 
     def _duck_object_mask(self, obstacle_mask):
         # ROI-Zuschnitt auf einer bereits berechneten Farbmaske (Kopie, damit
@@ -318,53 +404,103 @@ class DetectLaneNode:
             blobs.append((int(x), int(y), int(w), int(h)))
         return blobs
 
-    def _duck_occupancy(self, blobs, width):
+    def _duck_occupancy_from_bev(self, projected, width):
+        # projected: Liste von (bx_left, bx_right, by, orig_box) – bereits ins
+        # BEV projizierte Bodenkontakt-Kanten (siehe _process_ducks).
         occ = np.zeros(self.OCC_BINS, dtype=np.float32)
-        for (x, y, w, h) in blobs:
-            b0 = max(0, min(self.OCC_BINS - 1, int(x / width * self.OCC_BINS)))
-            b1 = max(0, min(self.OCC_BINS - 1, int((x + w) / width * self.OCC_BINS)))
+        for (bx_left, bx_right, _by, _box) in projected:
+            b0 = max(0, min(self.OCC_BINS - 1, int(bx_left  / width * self.OCC_BINS)))
+            b1 = max(0, min(self.OCC_BINS - 1, int(bx_right / width * self.OCC_BINS)))
+            if b1 < b0:
+                b0, b1 = b1, b0
             occ[b0:b1 + 1] = 1.0
         return occ
 
-    def _duck_nearest_x(self, blobs, width):
-        if not blobs:
-            return -99.0
-        nearest = max(blobs, key=lambda b: b[1] + b[3])  # unterste = nächste
-        cx = nearest[0] + nearest[2] / 2.0
-        return (cx / width) * 2.0 - 1.0
+    def _update_duck_kalman(self, raw_x):
+        # Glättet die Enten-x-Position und überbrückt kurze Aussetzer per Kalman-
+        # Filter (Predict/Update), statt bei jedem verpassten Frame sofort auf
+        # "keine Ente" (-99) zu springen. raw_x = -99.0 heißt "diesen Frame nichts erkannt".
+        now = rospy.Time.now().to_sec()
+        dt  = (now - self._duck_kf_last_t) if self._duck_kf_last_t is not None else 0.1
+        self._duck_kf_last_t = now
 
-    def _process_ducks(self, bev_bgr, obstacle_mask):
-        # Vollständige Enten-Auswertung auf demselben BEV-Bild wie die Spur.
-        # obstacle_mask: bereits berechnete Farbmaske (aus cbFindLane), wird
-        # hier nur noch auf die Enten-ROI zugeschnitten – keine Neuberechnung.
+        if raw_x != -99.0:
+            self._duck_kf.predict(dt)
+            self._duck_missed_count = 0
+            return self._duck_kf.update(raw_x)
+
+        if self._duck_kf.initialized and self._duck_missed_count < self.duck_kf_max_missed:
+            self._duck_missed_count += 1
+            return self._duck_kf.predict(dt)
+
+        self._duck_kf.reset()
+        self._duck_missed_count = 0
+        return -99.0
+
+    def _process_ducks(self, orig_bgr, bev_bgr, bev_width):
+        # Enten-Erkennung im UNVERZERRTEN Originalbild (kein Verschwinden am
+        # BEV-Trapezrand, keine Höhen-Verzerrung durch die Homographie). Nur der
+        # Bodenkontaktpunkt jeder Box (unterste Kante) wird anschließend per
+        # _project_points_to_bev() ins Fahrkorridor-Koordinatensystem übersetzt.
         try:
-            w      = bev_bgr.shape[1]
-            mask   = self._duck_object_mask(obstacle_mask)
-            blobs  = self._duck_blobs(mask)
-            occ    = self._duck_occupancy(blobs, w)  # nur fuers Debug-Bild (Balken unten)
-            duck_x = self._duck_nearest_x(blobs, w)
+            mask  = self._duck_object_mask(self._color_obstacle_mask(orig_bgr))
+            blobs = self._duck_blobs(mask)
 
+            projected = []
+            if blobs:
+                ground_pts = []
+                for (x, y, w, h) in blobs:
+                    ground_pts.append((x, y + h))          # unten links
+                    ground_pts.append((x + w, y + h))      # unten rechts
+                bev_pts = self._project_points_to_bev(ground_pts)
+                for i, box in enumerate(blobs):
+                    bx_l, by_l = bev_pts[2 * i]
+                    bx_r, by_r = bev_pts[2 * i + 1]
+                    bx_left, bx_right = sorted((bx_l, bx_r))
+                    projected.append((bx_left, bx_right, max(by_l, by_r), box))
+
+            occ = self._duck_occupancy_from_bev(projected, bev_width)  # nur fuers Debug-Bild
+
+            raw_duck_x = -99.0
+            if projected:
+                nearest = max(projected, key=lambda p: p[2])  # größtes BEV-y = am nächsten
+                bx_center = (nearest[0] + nearest[1]) / 2.0
+                raw_duck_x = max(-1.0, min(1.0, (bx_center / bev_width) * 2.0 - 1.0))
+
+            duck_x = self._update_duck_kalman(raw_duck_x)
             self.pub_duck.publish(Float64(data=duck_x))
 
             if blobs:
                 rospy.loginfo_throttle(1.0,
-                    f"[duck] {len(blobs)} Blobs, {int(occ.sum())}/{self.OCC_BINS} "
-                    f"Spalten belegt, naechste x={duck_x:.2f}")
+                    f"[duck] {len(blobs)} Blobs (Originalbild), naechste x={duck_x:.2f}")
 
-            # Enten-Debug-Bild aufbauen und speichern (Versand in run_debug)
-            dbg = bev_bgr.copy()
-            h, ww = dbg.shape[:2]
-            y0 = int(h * self.duck_roi_top)
-            cv2.line(dbg, (0, y0), (ww, y0), (0, 255, 255), 1)
+            # Debug 1: Originalbild mit erkannten Boxen (vor der BEV-Transformation)
+            dbg_orig = orig_bgr.copy()
+            ho, wo = dbg_orig.shape[:2]
+            y0 = int(ho * self.duck_roi_top)
+            y1 = int(ho * self.duck_roi_bottom)
+            cv2.line(dbg_orig, (0, y0), (wo, y0), (0, 255, 255), 1)
+            if y1 < ho:
+                cv2.line(dbg_orig, (0, y1), (wo, y1), (0, 255, 255), 1)
             for (x, y, bw, bh) in blobs:
-                cv2.rectangle(dbg, (x, y), (x + bw, y + bh), (0, 0, 255), 2)
+                cv2.rectangle(dbg_orig, (x, y), (x + bw, y + bh), (0, 0, 255), 2)
+            self.debug_img_duck_original = dbg_orig
+
+            # Debug 2: BEV mit projizierten Positionen + Belegungsbalken
+            # (Basis für den Zonen-Overlay in _process_zones)
+            dbg = bev_bgr.copy()
+            hh, ww = dbg.shape[:2]
+            for (bx_left, bx_right, by, _box) in projected:
+                cx = int((bx_left + bx_right) / 2)
+                cy = int(max(0, min(hh - 1, by)))
+                cv2.circle(dbg, (cx, cy), 5, (0, 0, 255), -1)
             bar_h = 18
             for i in range(self.OCC_BINS):
                 xa = int(i / self.OCC_BINS * ww)
                 xb = int((i + 1) / self.OCC_BINS * ww)
                 color = (0, 0, 255) if occ[i] > 0.5 else (0, 200, 0)
-                cv2.rectangle(dbg, (xa, h - bar_h), (xb, h), color, -1)
-            cv2.putText(dbg, "frei / blockiert", (4, h - bar_h - 6),
+                cv2.rectangle(dbg, (xa, hh - bar_h), (xb, hh), color, -1)
+            cv2.putText(dbg, "frei / blockiert", (4, hh - bar_h - 6),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
             self.debug_img_duck = dbg
         except Exception as e:
@@ -398,9 +534,19 @@ class DetectLaneNode:
         try:
             H, W = bev_bgr.shape[:2]
 
-            # Korridor x-Grenzen (fest in BEV-Pixeln)
-            x0 = int(self.zone_corridor_x_min * W)
-            x1 = int(self.zone_corridor_x_max * W)
+            # Korridor x-Grenzen relativ zur tatsächlichen Fahrlinie (lane_center,
+            # dieselbe Position wie die magenta Ziellinie im annotierten Bild) –
+            # symmetrisch um die Bot-Breite + Ausweich-Spielraum, NICHT die ganze
+            # Spur. Reicht dadurch nie über den eigenen Fahrbereich hinaus in die
+            # Gegenspur/gelbe Linie. last_white_position ist die Position vom
+            # Vorframe (weiße Linie wird in cbFindLane erst NACH der Zonen-
+            # Verarbeitung neu bestimmt) – ein Frame Verzögerung ist bei 10-30 Hz
+            # vernachlässigbar.
+            white_x     = self.last_white_position if self.last_white_position is not None else W * 0.95
+            lane_center = white_x - self.white_follow_offset_px
+            half_w      = self.zone_corridor_width_px / 2.0
+            x0 = int(max(0, lane_center - half_w))
+            x1 = int(min(W, lane_center + half_w))
 
             zone_defs = [
                 ('nah',    self.zone_near_y_min, self.zone_near_y_max),
@@ -435,16 +581,20 @@ class DetectLaneNode:
             gap_profile = self._corridor_gap_profile(mask, x0, x1, y0_gap, y1_gap)
             self.pub_corridor_occupancy.publish(Float32MultiArray(data=gap_profile.tolist()))
 
-            # Zonen als halbtransparente Rechtecke auf duck_bev zeichnen
+            # Zonen als halbtransparente Rechtecke auf duck_bev zeichnen – alle drei
+            # Füllungen in EINEM Overlay/Blend statt einer Kopie pro Zone.
             dbg = self.debug_img_duck.copy()
+            overlay = dbg.copy()
             for name, y_min_f, y_max_f in zone_defs:
                 y0_z  = int(y_min_f * H)
                 y1_z  = int(y_max_f * H)
-                occ   = results[name]
-                color = (0, 0, 255) if occ else (0, 200, 0)
-                overlay = dbg.copy()
+                color = (0, 0, 255) if results[name] else (0, 200, 0)
                 cv2.rectangle(overlay, (x0, y0_z), (x1, y1_z), color, -1)
-                dbg = cv2.addWeighted(overlay, 0.25, dbg, 0.75, 0)
+            dbg = cv2.addWeighted(overlay, 0.25, dbg, 0.75, 0)
+            for name, y_min_f, y_max_f in zone_defs:
+                y0_z  = int(y_min_f * H)
+                y1_z  = int(y_max_f * H)
+                color = (0, 0, 255) if results[name] else (0, 200, 0)
                 cv2.rectangle(dbg, (x0, y0_z), (x1, y1_z), color, 2)
                 cv2.putText(dbg, name, (x0 + 4, y0_z + 18),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
@@ -492,11 +642,13 @@ class DetectLaneNode:
             if self.pub_debug_bird.get_num_connections() > 0:
                 self._publish_compressed(self.pub_debug_bird, img)
 
-            # ── ENTEN + ZONEN: gleiche BEV-Ansicht (vor CLAHE) ──────────────────
-            # Farbmaske (gelb/grün) nur EINMAL berechnen, für beide weiterverwenden.
+            # ── ZONEN: BEV-Ansicht (vor CLAHE) ───────────────────────────────────
+            # Farbmaske (gelb/grün) für die Zonen-Erkennung (Korridor-Fahrbahn).
             obstacle_mask = self._color_obstacle_mask(img)
+            # ── ENTEN: im unverzerrten Originalbild (kein BEV-Trapez-Sichtfeldlimit,
+            # keine Höhen-Verzerrung), Bodenkontaktpunkte werden ins BEV projiziert.
             if self.duck_enabled:
-                self._process_ducks(img, obstacle_mask)
+                self._process_ducks(cv_image, img, img.shape[1])
             else:
                 self.pub_duck.publish(Float64(data=-99.0))
             self._process_zones(img, obstacle_mask)  # immer aktiv; overlay auf debug_img_duck
@@ -504,8 +656,7 @@ class DetectLaneNode:
             # ── Schritt 3: CLAHE – lokaler Helligkeitsausgleich ───────────────
             lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
             l, a, b = cv2.split(lab)
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-            l = clahe.apply(l)
+            l = self._clahe.apply(l)
             img = cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2BGR)
 
             # ── Schritt 4: HSV-Masken ─────────────────────────────────────────
@@ -515,8 +666,7 @@ class DetectLaneNode:
                 (self.hue_white_l, self.saturation_white_l, self.lightness_white_l),
                 (self.hue_white_h, self.saturation_white_h, self.lightness_white_h))
 
-            kernel = np.ones((5, 5), np.uint8)
-            mask_white = cv2.morphologyEx(mask_white, cv2.MORPH_CLOSE, kernel)
+            mask_white = cv2.morphologyEx(mask_white, cv2.MORPH_CLOSE, self._MORPH_KERNEL_5)
 
             # ── Schritt 5: Linienpositionen ───────────────────────────────────
             white_alternative = int(len(img[0]) * 0.95)
@@ -570,6 +720,7 @@ class DetectLaneNode:
                 image = cv2.rectangle(image,
                     (0, 0), (self._crop_im_size-1, self._crop_im_size-1), (0, 0, 255), 5)
 
+            self.debug_img_annotated = image
             if self.pub_debug_annotated.get_num_connections() > 0:
                 self._publish_compressed(self.pub_debug_annotated, image)
         finally:
@@ -605,8 +756,13 @@ class DetectLaneNode:
             if self.pub_debug_duck.get_num_connections() > 0:
                 self._publish_compressed(self.pub_debug_duck, duck_debug_img)
 
-            # Lokales Debug-Fenster (nur für Standalone-Tests) – bei Bedarf auskommentieren
+            if self.pub_debug_duck_original.get_num_connections() > 0:
+                self._publish_compressed(self.pub_debug_duck_original, self.debug_img_duck_original)
+
+            # Lokale Debug-Fenster (nur für Standalone-Tests) – bei Bedarf auskommentieren
             cv2.imshow("duck_bev", duck_debug_img)
+            cv2.imshow("annotated", self.debug_img_annotated)
+            cv2.imshow("duck_original", self.debug_img_duck_original)
             cv2.waitKey(1)
 
             rate.sleep()
