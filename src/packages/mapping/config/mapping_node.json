@@ -11,6 +11,10 @@
     "fallback": "nearest_neighbor"
   },
   "debug_layout": {
-    "node_positions": {}
+    "node_positions": {
+      "C": [250, 150],
+      "A": [500, 150],
+      "B": [500, 400]
+    }
   }
 }
