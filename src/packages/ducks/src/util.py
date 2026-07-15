@@ -28,9 +28,9 @@ def init_parameters(node_name, callback_update_parameters):
     with open(path, 'r') as f:
         config = json.load(f)
 
-    # Bug-Fix: callback_update_parameters wurde im Original immer aufgerufen,
-    # auch wenn die Message für eine andere Node bestimmt war.
-    # Korrigiert: Callback nur aufrufen wenn msg['node'] == node_name.
+    # Callback nur aufrufen, wenn die Nachricht wirklich für diese Node bestimmt
+    # ist (msg['node'] == node_name) – sonst würden Parameteränderungen einer
+    # anderen Node hier fälschlich übernommen.
     def callback_wrapper(msg):
         data = json.loads(msg.data)
         if data['node'] == node_name:
@@ -48,8 +48,6 @@ def init_parameters(node_name, callback_update_parameters):
 
 def load_parameters(node_name):
     # Lädt Parameter für den configuration_node (GUI-Aufbau).
-    # Gibt die gemergeten Parameter zurück damit die GUI
-    # die bot-spezifischen Startwerte korrekt anzeigt.
     path = os.path.join(os.path.dirname(__file__), f"../config/{node_name}.json")
     with open(path, 'r') as f:
         config = json.load(f)
