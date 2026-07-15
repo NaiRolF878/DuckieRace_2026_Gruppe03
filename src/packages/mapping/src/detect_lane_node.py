@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ─────────────────────────────────────────────────────────────────────────────
-# detect_lane_node.py  (Challenge 2 – Intersection Handling)
+# detect_lane_node.py  (Challenge 4 – Mapping & Path Finding)
 #
 # Spurerkennung im Bird's-Eye-View + rote Haltelinie.
 #
@@ -129,6 +129,8 @@ class DetectLaneNode:
         self.bottom_left_y  = parameters["crop_image"]["bottom_left_y"]["default"]
         self.bottom_right_x = parameters["crop_image"]["bottom_right_x"]["default"]
         self.bottom_right_y = parameters["crop_image"]["bottom_right_y"]["default"]
+        # Homographie nur hier (Start + Kalibrier-Änderung) neu berechnen, nicht pro Frame.
+        self._bev_M = self._compute_bev_matrix()
 
         # Rote Haltelinie – zwei HSV-Bereiche (Rot liegt an zwei Stellen des Hue-Kreises)
         self.hue_red_l        = parameters["red"]["hl"]["default"]    # Hue 0-10
@@ -151,8 +153,11 @@ class DetectLaneNode:
 
     # ── Bildvorverarbeitung ─────────────────────────────────────────────────────
 
-    def crop_img(self, img):
-        # Perspektivtransformation in die Vogelperspektive (Bird's-Eye-View).
+    def _compute_bev_matrix(self):
+        # Homographie Original-Kamerabild → BEV-Quadrat. Wird NUR in
+        # cbUpdateParameters() aufgerufen (Start + Kalibrier-Änderungen über die
+        # GUI), NICHT pro Frame – das Ergebnis liegt in self._bev_M gecacht, da
+        # sich die Kalibrierwerte sonst so gut wie nie ändern.
         pts1 = np.float32([
             [self.top_left_x,     self.top_left_y],
             [self.top_right_x,    self.top_right_y],
@@ -161,8 +166,11 @@ class DetectLaneNode:
         pts2 = np.float32([
             [0, 0], [self._crop_im_size, 0],
             [0, self._crop_im_size], [self._crop_im_size, self._crop_im_size]])
-        M = cv2.getPerspectiveTransform(pts1, pts2)
-        return cv2.warpPerspective(img, M, (self._crop_im_size, self._crop_im_size))
+        return cv2.getPerspectiveTransform(pts1, pts2)
+
+    def crop_img(self, img):
+        # Perspektivtransformation in die Vogelperspektive (Bird's-Eye-View).
+        return cv2.warpPerspective(img, self._bev_M, (self._crop_im_size, self._crop_im_size))
 
     # ── Linienerkennung ─────────────────────────────────────────────────────────
 
@@ -226,11 +234,10 @@ class DetectLaneNode:
         if last_known is None:
             return raw, raw
 
-        # Fall C: Detektion + Anker → Sprung prüfen
-        # BUGFIX: Früher wurde der Sprung nur geloggt, aber trotzdem voll übernommen
-        # (return raw, raw) → Ursache für "springt an der Kreuzung auf die falsche Linie".
-        # Jetzt wird die Bewegung sanft auf max_jump begrenzt: die Position darf sich pro
-        # Frame höchstens um max_jump Pixel Richtung neuem Wert bewegen.
+        # Fall C: Detektion + Anker → Sprung prüfen. Die Bewegung wird sanft auf
+        # max_jump begrenzt (Position bewegt sich pro Frame höchstens um max_jump
+        # Pixel Richtung neuem Wert) – verhindert, dass die Linie an der Kreuzung
+        # abrupt auf die falsche Kante springt.
         jump = raw - last_known
         if abs(jump) > max_jump:
             clamped = last_known + np.sign(jump) * max_jump
@@ -280,107 +287,110 @@ class DetectLaneNode:
         if self.is_running:
             return
         self.is_running = True
+        try:
+            # ── Schritt 1: Bild dekodieren ────────────────────────────────────
+            np_arr   = np.frombuffer(image_msg.data, np.uint8)
+            cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if cv_image is None:
+                rospy.logwarn_throttle(5.0, "Frame nicht dekodierbar – übersprungen.")
+                return
 
-        # ── Schritt 1: Bild dekodieren ────────────────────────────────────────
-        np_arr   = np.frombuffer(image_msg.data, np.uint8)
-        cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            # Originalbild für Dashboard publizieren
+            if self.pub_debug_original.get_num_connections() > 0:
+                self._publish_compressed(self.pub_debug_original, cv_image)
 
-        # Originalbild für Dashboard publizieren
-        if self.pub_debug_original.get_num_connections() > 0:
-            self._publish_compressed(self.pub_debug_original, cv_image)
+            # ── Schritt 2: Bird's-Eye-View ────────────────────────────────────
+            img = self.crop_img(cv_image)
 
-        # ── Schritt 2: Bird's-Eye-View ────────────────────────────────────────
-        img = self.crop_img(cv_image)
+            if self.pub_debug_bird.get_num_connections() > 0:
+                self._publish_compressed(self.pub_debug_bird, img)
 
-        if self.pub_debug_bird.get_num_connections() > 0:
-            self._publish_compressed(self.pub_debug_bird, img)
+            # ── Schritt 3 (OPTIONAL): CLAHE – lokaler Helligkeitsausgleich ─────
+            # Standardmäßig AUS (schlanker Hauptpfad). Bei Problemen mit wechselndem
+            # Licht den folgenden Block einkommentieren. BGR → LAB → CLAHE nur auf
+            # L-Kanal → zurück zu BGR. LAB trennt Helligkeit von Farbe, daher bleibt
+            # die HSV-Kalibrierung stabil. Kostet spürbar Rechenzeit pro Frame.
+            #
+            # lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+            # l, a_ch, b_ch = cv2.split(lab)
+            # clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            # l = clahe.apply(l)
+            # img = cv2.cvtColor(cv2.merge((l, a_ch, b_ch)), cv2.COLOR_LAB2BGR)
 
-        # ── Schritt 3 (OPTIONAL): CLAHE – lokaler Helligkeitsausgleich ─────────
-        # Standardmäßig AUS (schlanker Hauptpfad). Bei Problemen mit wechselndem
-        # Licht den folgenden Block einkommentieren. BGR → LAB → CLAHE nur auf
-        # L-Kanal → zurück zu BGR. LAB trennt Helligkeit von Farbe, daher bleibt
-        # die HSV-Kalibrierung stabil. Kostet spürbar Rechenzeit pro Frame.
-        #
-        # lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-        # l, a_ch, b_ch = cv2.split(lab)
-        # clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        # l = clahe.apply(l)
-        # img = cv2.cvtColor(cv2.merge((l, a_ch, b_ch)), cv2.COLOR_LAB2BGR)
+            # ── Schritt 4: HSV-Masken ─────────────────────────────────────────
+            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-        # ── Schritt 4: HSV-Masken ─────────────────────────────────────────────
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+            mask_yellow = cv2.inRange(hsv,
+                (self.hue_yellow_l, self.saturation_yellow_l, self.lightness_yellow_l),
+                (self.hue_yellow_h, self.saturation_yellow_h, self.lightness_yellow_h))
 
-        mask_yellow = cv2.inRange(hsv,
-            (self.hue_yellow_l, self.saturation_yellow_l, self.lightness_yellow_l),
-            (self.hue_yellow_h, self.saturation_yellow_h, self.lightness_yellow_h))
+            mask_white = cv2.inRange(hsv,
+                (self.hue_white_l, self.saturation_white_l, self.lightness_white_l),
+                (self.hue_white_h, self.saturation_white_h, self.lightness_white_h))
 
-        mask_white = cv2.inRange(hsv,
-            (self.hue_white_l, self.saturation_white_l, self.lightness_white_l),
-            (self.hue_white_h, self.saturation_white_h, self.lightness_white_h))
+            # ── Schritt 4b (OPTIONAL): Morphologie – Lücken in Masken schließen ─
+            # Standardmäßig AUS. Bei löchrigen Masken (Schatten) einkommentieren.
+            #
+            # kernel = np.ones((5, 5), np.uint8)
+            # mask_white  = cv2.morphologyEx(mask_white,  cv2.MORPH_CLOSE, kernel)
+            # mask_yellow = cv2.morphologyEx(mask_yellow, cv2.MORPH_CLOSE, kernel)
 
-        # ── Schritt 4b (OPTIONAL): Morphologie – Lücken in Masken schließen ────
-        # Standardmäßig AUS. Bei löchrigen Masken (Schatten) einkommentieren.
-        #
-        # kernel = np.ones((5, 5), np.uint8)
-        # mask_white  = cv2.morphologyEx(mask_white,  cv2.MORPH_CLOSE, kernel)
-        # mask_yellow = cv2.morphologyEx(mask_yellow, cv2.MORPH_CLOSE, kernel)
+            # ── Schritt 5: Linienpositionen ─────────────────────────────────────
+            white_alternative  = int(len(img[0]) * 0.95)
+            yellow_alternative = int(len(img[0]) * 0.05)
+            distance           = int(len(img) * 0.75)
 
-        # ── Schritt 5: Linienpositionen ───────────────────────────────────────
-        white_alternative  = int(len(img[0]) * 0.95)
-        yellow_alternative = int(len(img[0]) * 0.05)
-        distance           = int(len(img) * 0.75)
+            # Gelbe Linie
+            center_yellow_raw = self.get_x_for_driving(
+                mask_yellow, distance, left_line=True,
+                last_known=self.last_yellow_position)
+            center_yellow, self.last_yellow_position = self._resolve_line_position(
+                center_yellow_raw, self.last_yellow_position,
+                yellow_alternative, self.max_frame_jump, label='Yellow')
 
-        # Gelbe Linie
-        center_yellow_raw = self.get_x_for_driving(
-            mask_yellow, distance, left_line=True,
-            last_known=self.last_yellow_position)
-        center_yellow, self.last_yellow_position = self._resolve_line_position(
-            center_yellow_raw, self.last_yellow_position,
-            yellow_alternative, self.max_frame_jump, label='Yellow')
+            # Weiße Linie (Tracking verhindert Sprünge zur Gegenspur in engen Kurven)
+            center_white_raw = self.get_x_for_driving(
+                mask_white, distance, left_line=False,
+                last_known=self.last_white_position)
+            center_white, self.last_white_position = self._resolve_line_position(
+                center_white_raw, self.last_white_position,
+                white_alternative, self.max_frame_jump, label='White')
 
-        # Weiße Linie (Tracking verhindert Sprünge zur Gegenspur in engen Kurven)
-        center_white_raw = self.get_x_for_driving(
-            mask_white, distance, left_line=False,
-            last_known=self.last_white_position)
-        center_white, self.last_white_position = self._resolve_line_position(
-            center_white_raw, self.last_white_position,
-            white_alternative, self.max_frame_jump, label='White')
+            # Plausibilitätsprüfung: weiß muss rechts von gelb liegen
+            if center_white <= center_yellow:
+                if center_white > int(len(img[0]) * 0.4):
+                    center_yellow = yellow_alternative
+                else:
+                    center_white = white_alternative
 
-        # Plausibilitätsprüfung: weiß muss rechts von gelb liegen
-        if center_white <= center_yellow:
-            if center_white > int(len(img[0]) * 0.4):
-                center_yellow = yellow_alternative
-            else:
-                center_white = white_alternative
+            # ── Schritt 6: Spurversatz berechnen ────────────────────────────────
+            lane_center = (center_white + center_yellow) / 2
+            msg_error = Float64()
+            msg_error.data = 1 - (lane_center / len(img) * 2)
+            self.pub_lane.publish(msg_error)
+            # Gedrosseltes Logging statt blockierendem print() (max. 1x/Sekunde)
+            rospy.loginfo_throttle(1.0, f"Lane error: {msg_error.data:.3f} range [-1,1]")
 
-        # ── Schritt 6: Spurversatz berechnen ──────────────────────────────────
-        lane_center = (center_white + center_yellow) / 2
-        msg_error = Float64()
-        msg_error.data = 1 - (lane_center / len(img) * 2)
-        self.pub_lane.publish(msg_error)
-        # Gedrosseltes Logging statt blockierendem print() (max. 1x/Sekunde)
-        rospy.loginfo_throttle(1.0, f"Lane error: {msg_error.data:.3f} range [-1,1]")
+            # ── Schritt 7: Rote Haltelinie ───────────────────────────────────────
+            stop_line_detected, mask_red = self.detect_stop_line(hsv)
+            self.pub_stop_line.publish(Bool(data=stop_line_detected))
 
-        # ── Schritt 7: Rote Haltelinie ────────────────────────────────────────
-        stop_line_detected, mask_red = self.detect_stop_line(hsv)
-        self.pub_stop_line.publish(Bool(data=stop_line_detected))
-
-        # ── Schritt 8: Debug-Variablen für run_debug sichern ──────────────────
-        # WICHTIG: self.img ist das UNANNOTIERTE Bird's-Eye-Bild. Alle Markierungen
-        # werden ausschließlich in run_debug auf eine Kopie gezeichnet – so bleibt
-        # das gespeicherte Bild sauber und es wird nicht doppelt annotiert.
-        self.img                = img
-        self.lane_center        = lane_center
-        self.white_alternative  = white_alternative
-        self.yellow_alternative = yellow_alternative
-        self.center_white       = center_white
-        self.center_yellow      = center_yellow
-        self.stop_line_detected = stop_line_detected
-        self.debug_img_white    = mask_white
-        self.debug_img_yellow   = mask_yellow
-        self.debug_img_red      = mask_red
-
-        self.is_running = False
+            # ── Schritt 8: Debug-Variablen für run_debug sichern ─────────────────
+            # WICHTIG: self.img ist das UNANNOTIERTE Bird's-Eye-Bild. Alle Markierungen
+            # werden ausschließlich in run_debug auf eine Kopie gezeichnet – so bleibt
+            # das gespeicherte Bild sauber und es wird nicht doppelt annotiert.
+            self.img                = img
+            self.lane_center        = lane_center
+            self.white_alternative  = white_alternative
+            self.yellow_alternative = yellow_alternative
+            self.center_white       = center_white
+            self.center_yellow      = center_yellow
+            self.stop_line_detected = stop_line_detected
+            self.debug_img_white    = mask_white
+            self.debug_img_yellow   = mask_yellow
+            self.debug_img_red      = mask_red
+        finally:
+            self.is_running = False
 
     # ── Hilfsfunktionen ──────────────────────────────────────────────────────────
 
