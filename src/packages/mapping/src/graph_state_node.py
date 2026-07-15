@@ -21,7 +21,7 @@
 #   /graph/exit_directions, damit explore_control_node und path_planner_node
 #   ihre Tag-ID-basierten Entscheidungen (aus dem Graphen) in die Wort-Richtung
 #   uebersetzen koennen, die switch_control_node/control_intersection_node
-#   erwarten (unveraendert wie in Challenge 2: left/right/straight).
+#   erwarten (left/right/straight).
 #
 # Der Graph-Uebergang (current_node -> naechster Knoten, visited_edges) wird
 # ausgeloest, sobald /intersection/phase auf "Turning" wechselt - das ist der
@@ -69,6 +69,7 @@ class GraphStateNode:
 
         self.current_entry_tag = None  # zuletzt gesehener Kreuzungs-Tag (1-4)
         self._last_direction    = ""   # zuletzt von switch_control gewaehltes Wort
+        self.phase               = "Lane"
         self._last_phase         = "Lane"
 
         rospy.Subscriber(f'/{self._vehicle_name}/detect/apriltag/id',
@@ -111,7 +112,11 @@ class GraphStateNode:
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
     def cbAprilTagId(self, msg):
-        if msg.data != -1 and 1 <= msg.data <= 4:
+        # Nur akzeptieren, waehrend der Bot tatsaechlich auf dem Weg zur naechsten
+        # Kreuzung ist (Lane-Phase). Waehrend Stopping/Turning kann eine eingehende
+        # Tag-ID nur noch ein Rest der gerade verlassenen/aktuellen Kreuzung sein -
+        # die soll current_entry_tag der NAECHSTEN Kreuzung nicht kontaminieren.
+        if self.phase == "Lane" and msg.data != -1 and 1 <= msg.data <= 4:
             self.current_entry_tag = msg.data
 
     def cbDirection(self, msg):
@@ -132,6 +137,7 @@ class GraphStateNode:
 
     def cbPhase(self, msg):
         phase = msg.data
+        self.phase = phase
         if phase == "Turning" and self._last_phase != "Turning":
             # Kreuzung wird verlassen: Graph-Zustand (current_node/visited_edges)
             # ist deterministisch aus der eigenen Karte bekannt -> sofort aktualisieren.
