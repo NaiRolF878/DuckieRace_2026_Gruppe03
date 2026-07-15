@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ─────────────────────────────────────────────────────────────────────────────
-# control_lane_node.py  (Challenge 2 – Intersection Handling)
+# control_lane_node.py  (Challenge 4 – Mapping & Path Finding)
 #
 # Reiner PID-Spurfolge-Regler. KEINE Haltelinien-Logik mehr:
 # An der Kreuzung übernimmt die FSM (switch_control_node + control_intersection_node).
