@@ -131,7 +131,7 @@ class ControlLaneNode:
 
         error = error.data
 
-        # NEU: Ausweich-Offset addieren → verschiebt wahrgenommene Spurmitte
+        # Ausweich-Offset addieren → verschiebt wahrgenommene Spurmitte
         error = error + self.error_offset
         # Begrenzung damit PID nicht übersteuert (etwas weiter wegen Offset)
         error = max(min(error, 2.0), -2.0)
