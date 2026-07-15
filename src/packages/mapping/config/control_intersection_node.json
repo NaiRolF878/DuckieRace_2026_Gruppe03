@@ -52,58 +52,6 @@
                     }
                 ]
             }
-        },
-        "track": {
-            "turn_segments": {
-                "left": [
-                    {
-                        "v": 0.2,
-                        "omega": 0.3,
-                        "ticks": 65,
-                        "timeout": 2.0
-                    },
-                    {
-                        "v": 0.2,
-                        "omega": 2.5,
-                        "ticks": 685,
-                        "timeout": 2.5
-                    },
-                    {
-                        "v": 0.2,
-                        "omega": 0.0,
-                        "ticks": 65,
-                        "timeout": 1.0
-                    }
-                ],
-                "right": [
-                    {
-                        "v": 0.2,
-                        "omega": 0.2,
-                        "ticks": 90,
-                        "timeout": 1.7
-                    },
-                    {
-                        "v": 0.15,
-                        "omega": -3.2,
-                        "ticks": 640,
-                        "timeout": 1.0
-                    },
-                    {
-                        "v": 0.2,
-                        "omega": 0.1,
-                        "ticks": 65,
-                        "timeout": 1.0
-                    }
-                ],
-                "straight": [
-                    {
-                        "v": 0.2,
-                        "omega": 0.1,
-                        "ticks": 280,
-                        "timeout": 3.5
-                    }
-                ]
-            }
         }
     }
 }
