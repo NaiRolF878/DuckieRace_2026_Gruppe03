@@ -51,24 +51,6 @@
                 "detection_x_start": {"default": 0.4, "min": 0.0, "max": 1.0},
                 "detection_x_end": {"default": 1.0, "min": 0.0, "max": 1.0}
             }
-        },
-        "track": {
-            "white": {
-                "hh": {"default": 255, "min": 0, "max": 255},
-                "hl": {"default": 0, "min": 0, "max": 255},
-                "sh": {"default": 41, "min": 0, "max": 255},
-                "sl": {"default": 0, "min": 0, "max": 255},
-                "vh": {"default": 255, "min": 0, "max": 255},
-                "vl": {"default": 161, "min": 0, "max": 255}
-            },
-            "yellow": {
-                "hh": {"default": 60, "min": 0, "max": 255},
-                "hl": {"default": 15, "min": 0, "max": 255},
-                "sh": {"default": 255, "min": 0, "max": 255},
-                "sl": {"default": 60, "min": 0, "max": 255},
-                "vh": {"default": 255, "min": 0, "max": 255},
-                "vl": {"default": 120, "min": 0, "max": 255}
-            }
         }
     }
 }
