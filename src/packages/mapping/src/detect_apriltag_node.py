@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ─────────────────────────────────────────────────────────────────────────────
-# detect_apriltag_node.py  (Challenge 4 – Mapping & Path Finding, urspr. Challenge 2)
+# detect_apriltag_node.py  (Challenge 4 – Mapping & Path Finding)
 #
 # Reine AprilTag-Erkennung auf dem Originalbild. Die rote Haltelinie erkennt
 # detect_lane_node (Bird's-Eye). Hier: welcher Kreuzungs-Tag (1-4, welche Richtungen
@@ -61,10 +61,12 @@ class DetectApriltagNode:
         self._stable_id          = -1
         self._candidate_id       = -1
         self._candidate_count    = 0
+        self._miss_count         = 0
         self._mem_tag_id         = -1
         self._mem_direction      = "unknown"
         self._mem_time           = None
         self._chosen_direction   = "-"   # von der FSM gewuerfelte Abbiegerichtung
+        self._last_intersection_phase = "Lane"
         self._gate_candidate_id    = -1
         self._gate_candidate_count = 0
         # Filter-/Memory-Defaults (werden aus JSON überschrieben)
@@ -102,6 +104,12 @@ class DetectApriltagNode:
         self.sub_chosen = rospy.Subscriber(
             f'/{self._vehicle_name}/intersection/direction', String,
             self.cbChosenDirection, queue_size=1)
+        # Fuer harten Reset des Tag-Gedaechtnisses beim Start einer neuen Kante
+        # (Turning->Lane) - verhindert, dass Alt-Daten der verlassenen Kreuzung
+        # in die naechste Kante durchsickern (siehe graph_state_node-Diskussion).
+        self.sub_intersection_phase = rospy.Subscriber(
+            f'/{self._vehicle_name}/intersection/phase', String,
+            self.cbIntersectionPhase, queue_size=1)
 
         # ── Publisher ─────────────────────────────────────────────────────────
         self.pub_direction = rospy.Publisher(
@@ -150,6 +158,22 @@ class DetectApriltagNode:
         # Von der FSM gewuerfelte Abbiegerichtung (nur Anzeige)
         self._chosen_direction = msg.data if msg.data else "-"
 
+    def cbIntersectionPhase(self, msg):
+        phase = msg.data
+        if phase == "Lane" and self._last_intersection_phase == "Turning":
+            # Neue Kante beginnt: jede Erinnerung an den zuletzt gesehenen
+            # Kreuzungs-Tag verwerfen, damit sie nicht faelschlich fuer die
+            # naechste Kreuzung weiterverwendet wird.
+            self._stable_id       = -1
+            self._candidate_id    = -1
+            self._candidate_count = 0
+            self._miss_count      = 0
+            self._mem_tag_id      = -1
+            self._mem_direction   = "unknown"
+            self._mem_time        = None
+            rospy.loginfo("[detect_apriltag] Neue Kante – Tag-Gedaechtnis zurueckgesetzt")
+        self._last_intersection_phase = phase
+
     # ── Tag-Hilfsfunktionen ────────────────────────────────────────────────────
 
     @staticmethod
@@ -174,11 +198,19 @@ class DetectApriltagNode:
         return True
 
     def _update_stability(self, candidate_id):
-        # Tag-ID muss stability_required Frames in Folge gleich sein, bevor sie gilt
+        # Tag-ID muss stability_required Frames in Folge gleich sein, bevor sie gilt.
+        # Symmetrisch dazu verfaellt _stable_id wieder auf -1, wenn stability_required
+        # Frames in Folge KEIN Tag mehr sichtbar ist – ohne diesen Verfall bliebe der
+        # zuletzt gesehene Tag unbegrenzt "erkannt" (kein Timeout, anders als beim
+        # expliziten tag_memory unten).
         if candidate_id == -1:
             self._candidate_id    = -1
             self._candidate_count = 0
+            self._miss_count     += 1
+            if self._miss_count >= self.stability_required:
+                self._stable_id = -1
             return self._stable_id
+        self._miss_count = 0
         if candidate_id == self._candidate_id:
             self._candidate_count += 1
         else:
