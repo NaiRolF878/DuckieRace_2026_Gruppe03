@@ -52,6 +52,10 @@ class DebugGraphNode:
         self.phase              = "exploration"
         self.exploration_done   = False
         self.delivery_progress  = {"done": [], "remaining": [], "planned_order": []}
+        # FSM-Phase (Lane/Stopping/Turning) + gewaehlte Richtung - fuer die
+        # Live-Anzeige "biegt gerade wohin ab" beim Bot-Symbol.
+        self.intersection_phase = "Lane"
+        self.intersection_dir   = ""
 
         self._last_drawn_planned_order = None
 
@@ -69,6 +73,10 @@ class DebugGraphNode:
                          Bool, self.cbExplorationDone, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/navigation/delivery_progress',
                          String, self.cbDeliveryProgress, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/intersection/phase',
+                         String, self.cbIntersectionPhase, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/intersection/direction',
+                         String, self.cbIntersectionDirection, queue_size=1)
 
         self.pub_start_delivery = rospy.Publisher(
             f'/{self._vehicle_name}/navigation/start_delivery', Bool, queue_size=1)
@@ -242,6 +250,12 @@ class DebugGraphNode:
         except (ValueError, json.JSONDecodeError):
             pass
 
+    def cbIntersectionPhase(self, msg):
+        self.intersection_phase = msg.data
+
+    def cbIntersectionDirection(self, msg):
+        self.intersection_dir = msg.data
+
     # ── GUI-Aufbau ────────────────────────────────────────────────────────────
 
     def _build_gui(self):
@@ -298,10 +312,20 @@ class DebugGraphNode:
             if edge["node_a"] == edge["node_b"]:
                 self.canvas.create_oval(*self._self_loop_bbox(edge["node_a"]),
                                          outline="#555555", width=2)
+                ax, ay = self._self_loop_anchor(edge["node_a"])
+                self.canvas.create_text(ax, ay - 10,
+                    text=f'{edge["tag_a"]}/{edge["tag_b"]}', fill="#555555",
+                    font=("Arial", 8))
                 continue
             x1, y1 = self.node_positions[edge["node_a"]]
             x2, y2 = self.node_positions[edge["node_b"]]
             self.canvas.create_line(x1, y1, x2, y2, fill="#555555", width=2)
+            # Tag-Nummer nahe jedem Kantenende: zeigt, ueber welchen Eingangs-Tag
+            # man den jeweils GEGENUEBERLIEGENDEN Knoten erreicht.
+            self.canvas.create_text(x1 + (x2 - x1) * 0.22, y1 + (y2 - y1) * 0.22,
+                text=edge["tag_a"], fill="#333333", font=("Arial", 9, "bold"))
+            self.canvas.create_text(x1 + (x2 - x1) * 0.78, y1 + (y2 - y1) * 0.78,
+                text=edge["tag_b"], fill="#333333", font=("Arial", 9, "bold"))
         for node, (x, y) in self.node_positions.items():
             self.canvas.create_oval(x - 20, y - 20, x + 20, y + 20,
                                      fill="#666666", outline="")
@@ -374,6 +398,10 @@ class DebugGraphNode:
             self.canvas.create_oval(x - 24, y - 24, x + 24, y + 24,
                                      fill="#FFCC00", outline="", tags="bot")
             self.canvas.create_text(x, y, text=self.current_node, fill="black", tags="bot")
+            if self.intersection_phase == "Turning" and self.intersection_dir:
+                self.canvas.create_text(
+                    x, y - 36, text=f"biegt: {self.intersection_dir.upper()}",
+                    fill="#CC00CC", font=("Arial", 10, "bold"), tags="bot")
 
     # ── Status-Panel ─────────────────────────────────────────────────────────
 
