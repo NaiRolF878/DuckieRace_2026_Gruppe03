@@ -8,7 +8,6 @@
 #   │  Original            │  Bird's-Eye-View     │
 #   │  + Modus-Rahmen      │  + Spurmarkierungen  │
 #   │  + AprilTag-Box      │  + ROI-Kasten        │
-#   │  + Enten-Box         │                      │
 #   │  + Statuszeile       │                      │
 #   ├──────────────────────┼──────────────────────┤
 #   │  Gelbe Linie (Maske) │  Weiße Linie (Maske) │
@@ -17,7 +16,6 @@
 # Das Originalbild oben links kombiniert alle Detection-Infos auf einem Bild:
 #   - Modus-Rahmen (Farbe je nach Modus)
 #   - Tag-ID-Label (/detect/apriltag)
-#   - Enten-Position aus /detect/duck (geschätzter Kreis)
 #   - Statuszeile mit Modus + Rote-Linie-Info
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -26,7 +24,7 @@ import rospy
 import numpy as np
 import cv2
 from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import Int32, Float64, Bool, String
+from std_msgs.msg import Int32, Bool, String
 
 
 class CameraDashboardNode:
@@ -49,7 +47,6 @@ class CameraDashboardNode:
         # ── Letzte bekannte Detection-Werte ───────────────────────────────────
         self._apriltag_id      = -1       # -1 = kein Tag
         self._gate_id          = -1       # -1 = kein Tor sichtbar (Challenge 4, IDs 5-13)
-        self._duck_x           = -99.0   # -99 = keine Ente
         self._stop_line        = False
         self._enable_lane         = True
         self._enable_intersection = False
@@ -75,8 +72,6 @@ class CameraDashboardNode:
         # Tor-Tag (5-13, Challenge 4) - separat von der Kreuzungs-Tag-ID oben
         rospy.Subscriber(f'/{self._vehicle_name}/detect/gate/id',
             Int32, lambda m: setattr(self, '_gate_id', m.data), queue_size=1)
-        rospy.Subscriber(f'/{self._vehicle_name}/detect/duck',
-            Float64, self._cb_duck, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/detect/stop_line',
             Bool, self._cb_stop_line, queue_size=1)
 
@@ -161,9 +156,6 @@ class CameraDashboardNode:
     def _cb_apriltag(self, msg):
         self._apriltag_id = msg.data
 
-    def _cb_duck(self, msg):
-        self._duck_x = msg.data
-
     def _cb_stop_line(self, msg):
         self._stop_line = msg.data
 
@@ -221,24 +213,6 @@ class CameraDashboardNode:
             cv2.putText(annotated, f"Tag ID: {self._apriltag_id}",
                         (14, 112), cv2.FONT_HERSHEY_SIMPLEX,
                         0.55, (0, 255, 0), 2, cv2.LINE_AA)
-
-        # ── 5. Ente: Kreis + Bounding-Box ────────────────────────────────────
-        if self._duck_x != -99.0:
-            duck_x_px = int((self._duck_x + 1) / 2 * w)
-            duck_y_px = int(h * 0.65)
-            radius    = 50
-            cv2.circle(annotated, (duck_x_px, duck_y_px), radius, (0, 165, 255), 2)
-            cv2.rectangle(annotated,
-                (duck_x_px - radius, duck_y_px - radius),
-                (duck_x_px + radius, duck_y_px + radius),
-                (0, 0, 255), 2)
-            label_y = max(duck_y_px - radius - 6, 100)
-            cv2.rectangle(annotated,
-                (duck_x_px - radius, label_y - 18),
-                (duck_x_px - radius + 80, label_y + 4), (0, 0, 0), -1)
-            cv2.putText(annotated, "ENTE!",
-                (duck_x_px - radius, label_y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2, cv2.LINE_AA)
 
         return annotated
 
