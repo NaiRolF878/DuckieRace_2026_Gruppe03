@@ -19,35 +19,6 @@
                     "max": 10.0
                 },
                 "max_vel": {
-                    "default": 0.15,
-                    "min": 0.0,
-                    "max": 10.0
-                },
-                "min_vel": {
-                    "default": 0.1,
-                    "min": 0.0,
-                    "max": 1.0
-                }
-            }
-        },
-        "track": {
-            "pid": {
-                "p": {
-                    "default": 8.0,
-                    "min": 0.0,
-                    "max": 10.0
-                },
-                "i": {
-                    "default": 0.0,
-                    "min": 0.0,
-                    "max": 10.0
-                },
-                "d": {
-                    "default": 6.0,
-                    "min": 0.0,
-                    "max": 10.0
-                },
-                "max_vel": {
                     "default": 0.2,
                     "min": 0.0,
                     "max": 10.0
