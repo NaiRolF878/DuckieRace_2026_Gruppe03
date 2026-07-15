@@ -16,7 +16,7 @@
 #
 # Das Originalbild oben links kombiniert alle Detection-Infos auf einem Bild:
 #   - Modus-Rahmen (Farbe je nach Modus)
-#   - Echte AprilTag-Bounding-Box aus /detect/apriltag_corners
+#   - Tag-ID-Label (/detect/apriltag)
 #   - Enten-Position aus /detect/duck (geschätzter Kreis)
 #   - Statuszeile mit Modus + Rote-Linie-Info
 # ─────────────────────────────────────────────────────────────────────────────
@@ -26,7 +26,7 @@ import rospy
 import numpy as np
 import cv2
 from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import Int32, Float64, Float32MultiArray, Bool, String
+from std_msgs.msg import Int32, Float64, Bool, String
 
 
 class CameraDashboardNode:
@@ -48,11 +48,9 @@ class CameraDashboardNode:
 
         # ── Letzte bekannte Detection-Werte ───────────────────────────────────
         self._apriltag_id      = -1       # -1 = kein Tag
-        self._apriltag_corners = []       # leer = kein Tag, sonst [x0,y0,...,x3,y3]
         self._gate_id          = -1       # -1 = kein Tor sichtbar (Challenge 4, IDs 5-13)
         self._duck_x           = -99.0   # -99 = keine Ente
         self._stop_line        = False
-        self._stop_line_side   = 'none'
         self._enable_lane         = True
         self._enable_intersection = False
         self._enable_obstacle     = False
@@ -77,14 +75,10 @@ class CameraDashboardNode:
         # Tor-Tag (5-13, Challenge 4) - separat von der Kreuzungs-Tag-ID oben
         rospy.Subscriber(f'/{self._vehicle_name}/detect/gate/id',
             Int32, lambda m: setattr(self, '_gate_id', m.data), queue_size=1)
-        rospy.Subscriber(f'/{self._vehicle_name}/detect/apriltag_corners',
-            Float32MultiArray, self._cb_corners, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/detect/duck',
             Float64, self._cb_duck, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/detect/stop_line',
             Bool, self._cb_stop_line, queue_size=1)
-        rospy.Subscriber(f'/{self._vehicle_name}/detect/stop_line_side',
-            String, self._cb_stop_line_side, queue_size=1)
 
         # Enable-Topics von switch_control_node
         rospy.Subscriber(f'/{self._vehicle_name}/enable/lane',
@@ -166,22 +160,12 @@ class CameraDashboardNode:
 
     def _cb_apriltag(self, msg):
         self._apriltag_id = msg.data
-        # Eckpunkte zurücksetzen wenn kein Tag mehr sichtbar
-        if msg.data == -1:
-            self._apriltag_corners = []
-
-    def _cb_corners(self, msg):
-        # [x0,y0, x1,y1, x2,y2, x3,y3] oder leer
-        self._apriltag_corners = list(msg.data)
 
     def _cb_duck(self, msg):
         self._duck_x = msg.data
 
     def _cb_stop_line(self, msg):
         self._stop_line = msg.data
-
-    def _cb_stop_line_side(self, msg):
-        self._stop_line_side = msg.data
 
 
     # ── Originalbild annotieren ───────────────────────────────────────────────
@@ -203,7 +187,7 @@ class CameraDashboardNode:
                     (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.65, mode_color, 2, cv2.LINE_AA)
         # Rote Linie rechts
         stop_color = (0, 0, 255) if self._stop_line else (160, 160, 160)
-        cv2.putText(annotated, f"Linie: {self._stop_line_side}",
+        cv2.putText(annotated, f"Linie: {'JA' if self._stop_line else 'NEIN'}",
                     (w - 180, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, stop_color, 2, cv2.LINE_AA)
 
         # ── 2b. Zweite Statuszeile: FSM-Phase + gewuerfelte Abbiegerichtung ───
@@ -231,29 +215,12 @@ class CameraDashboardNode:
             cv2.putText(annotated, "ROTE LINIE!",
                         (4, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2, cv2.LINE_AA)
 
-        # ── 4. AprilTag: echte Bounding-Box aus Eckpunkten ────────────────────
-        if self._apriltag_id != -1 and len(self._apriltag_corners) == 8:
-            pts = np.array(self._apriltag_corners, dtype=np.int32).reshape((4, 2))
-
-            # Viereck direkt um den Tag (grün, dünn)
-            cv2.polylines(annotated, [pts], isClosed=True, color=(0, 255, 0), thickness=2)
-
-            # Achsenparallele Bounding-Box
-            x_min, y_min = pts[:, 0].min(), pts[:, 1].min()
-            x_max, y_max = pts[:, 0].max(), pts[:, 1].max()
-            cv2.rectangle(annotated, (x_min, y_min), (x_max, y_max), (0, 200, 255), 2)
-
-            # Tag-ID Label über der Box (unterhalb aller drei Statuszeilen sicherstellen)
-            label_y = max(y_min - 8, 100)
-            cv2.rectangle(annotated, (x_min, label_y - 18), (x_min + 130, label_y + 4), (0, 0, 0), -1)
+        # ── 4. AprilTag: ID-Label (keine Eckpunkte verfuegbar, nur die ID) ─────
+        if self._apriltag_id != -1:
+            cv2.rectangle(annotated, (10, 96), (140, 118), (0, 0, 0), -1)
             cv2.putText(annotated, f"Tag ID: {self._apriltag_id}",
-                        (x_min, label_y), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6, (0, 255, 0), 2, cv2.LINE_AA)
-
-            # Mittelpunkt
-            cx = int(pts[:, 0].mean())
-            cy = int(pts[:, 1].mean())
-            cv2.circle(annotated, (cx, cy), 5, (0, 255, 0), -1)
+                        (14, 112), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55, (0, 255, 0), 2, cv2.LINE_AA)
 
         # ── 5. Ente: Kreis + Bounding-Box ────────────────────────────────────
         if self._duck_x != -99.0:
