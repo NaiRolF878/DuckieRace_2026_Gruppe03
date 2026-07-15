@@ -1,6 +1,6 @@
 # DuckieRace
 
-Dies ist ein *studentisches Projekt* im Rahmen der Vorlesung *Robogistic*. Im Zuge dieses Projekts müssen vier verschiedene Challenges mit dem Duckiebot absolviert werden. Das Projekt ist in *ROS 1 (Noetic)* unter Ubuntu 20.04 geschrieben.
+Dies ist ein studentisches Projekt im Rahmen der Vorlesung Robogistic. Im Zuge dieses Projekts müssen vier verschiedene Challenges mit dem Duckiebot absolviert werden. Das Projekt ist in ROS 1 (Noetic) unter Ubuntu 20.04 geschrieben.
 
 - **Challenge 1 – Lane Following** (`follow_lane`): Der Bot folgt autonom der Fahrspur (gelbe Mittellinie, weiße Außenlinie) und hält an roten Haltelinien kurz an.
 - **Challenge 2 – Intersection Handling** (`intersection_handling`): Zusätzlich zum Spurfolgen erkennt der Bot Kreuzungen per AprilTag, hält an der Haltelinie, wählt eine erlaubte Richtung und biegt ab.
@@ -45,3 +45,4 @@ launchers/follow_lane.sh
 
 ## code structure
 This reposistory is formed as a catkin workspace. The code is seprated in packages. The actual code for the DuckieRace challenge is in src/package/follow_lane/src. The package duckietown_msgs contains message definitions for the communication with the nodes running on the duckiebot. 
+

@@ -15,7 +15,7 @@
   "parameters": {
     "default": {
       "tag_memory": {
-        "seconds":  {"default": 0.5,  "min": 0.0, "max": 10.0},
+        "seconds":  {"default": 3.0,  "min": 0.0, "max": 10.0},
         "min_area": {"default": 1500, "min": 0,   "max": 20000}
       },
       "tag_filter": {
