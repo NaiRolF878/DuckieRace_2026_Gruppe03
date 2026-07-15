@@ -3,8 +3,8 @@
 # camera_dashboard_node.py  (Challenge 3 – Watch out for Ducks)
 #
 # Schlankes 2x2-Dashboard:
-#   [ Bird's-Eye-View ] [ Enten-BEV (Belegung) ]
-#   [ Annotiert       ] [ Weisse Maske         ]
+#   [ Enten-Original (Erkennung) ] [ Enten-BEV (Belegung) ]
+#   [ Annotiert                  ] [ Weisse Maske         ]
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -17,12 +17,20 @@ from std_msgs.msg import Float64, Bool, String
 
 
 class CameraDashboardNode:
+    STATE_COLORS = {
+        "Idle":   (0, 255, 0),
+        "Evade":  (0, 165, 255),
+        "Wait":   (0, 0, 255),
+        "Pass":   (0, 165, 255),
+        "Return": (255, 165, 0),
+    }
+
     def __init__(self, node_name):
         rospy.init_node(node_name)
         self._vehicle_name = os.environ['VEHICLE_NAME']
         self._tile = (300, 300)
 
-        self._img_bev       = self._blank("Warte auf Bird's-Eye-View ...")
+        self._img_duck_orig = self._blank("Warte auf Enten-Original ...")
         self._img_duck      = self._blank("Warte auf Enten-BEV ...")
         self._img_annotated = self._blank("Warte auf Annotiert ...")
         self._img_white     = self._blank("Warte auf Weiss-Maske ...")
@@ -31,8 +39,8 @@ class CameraDashboardNode:
         self._stop_line     = False
         self._obstacle_state = "Idle"
 
-        rospy.Subscriber(f'/{self._vehicle_name}/debug/bird_view',
-                         CompressedImage, self._cb_bev, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/debug/duck_original',
+                         CompressedImage, self._cb_duck_orig, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/debug/duck_bev',
                          CompressedImage, self._cb_duck, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/debug/annotated',
@@ -66,9 +74,9 @@ class CameraDashboardNode:
         cv2.putText(t, label, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1, cv2.LINE_AA)
         return t
 
-    def _cb_bev(self, m):
+    def _cb_duck_orig(self, m):
         img = self._decode(m)
-        if img is not None: self._img_bev = self._to_tile(img, "BEV")
+        if img is not None: self._img_duck_orig = self._to_tile(img, "Enten-Original")
     def _cb_duck(self, m):
         img = self._decode(m)
         if img is not None: self._img_duck = self._to_tile(img, "Enten-BEV")
@@ -84,18 +92,11 @@ class CameraDashboardNode:
     def run(self):
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
-            top = np.hstack([self._img_bev, self._img_duck])
+            top = np.hstack([self._img_duck_orig, self._img_duck])
             bot = np.hstack([self._img_annotated, self._img_white])
             dash = np.vstack([top, bot])
 
-            state_colors = {
-                "Idle":   (0, 255, 0),
-                "Evade":  (0, 165, 255),
-                "Wait":   (0, 0, 255),
-                "Pass":   (0, 165, 255),
-                "Return": (255, 165, 0),
-            }
-            mcol = state_colors.get(self._obstacle_state, (255, 255, 255))
+            mcol = self.STATE_COLORS.get(self._obstacle_state, (255, 255, 255))
             cv2.putText(dash, self._obstacle_state.upper(), (10, dash.shape[0] - 12),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, mcol, 2, cv2.LINE_AA)
             if self._stop_line:
