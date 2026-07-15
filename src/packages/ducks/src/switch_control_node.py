@@ -15,8 +15,10 @@
 #   Lane → Obstacle : Zone nah ODER mittel belegt  (/detect/zones)
 #   Obstacle → Lane : Ausweichen fertig             (/obstacle/done)
 #
-# Trigger ist /detect/zones (nicht /detect/duck), damit auch die gelbe Linie
-# als Objekt erkannt wird – sie erzeugt keinen Duck-Blob, belegt aber Zonen.
+# Trigger ist /detect/zones (nicht /detect/duck): Zonen prüfen den farbigen
+# Flächenanteil im ganzen Korridor-Band und sind das verlässliche "ist da was
+# im Weg"-Signal. /detect/duck (duck_x) dient in control_obstacle_node nur noch
+# als Richtungs-Fallback, nicht als Trigger.
 #
 # Die rote Haltelinie wird NICHT hier behandelt – sie geht direkt von
 # detect_lane_node an control_lane_node (Halte-Automat dort).
