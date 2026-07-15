@@ -82,7 +82,6 @@ class DetectLaneNode:
         self.debug_img_annotated = blank_color
 
         # ── Enten-Erkennung (Challenge 3) – Defaults VOR init_parameters ──────
-        self.duck_enabled         = True
         self.duck_roi_top         = 0.35
         self.duck_roi_bottom      = 1.00
         self.duck_min_area        = 250
@@ -113,7 +112,7 @@ class DetectLaneNode:
         # ── Zonen-Erkennung (Stufe 3) ─────────────────────────────────────────
         # Korridor "wandert" mit der tatsächlichen Fahrlinie (lane_center) mit,
         # symmetrische Breite = Bot-Breite + Ausweich-Spielraum, NICHT die ganze
-        # Spur – reicht dadurch nie über die eigene Spur hinaus (siehe Diskussion).
+        # Spur – reicht dadurch nie über die eigene Spur hinaus in die Gegenspur.
         self.zone_corridor_width_px    = 200
         self.zone_far_y_min            = 0.20
         self.zone_far_y_max            = 0.45
@@ -223,7 +222,6 @@ class DetectLaneNode:
             except (KeyError, TypeError):
                 rospy.logwarn(f"[detect_lane/duck] Parameter {group}.{key} fehlt – nutze {default}")
                 return default
-        self.duck_enabled         = int(gd("duck", "enabled", 1)) == 1
         self.duck_roi_top         = gd("duck", "roi_top", 0.35)
         self.duck_roi_bottom      = gd("duck", "roi_bottom", 1.0)
         self.duck_min_area        = gd("duck", "min_area", 250)
@@ -360,7 +358,7 @@ class DetectLaneNode:
 
 
     # ──────────────────────────────────────────────────────────────────────────
-    #  ENTEN-ERKENNUNG (Challenge 3) – integriert, nutzt dasselbe BEV-Bild
+    #  ENTEN-ERKENNUNG (Challenge 3) – Erkennung im Originalbild, Position ins BEV projiziert
     # ──────────────────────────────────────────────────────────────────────────
 
     def _color_obstacle_mask(self, bev_bgr):
@@ -390,7 +388,7 @@ class DetectLaneNode:
         return mask
 
     def _duck_blobs(self, mask):
-        # Zusammenhangskomponenten mit Formfilter (gegen Rauschen/Linien).
+        # Zusammenhangskomponenten mit Mindestgrößen-Filter (gegen Rauschen).
         num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
         blobs = []
         for i in range(1, num):
@@ -647,11 +645,8 @@ class DetectLaneNode:
             obstacle_mask = self._color_obstacle_mask(img)
             # ── ENTEN: im unverzerrten Originalbild (kein BEV-Trapez-Sichtfeldlimit,
             # keine Höhen-Verzerrung), Bodenkontaktpunkte werden ins BEV projiziert.
-            if self.duck_enabled:
-                self._process_ducks(cv_image, img, img.shape[1])
-            else:
-                self.pub_duck.publish(Float64(data=-99.0))
-            self._process_zones(img, obstacle_mask)  # immer aktiv; overlay auf debug_img_duck
+            self._process_ducks(cv_image, img, img.shape[1])
+            self._process_zones(img, obstacle_mask)  # overlay auf debug_img_duck
 
             # ── Schritt 3: CLAHE – lokaler Helligkeitsausgleich ───────────────
             lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
