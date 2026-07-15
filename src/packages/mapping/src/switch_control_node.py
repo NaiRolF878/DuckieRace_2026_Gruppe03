@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ─────────────────────────────────────────────────────────────────────────────
-# switch_control_node.py  (Challenge 4 – Mapping & Path Finding, urspr. Challenge 2)
+# switch_control_node.py  (Challenge 4 – Mapping & Path Finding)
 #
 # Zentraler Zustandsautomat (FSM).
 #
@@ -9,14 +9,13 @@
 #   Stopping    – an der Haltelinie warten
 #   Turning     – abbiegen (Sequenz wird von control_intersection gesteuert)
 #
-# Aenderung gegenueber Challenge 2: Die Richtung kommt nicht mehr per
-# random.choice(allowed_dirs), sondern von explore_control_node/path_planner_node
-# ueber /navigation/next_direction (deterministischer Pfad). Ist next_direction
-# nicht (mehr) in allowed_dirs enthalten, bleibt der Bot in STOPPING stehen und
-# wartet weiter - kein Fallback auf random. Deshalb wird die Richtungspruefung
-# aus cbStopLine in _update_state verschoben: sie muss bei jedem STOPPING-Tick
-# neu versucht werden (next_direction kann erst NACH dem Anhalten eintreffen),
-# nicht nur einmalig beim Uebergang aus LANE.
+# Die Abbiegerichtung kommt deterministisch von explore_control_node/
+# path_planner_node ueber /navigation/next_direction. Ist next_direction nicht
+# in allowed_dirs (den an der aktuellen Kreuzung laut Tag erlaubten Richtungen)
+# enthalten, bleibt der Bot in STOPPING stehen und wartet weiter – kein
+# Zufalls-Fallback. Die Richtungspruefung liegt deshalb in _update_state (nicht
+# in cbStopLine): sie muss bei jedem STOPPING-Tick neu versucht werden, weil
+# next_direction erst NACH dem Anhalten eintreffen kann.
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
