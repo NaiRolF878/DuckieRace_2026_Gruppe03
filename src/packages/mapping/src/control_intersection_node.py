@@ -8,7 +8,7 @@
 #   Stopping    – stehen bleiben (v=0)
 #   Turning     – Abbiege-SEQUENZ abfahren
 #
-# Segment-Ende wird encoder-basiert bestimmt (statt Zeit wie in Challenge 2):
+# Segment-Ende wird encoder-basiert bestimmt:
 #   Segment-JSON: {"v":..., "omega":..., "ticks":..., "timeout":...}
 #   - Geradeaus (|omega| < 0.1): fertig wenn (Δlinks + Δrechts)/2 >= ticks
 #   - Drehen: fertig wenn |Δrechts − Δlinks| >= ticks
