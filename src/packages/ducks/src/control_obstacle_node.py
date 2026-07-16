@@ -8,9 +8,14 @@
 #   Trigger : /detect/zones [nah, mittel, fern] – nah ODER mittel → EVADE
 #   Richtung + Stärke: aus /detect/corridor_occupancy (Lückenprofil, nah+mittel-
 #   Band) beim EVADE-Eintritt bestimmt, für die Dauer des Manövers eingefroren.
-#   Offset zeigt zur Mitte der breitesten freien Lücke, Stärke proportional zum
-#   Abstand von der Korridormitte (min. evade_offset_min). Fallback auf die alte
-#   duck_x-Heuristik, falls kein Profil vorliegt oder der Korridor komplett belegt ist.
+#   Der Korridor entspricht der Bot-Breite - statt der breitesten Lücke
+#   ZWISCHEN Hindernissen wird die Seite mit dem größeren freien Abstand vom
+#   Korridorrand bis zum nächsten Hindernis gewählt (kein Durchquetschen
+#   zwischen zwei Hindernissen). Stärke richtet sich nach der Breite dieser
+#   freien Seite relativ zur Korridorbreite: fast der ganze Korridor frei →
+#   kleiner Offset (evade_offset_min), nur ein schmaler Rest frei → voller
+#   evade_offset. Fallback auf die alte duck_x-Heuristik, falls kein Profil
+#   vorliegt oder der Korridor komplett belegt ist.
 #
 # Stufe 5 – Encoder-Rückkehr:
 #   Während EVADE+PASS: Radencoder-Ticks akkumulieren (data zählt IMMER aufwärts,
@@ -175,52 +180,56 @@ class ControlObstacleNode:
 
     def _find_best_gap(self, occ):
         """
-        Sucht die breiteste zusammenhängende freie Lücke im Korridor-Belegungsprofil.
+        Sucht NICHT die breiteste Luecke zwischen zwei Hindernissen, sondern
+        vergleicht den freien Abstand vom linken bzw. rechten Korridorrand bis
+        zum naechstgelegenen belegten Bin - und weicht zur Seite mit mehr
+        Abstand aus. Verhindert ein Durchquetschen durch eine schmale Luecke
+        zwischen zwei Hindernissen; der Bot faehrt stattdessen immer außen an
+        allen Hindernissen einer Seite vorbei.
         Rückgabe: (center_frac, width_frac) in [0,1] über den Korridor,
-        oder None wenn kein Bin frei ist (Korridor komplett belegt).
+        oder None wenn der komplette Korridor belegt ist.
         """
         n = len(occ)
         if n == 0:
             return None
-        best_width = 0
-        best_start = 0
-        i = 0
-        while i < n:
-            if occ[i] < 0.5:
-                j = i
-                while j < n and occ[j] < 0.5:
-                    j += 1
-                width = j - i
-                if width > best_width:
-                    best_width = width
-                    best_start = i
-                i = j
-            else:
-                i += 1
-        if best_width == 0:
+        occupied = [i for i in range(n) if occ[i] >= 0.5]
+        if not occupied:
+            return (0.5, 1.0)
+        if len(occupied) == n:
             return None
-        center_bin = best_start + best_width / 2.0
-        return (center_bin / n, best_width / n)
+        left_space  = min(occupied)          # freie Bins vor dem ersten Hindernis
+        right_space = n - 1 - max(occupied)  # freie Bins nach dem letzten Hindernis
+        if left_space >= right_space:
+            width      = left_space
+            center_bin = left_space / 2.0
+        else:
+            width      = right_space
+            center_bin = max(occupied) + 1 + right_space / 2.0
+        return (center_bin / n, width / n)
 
     def _offset_from_gap(self, gap):
         """
-        Wandelt eine gefundene Lücke (center_frac, width_frac) in einen Ausweich-Offset:
-        Richtung + Stärke proportional zum Abstand der Lückenmitte von der
-        Korridormitte (0.5). Lücke am Rand → voller evade_offset, Lücke nahe der
-        Mitte → evade_offset_min als Untergrenze (verhindert ein zu schwaches
-        Ausweichen bei einer knapp mittigen Lücke).
+        Wandelt eine gefundene Lücke (center_frac, width_frac) in einen Ausweich-Offset.
+        Der Korridor entspricht der Bot-Breite - ein Hindernis irgendwo darin
+        heißt grundsätzlich "so nicht durchfahrbar", AUSSER die freie Seite ist
+        (fast) so breit wie der ganze Korridor. Die Stärke richtet sich daher
+        nach width_frac (Anteil der Korridorbreite, der auf der gewählten Seite
+        frei ist): breite freie Seite → kleiner Offset reicht, schmale freie
+        Seite → voller evade_offset (Bot braucht seine ganze Breite zum
+        Vorbeikommen). Richtung aus center_frac relativ zur Korridormitte (0.5).
         """
-        center_frac, _width_frac = gap
+        center_frac, width_frac = gap
         center_signed = (center_frac - 0.5) * 2.0   # -1 (links) .. +1 (rechts)
-        magnitude = max(self.evade_offset_min, min(abs(center_signed), 1.0) * self.evade_offset)
+        magnitude = self.evade_offset_min + (1.0 - min(width_frac, 1.0)) * (self.evade_offset - self.evade_offset_min)
         return magnitude if center_signed >= 0.0 else -magnitude
 
     def _determine_direction(self):
         """
         Ausweichrichtung + -stärke beim EVADE-Eintritt:
-          1. Primär: breiteste freie Lücke im Korridor-Belegungsprofil
-             (/detect/corridor_occupancy) → Offset zeigt zur Lückenmitte,
-             Stärke proportional zum Abstand von der Korridormitte.
+          1. Primär: Seite mit dem größeren freien Abstand vom Korridorrand
+             bis zum nächsten Hindernis im Belegungsprofil
+             (/detect/corridor_occupancy) → Offset zeigt dorthin, Stärke
+             richtet sich nach der Breite dieser freien Seite.
           2. Fallback (kein Profil oder Korridor komplett belegt): alte
              duck_x-Heuristik – Objekt rechts → links ausweichen, sonst rechts.
         """

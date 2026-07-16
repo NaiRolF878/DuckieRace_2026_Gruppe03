@@ -72,10 +72,10 @@ Nimmt das Kamerabild und macht daraus Steuersignale:
    Homographie ins BEV projiziert → `duck_x`. Ein Kalman-Filter glättet die
    Position und überbrückt kurze Erkennungsaussetzer (statt sofort auf "keine
    Ente" zu springen).
-6. **Zonen-Belegung im BEV** – 3 Zonen (nah/mittel/fern) prüfen dieselbe Gelb/
-   Grün-Farbmaske im Fahrkorridor; der Korridor selbst ist **schmal** und fest
-   um die Bildmitte zentriert (Bot-Breite + Ausweich-Spielraum, nicht die
-   ganze Spur)
+6. **Zonen-Belegung im BEV** – 3 Zonen (nah/mittel/fern) prüfen im Fahrkorridor
+   dieselben reprojizierten Boden-Kontaktpunkte aus Schritt 5 (keine eigene
+   Farberkennung); der Korridor selbst ist **schmal** und fest um die
+   Bildmitte zentriert (entspricht der Bot-Breite, nicht die ganze Spur)
 
 **Publizierte Topics:**
 
@@ -225,19 +225,28 @@ In `control_obstacle_node.py`, Klasse `EvadeState`, Methode `_step_state_machine
 ### Ausweichrichtung – wie wird sie bestimmt?
 
 Primär aus dem **Korridor-Lückenprofil** (`/detect/corridor_occupancy`, 20 Spalten
-über den Fahrkorridor, nah+mittel-Band): `_find_best_gap()` sucht die breiteste
-zusammenhängende freie Lücke, `_offset_from_gap()` berechnet daraus Richtung und
-Stärke:
+über den Fahrkorridor, nah+mittel-Band, rechter Rand zusätzlich durch die live
+erkannte weiße Linie begrenzt via `white_line_margin_px`). Der Korridor
+entspricht der Bot-Breite – ein Hindernis irgendwo darin heißt grundsätzlich
+"so nicht durchfahrbar", außer die freie Seite ist (fast) so breit wie der
+ganze Korridor. `_find_best_gap()` sucht deshalb NICHT die breiteste Lücke
+zwischen zwei Hindernissen, sondern vergleicht den freien Abstand vom linken
+bzw. rechten Korridorrand bis zum nächstgelegenen Hindernis und wählt die
+Seite mit mehr Abstand (kein Durchquetschen zwischen zwei Hindernissen – der
+Bot fährt immer außen an allen Hindernissen einer Seite vorbei).
+`_offset_from_gap()` berechnet daraus Richtung und Stärke:
 
 ```
-gap_center_frac ∈ [0,1]  →  center_signed = (gap_center_frac - 0.5) * 2   (-1 links .. +1 rechts)
-offset = clamp(|center_signed|, evade_offset_min/evade_offset, 1.0) * evade_offset
+(center_frac, width_frac) = Mitte und Breite der freien Seite, je als Anteil [0,1] der Korridorbreite
+center_signed = (center_frac - 0.5) * 2                      (-1 links .. +1 rechts, gibt die Richtung)
+offset = evade_offset_min + (1 - width_frac) * (evade_offset - evade_offset_min)
          (Vorzeichen von center_signed → links = negativ, rechts = positiv)
 ```
 
-- Lücke am Rand des Korridors → Offset nahe `evade_offset` (voller Ausschlag).
-- Lücke nahe der Korridormitte → Offset auf `evade_offset_min` begrenzt (kein zu
-  schwaches Ausweichen).
+- Freie Seite fast so breit wie der ganze Korridor (`width_frac` → 1) → Offset
+  nahe `evade_offset_min` (kleiner Ausschlag reicht).
+- Nur ein schmaler Rest frei (`width_frac` → 0) → Offset nahe `evade_offset`
+  (voller Ausschlag, der Bot braucht seine ganze Breite zum Vorbeikommen).
 - **Fallback** (kein Profil verfügbar, oder Korridor komplett belegt – kein Bin
   frei): alte `duck_x`-Heuristik –
 
@@ -271,8 +280,8 @@ y=400 ────────────────────────�
                     ↑         ↑
               x0 = Bildmitte    x1 = Bildmitte
                   - width/2          + width/2
-              ← Korridor: Bot-Breite + Ausweich- →
-                 Spielraum, NICHT die ganze Spur!
+              ←   Korridor: entspricht der Bot-   →
+                  Breite, NICHT die ganze Spur!
 ```
 
 Der Korridor ist **schmal** und **fest an der Bildmitte** verankert (`x = W/2`
@@ -284,8 +293,8 @@ die tatsächliche Spur in der Praxis gut genug (siehe reprojizierte
 Enten-Position in Abschnitt zur Enten-Erkennung).
 Würde der Korridor stattdessen die ganze Spur abdecken (feste Bildanteile
 `corridor_x_min/max`), löst **jede** Ente irgendwo in der Spur aus – auch wenn
-sie objektiv nicht im Fahrweg des Bots steht – und schlimmer: Die "breiteste
-freie Lücke" (siehe Abschnitt 5) könnte jenseits der gelben Linie in der
+sie objektiv nicht im Fahrweg des Bots steht – und schlimmer: Die gewählte
+Ausweichrichtung (siehe Abschnitt 5) könnte jenseits der gelben Linie in der
 Gegenspur liegen, der Bot würde also genau dorthin lenken.
 
 **Wie eine Zone als belegt gilt:**
@@ -360,19 +369,20 @@ Alle Parameter sind in den JSON-Dateien unter `config/` und können **live** üb
 | `duck` | `kf_max_missed_frames` | 5 | Max. Frames ohne Erkennung, bevor auf "keine Ente" (-99) zurückgefallen wird |
 | `obstacle_color` | `yellow_hl/hh/sl/sh/vl/vh` | 20/35/80/255/80/255 | HSV-Bereich für Gelb (Enten + Mittellinie) |
 | `obstacle_color` | `green_hl/hh/sl/sh/vl/vh` | 40/85/60/255/40/255 | HSV-Bereich für Grün (Bonus-Enten) |
-| `zones` | `corridor_width_px` | 300 px | Breite des Fahrkorridors, **symmetrisch um die BEV-Bildmitte fixiert** – Bot-Breite + Ausweich-Spielraum, NICHT die ganze Spur |
+| `zones` | `corridor_width_px` | 300 px | Breite des Fahrkorridors, **symmetrisch um die BEV-Bildmitte fixiert** – entspricht der Bot-Breite, NICHT die ganze Spur |
 | `zones` | `far_y_min/max` | 0.20 / 0.45 | FERN-Zone (oben im BEV) |
 | `zones` | `mid_y_min/max` | 0.45 / 0.70 | MITTEL-Zone |
 | `zones` | `near_y_min/max` | 0.70 / 0.95 | NAH-Zone (direkt vor Bot) |
-| `zones` | `pixel_threshold_frac` | 0.05 | 5% farbige Pixel → Zone gilt als belegt |
+| `zones` | `pixel_threshold_frac` | 0.05 | 5% Maskenpixel (aus reprojizierten Enten-Punkten) → Zone gilt als belegt |
+| `zones` | `white_line_margin_px` | 20 px | Sicherheitsabstand: rechter Korridorrand für die Lücken-Suche zusätzlich durch die live erkannte weiße Linie begrenzt |
 
 ### `config/control_obstacle_node.json`
 
 | Parameter | Standard | Beschreibung |
 |-----------|----------|-------------|
 | `active` | 1 | Gesamte Ausweichlogik ein (1) / aus (0) |
-| `evade_offset` | 0.6 | Maximale Stärke des Ausweichens (Lücke am Korridorrand); wird zum PID-Fehler addiert |
-| `evade_offset_min` | 0.25 | Minimale Stärke des Ausweichens (Lücke nahe Korridormitte); verhindert zu schwaches Ausweichen |
+| `evade_offset` | 0.6 | Maximale Stärke des Ausweichens (nur schmaler Rest des Korridors frei); wird zum PID-Fehler addiert |
+| `evade_offset_min` | 0.25 | Minimale Stärke des Ausweichens (fast der ganze Korridor frei); verhindert zu schwaches Ausweichen |
 | `nachlauf_secs` | 1.5 s | Zeit im PASS-Zustand nach letztem Objekt-Kontakt |
 | `evade_timeout_secs` | 5.0 s | Max. Zeit im EVADE bevor WAIT ausgelöst wird |
 | `free_stable_frames` | 5 | Frames die der Korridor hintereinander frei sein muss, bevor EVADE/WAIT tatsächlich verlassen wird (Entprellung gegen Flackern) |
@@ -510,8 +520,8 @@ rostopic echo /tick/obstacle/state
 
 | Problem | Ursache | Lösung |
 |---------|---------|--------|
-| Bot weicht aus obwohl keine Ente da | `pixel_threshold_frac` zu niedrig oder Korridor zu breit | Threshold erhöhen (z.B. 0.08–0.12); `corridor_width_px` verkleinern (Bot-Breite + Spielraum, nicht die ganze Spur) |
-| Bot fährt beim Ausweichen über die gelbe Linie | Korridor reicht über die eigene Spur hinaus, "breiteste Lücke" liegt in der Gegenspur | `corridor_width_px` verkleinern – Korridor ist symmetrisch um die Bildmitte, sollte nie bis zur gelben Linie reichen |
+| Bot weicht aus obwohl keine Ente da | `pixel_threshold_frac` zu niedrig oder Korridor zu breit | Threshold erhöhen (z.B. 0.08–0.12); `corridor_width_px` verkleinern (entspricht Bot-Breite, nicht die ganze Spur) |
+| Bot fährt beim Ausweichen über die weiße/gelbe Linie | Korridor reicht über die eigene Spur hinaus | `corridor_width_px` verkleinern (Korridor ist symmetrisch um die Bildmitte); `white_line_margin_px` erhöhen, damit der rechte Rand der Lücken-Suche mehr Abstand zur weißen Linie hält |
 | EVADE startet und endet sofort wieder (flackert) | Farberkennung liefert einzelne unstabile Frames, kein Entprellen | `free_stable_frames` erhöhen (Standard 5) |
 | Ente wird nicht erkannt | `pixel_threshold_frac` zu hoch, oder `obstacle_color`-Bereiche zu eng | Senken/erweitern; `/tick/debug/duck_original` ansehen: wird die Box im Originalbild überhaupt erkannt? |
 | Ente "verschwindet" schnell, obwohl noch sichtbar | (Altes Problem der reinen BEV-Erkennung, durch Originalbild-Erkennung + Homographie-Projektion behoben) | Falls trotzdem noch auffällig: `duck.kf_max_missed_frames` erhöhen |

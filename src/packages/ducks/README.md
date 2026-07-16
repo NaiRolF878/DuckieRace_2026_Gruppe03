@@ -104,9 +104,15 @@ Die Node sendet **keine Fahrbefehle direkt**, sondern publiziert drei Steuersign
 - `stop` – setzt v=0 im WAIT-Zustand
 
 **Ausweichrichtung + -stärke** wird beim Eintritt in EVADE einmalig eingefroren:
-- Primär aus `/detect/corridor_occupancy` (Lückenprofil über den Fahrkorridor):
-  Offset zeigt zur Mitte der breitesten freien Lücke, Stärke proportional zum
-  Abstand der Lücke von der Korridormitte (`evade_offset_min` … `evade_offset`)
+- Primär aus `/detect/corridor_occupancy` (Lückenprofil über den Fahrkorridor,
+  der genau der Bot-Breite entspricht): gewählt wird die Seite mit dem
+  **größeren freien Abstand vom Korridorrand bis zum nächsten Hindernis**
+  (nicht die breiteste Lücke zwischen zwei Hindernissen – so wird nie zwischen
+  zwei Objekten hindurchgequetscht, sondern immer außen an ihnen vorbei). Der
+  rechte Rand wird zusätzlich durch die live erkannte weiße Linie begrenzt
+  (`white_line_margin_px`). Stärke richtet sich nach der Breite dieser freien
+  Seite relativ zur Korridorbreite: fast der ganze Korridor frei → kleiner
+  Offset (`evade_offset_min`), nur ein schmaler Rest frei → voller `evade_offset`
 - Fallback (kein Profil / Korridor komplett belegt) – alte `duck_x`-Heuristik:
   Ente rechts von BEV-Mitte → links ausweichen, Ente links → rechts ausweichen,
   kein Blob (z.B. gelbe Linie) → rechts als sicherer Standard
@@ -180,11 +186,16 @@ Wichtige Stellschrauben:
 - `zones.corridor_width_px` – Breite des überwachten Fahrkorridors, **symmetrisch um
   die Bildmitte des BEV-Bilds fixiert** (nicht die ganze Spur, und unabhängig von der
   weißen Linie – bleibt dadurch auch bei kurzzeitig verlorener Linienerkennung stabil)
-  – entspricht Bot-Breite + Ausweich-Spielraum (Standard: 300 px)
+  – entspricht der Bot-Breite (Standard: 300 px)
+- `zones.white_line_margin_px` – Sicherheitsabstand, um den der rechte
+  Korridorrand für die Lücken-Suche zusätzlich durch die live erkannte weiße
+  Linie begrenzt wird (Standard: 20 px)
 
 **`control_obstacle_node.json`**
-- `evade.evade_offset` – maximale Stärke des Ausweich-Offsets, Lücke am Korridorrand (Standard: 0.6)
-- `evade.evade_offset_min` – minimale Stärke, Lücke nahe Korridormitte (Standard: 0.25)
+- `evade.evade_offset` – maximale Stärke des Ausweich-Offsets, nur ein schmaler
+  Rest des Korridors frei (Standard: 0.6)
+- `evade.evade_offset_min` – minimale Stärke, fast der ganze Korridor frei
+  (Standard: 0.25)
 - `evade.nachlauf_secs` – Nachlauf nach letzter Objekt-Sichtung (Standard: 1.5 s)
 - `evade.return_omega` – Drehrate bei Encoder-Rückkehr (Standard: 0.5 rad/s)
 - `evade.evade_timeout_secs` – Max. Zeit im EVADE bevor WAIT (Standard: 5.0 s)
@@ -216,9 +227,10 @@ Wichtige Stellschrauben:
 
 4. **Zonen/Korridor kalibrieren.** `/tick/debug/duck_bev` ansehen – das
    Korridor-Rechteck ist symmetrisch um die Bildmitte zentriert (unabhängig von
-   weißer Linie/magenta Ziellinie). `zones.corridor_width_px` auf Bot-Breite +
-   Ausweich-Spielraum einstellen
-   (**nicht** die ganze Spur – sonst löst der Bot ständig unnötig aus).
+   weißer Linie/magenta Ziellinie). `zones.corridor_width_px` auf die Bot-Breite
+   einstellen (**nicht** die ganze Spur – sonst löst der Bot ständig unnötig aus).
+   `zones.white_line_margin_px` so wählen, dass der Bot beim Ausweichen nie über
+   die weiße Linie fährt.
    `pixel_threshold_frac` danach: Ente im Weg → Zone soll auf 1 springen,
    leere Fahrbahn → Zone soll 0 bleiben.
 

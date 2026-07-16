@@ -111,10 +111,10 @@ class DetectLaneNode:
         self.white_follow_offset_px = 150
 
         # ── Zonen-Erkennung (Stufe 3) ─────────────────────────────────────────
-        # Korridor "wandert" mit der tatsächlichen Fahrlinie (lane_center) mit,
-        # symmetrische Breite = Bot-Breite + Ausweich-Spielraum, NICHT die ganze
-        # Spur – reicht dadurch nie über die eigene Spur hinaus in die Gegenspur.
-        self.zone_corridor_width_px    = 200
+        # Korridor fest an der Bildmitte verankert, symmetrische Breite
+        # entspricht der Bot-Breite, NICHT die ganze Spur – reicht dadurch nie
+        # über die eigene Spur hinaus in die Gegenspur.
+        self.zone_corridor_width_px    = 300
         self.zone_far_y_min            = 0.20
         self.zone_far_y_max            = 0.45
         self.zone_mid_y_min            = 0.45
@@ -122,6 +122,7 @@ class DetectLaneNode:
         self.zone_near_y_min           = 0.70
         self.zone_near_y_max           = 0.95
         self.zone_pixel_threshold_frac = 0.05
+        self.zone_white_line_margin_px = 20
 
         # Zustand von control_obstacle_node (Idle/Evade/Wait/Pass/Return) – nur fürs Debug-Overlay
         self.obstacle_state = "Idle"
@@ -258,6 +259,7 @@ class DetectLaneNode:
         self.zone_near_y_min           = gd("zones", "near_y_min",           0.70)
         self.zone_near_y_max           = gd("zones", "near_y_max",           0.95)
         self.zone_pixel_threshold_frac = gd("zones", "pixel_threshold_frac", 0.05)
+        self.zone_white_line_margin_px = gd("zones", "white_line_margin_px", 20)
 
 
     def cbObstacleState(self, msg):
@@ -407,17 +409,21 @@ class DetectLaneNode:
         # Baut die Maske fuer die Zonen-Belegungspruefung (_process_zones) direkt
         # aus den bereits reprojizierten Boden-Kontaktpunkten (projected) statt
         # eine zweite, komplette Farbmaske auf dem BEV-Bild neu zu berechnen.
-        # Ein Blob wird als schmaler Balken an seiner tatsaechlichen BEV-y-
-        # Position eingetragen (Hoehe der Box ist nach der Reprojektion nicht
-        # mehr bekannt, nur der Bodenkontaktpunkt).
+        # Jeder Blob fuellt seine x-Spalte (bx_left..bx_right) vom Boden-
+        # kontaktpunkt (by) bis zum unteren Bildrand (= naeher am Bot). Die
+        # Flaeche HINTER dem Kontaktpunkt (weiter weg als die Ente) interessiert
+        # nicht - eine Spalte mit Ente irgendwo drin ist fuer die Ausweich-
+        # Entscheidung ohnehin blockiert. Vermeidet eine willkuerliche feste
+        # Markierungshoehe, deren Flaeche den pixel_threshold_frac oft knapp
+        # verfehlt hat.
         mask = np.zeros(shape[:2], dtype=np.uint8)
+        H = shape[0]
         for (bx_left, bx_right, by, _box) in projected:
             x0 = int(max(0, min(bx_left, bx_right)))
             x1 = int(min(shape[1], max(bx_left, bx_right)))
-            y0 = int(max(0, by - 15))
-            y1 = int(min(shape[0], by + 15))
-            if x1 > x0 and y1 > y0:
-                mask[y0:y1, x0:x1] = 255
+            y0 = int(max(0, by))
+            if x1 > x0 and H > y0:
+                mask[y0:H, x0:x1] = 255
         return mask
 
     def _duck_occupancy_from_bev(self, projected, width):
@@ -552,8 +558,8 @@ class DetectLaneNode:
         try:
             H, W = bev_bgr.shape[:2]
 
-            # Korridor x-Grenzen fest an der Bildmitte verankert – symmetrisch um
-            # die Bot-Breite + Ausweich-Spielraum, NICHT die ganze Spur. Bewusst
+            # Korridor x-Grenzen fest an der Bildmitte verankert – symmetrische
+            # Breite entspricht der Bot-Breite, NICHT die ganze Spur. Bewusst
             # unabhängig von last_white_position: wird die weiße Linie
             # kurzzeitig nicht mehr erkannt, bliebe ein daran gekoppelter
             # Korridor an der zuletzt bekannten, ggf. veralteten Position
@@ -595,6 +601,20 @@ class DetectLaneNode:
             y0_gap = int(self.zone_mid_y_min * H)
             y1_gap = int(self.zone_near_y_max * H)
             gap_profile = self._corridor_gap_profile(mask, x0, x1, y0_gap, y1_gap)
+
+            # Rechten Rand fuer die Luecken-Suche zusaetzlich durch die live
+            # erkannte weisse Linie begrenzen (Sicherheitsabstand
+            # white_line_margin_px) - der feste Korridor-Rand x1 folgt der
+            # weissen Linie bewusst nicht (siehe oben), kann also in Kurven
+            # naeher an sie heranreichen als kalibriert. Bins jenseits dieser
+            # Grenze werden als belegt markiert, damit control_obstacle_node
+            # nie ueber die weisse Linie hinaus ausweicht.
+            if self.last_white_position is not None:
+                safe_right_x = self.last_white_position - self.zone_white_line_margin_px
+                if safe_right_x < x1:
+                    safe_bin = int(max(0, (safe_right_x - x0) / max(1, x1 - x0) * self.GAP_BINS))
+                    gap_profile[safe_bin:] = 1.0
+
             self.pub_corridor_occupancy.publish(Float32MultiArray(data=gap_profile.tolist()))
 
             # Zonen als halbtransparente Rechtecke auf duck_bev zeichnen – alle drei
