@@ -307,3 +307,42 @@
         }
     }
 }
+
+
+
+
+root@duckie3-ThinkPad-L15-Gen-4:~/DuckieRace# launchers/mapping.sh 
+Traceback (most recent call last):
+  File "/root/DuckieRace/devel/lib/mapping/switch_control_node.py", line 15, in <module>
+    exec(compile(fh.read(), python_script, 'exec'), context)
+  File "/root/DuckieRace/src/packages/mapping/src/switch_control_node.py", line 24, in <module>
+    import util
+ModuleNotFoundError: No module named 'util'
+Traceback (most recent call last):
+  File "/root/DuckieRace/devel/lib/mapping/detect_lane_node.py", line 15, in <module>
+    exec(compile(fh.read(), python_script, 'exec'), context)
+  File "/root/DuckieRace/src/packages/mapping/src/detect_lane_node.py", line 24, in <module>
+    import util
+ModuleNotFoundError: No module named 'util'
+Traceback (most recent call last):
+  File "/root/DuckieRace/devel/lib/mapping/detect_apriltag_node.py", line 15, in <module>
+    exec(compile(fh.read(), python_script, 'exec'), context)
+  File "/root/DuckieRace/src/packages/mapping/src/detect_apriltag_node.py", line 31, in <module>
+    import util
+ModuleNotFoundError: No module named 'util'
+[INFO] [1784220038.451912]: [explore_control_node] Bereit. 5 Kanten zu erkunden.
+[INFO] [1784220038.598366]: [graph_state_node] Bereit. Start-Knoten: A
+[INFO] [1784220038.661250]: [path_planner_node] Bereit. Delivery-Start: A
+[INFO] [1784220038.911279]: [debug_graph_node] Bereit.
+Traceback (most recent call last):
+  File "/root/DuckieRace/devel/lib/mapping/control_lane_node.py", line 15, in <module>
+Traceback (most recent call last):
+  File "/root/DuckieRace/devel/lib/mapping/control_intersection_node.py", line 15, in <module>
+    exec(compile(fh.read(), python_script, 'exec'), context)
+  File "/root/DuckieRace/src/packages/mapping/src/control_lane_node.py", line 16, in <module>
+    exec(compile(fh.read(), python_script, 'exec'), context)
+  File "/root/DuckieRace/src/packages/mapping/src/control_intersection_node.py", line 30, in <module>
+    import util
+ModuleNotFoundError: No module named 'util'
+    import util
+ModuleNotFoundError: No module named 'util'
