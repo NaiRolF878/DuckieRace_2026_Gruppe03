@@ -552,17 +552,14 @@ class DetectLaneNode:
         try:
             H, W = bev_bgr.shape[:2]
 
-            # Korridor x-Grenzen fest verankert – symmetrisch um die Bot-Breite +
-            # Ausweich-Spielraum, NICHT die ganze Spur. Bewusst unabhängig von
-            # last_white_position (wird diese kurzzeitig nicht mehr erkannt,
-            # bliebe ein daran gekoppelter Korridor an der zuletzt bekannten,
-            # ggf. veralteten Position hängen). Verwendet stattdessen denselben
-            # kalibrierten Nominalwert wie der Fallback bei Linienverlust
-            # (white_alternative = W*0.95, siehe cbFindLane) statt der reinen
-            # geometrischen Bildmitte, da die Spur wegen des asymmetrischen
-            # Trapez-Zuschnitts nicht zwingend bei W/2 liegt.
-            nominal_white_x = W * 0.95
-            lane_center = nominal_white_x - self.white_follow_offset_px
+            # Korridor x-Grenzen fest an der Bildmitte verankert – symmetrisch um
+            # die Bot-Breite + Ausweich-Spielraum, NICHT die ganze Spur. Bewusst
+            # unabhängig von last_white_position: wird die weiße Linie
+            # kurzzeitig nicht mehr erkannt, bliebe ein daran gekoppelter
+            # Korridor an der zuletzt bekannten, ggf. veralteten Position
+            # hängen. Die Bildmitte trifft die tatsächliche Spur in der Praxis
+            # gut genug (siehe reprojizierte Enten-Position in _process_ducks).
+            lane_center = W / 2.0
             half_w      = self.zone_corridor_width_px / 2.0
             x0 = int(max(0, lane_center - half_w))
             x1 = int(min(W, lane_center + half_w))
@@ -721,8 +718,7 @@ class DetectLaneNode:
                              (len(img[0]), int(len(img)*0.75)+100), color=(255, 255, 255))
             image = cv2.line(image, (0, int(len(img)*0.75)-100),
                              (len(img[0]), int(len(img)*0.75)-100), color=(255, 255, 255))
-            # Grüne Linie = geometrische Bildmitte (reine Referenz, KEIN
-            # Bezug zum Korridor – siehe _process_zones fuer dessen Ankerpunkt)
+            # Grüne Linie = Bildmitte = Korridor-Mitte (siehe _process_zones)
             image = cv2.line(image, (int(len(img[0])/2), 0),
                              (int(len(img[0])/2), len(image)), (0, 255, 0))
             image = cv2.circle(image, (int(center_white), int(len(img)*0.75)), 5, (255, 255, 255))

@@ -269,22 +269,19 @@ y=0 ─────────────────────────�
  │                                                       │
 y=400 ─────────────────────────────────────────────── y=400
                     ↑         ↑
-              x0 = Ankerpunkt   x1 = Ankerpunkt
+              x0 = Bildmitte    x1 = Bildmitte
                   - width/2          + width/2
               ← Korridor: Bot-Breite + Ausweich- →
                  Spielraum, NICHT die ganze Spur!
 ```
 
-Der Korridor ist **schmal** und **fest an einem kalibrierten Ankerpunkt**
-verankert (`lane_center = W*0.95 - white_follow.offset_px` – derselbe
-Nominalwert, den `cbFindLane` auch als Fallback nutzt, wenn die weiße Linie
-nicht erkannt wird), `zones.corridor_width_px` die Gesamtbreite symmetrisch
-drumherum. Bewusst NICHT die geometrische Bildmitte (`W/2`) und NICHT die live
-erkannte `last_white_position`: Die reine Bildmitte trifft wegen des
-asymmetrischen Trapez-Zuschnitts (`crop_image`) nicht zwangsläufig die
-tatsächliche Spur; ein an `last_white_position` gekoppelter Korridor bliebe
-bei kurzzeitig verlorener Linienerkennung an der zuletzt bekannten (ggf.
-veralteten) Position hängen. Der feste Ankerpunkt löst beide Probleme.
+Der Korridor ist **schmal** und **fest an der Bildmitte** verankert (`x = W/2`
+im BEV-Bild), `zones.corridor_width_px` die Gesamtbreite symmetrisch drumherum.
+Bewusst unabhängig von der weißen Linie/`last_white_position`: würde der
+Korridor daran hängen, bliebe er bei kurzzeitig verlorener Linienerkennung an
+der zuletzt bekannten (ggf. veralteten) Position stehen. Die Bildmitte trifft
+die tatsächliche Spur in der Praxis gut genug (siehe reprojizierte
+Enten-Position in Abschnitt zur Enten-Erkennung).
 Würde der Korridor stattdessen die ganze Spur abdecken (feste Bildanteile
 `corridor_x_min/max`), löst **jede** Ente irgendwo in der Spur aus – auch wenn
 sie objektiv nicht im Fahrweg des Bots steht – und schlimmer: Die "breiteste
@@ -363,7 +360,7 @@ Alle Parameter sind in den JSON-Dateien unter `config/` und können **live** üb
 | `duck` | `kf_max_missed_frames` | 5 | Max. Frames ohne Erkennung, bevor auf "keine Ente" (-99) zurückgefallen wird |
 | `obstacle_color` | `yellow_hl/hh/sl/sh/vl/vh` | 20/35/80/255/80/255 | HSV-Bereich für Gelb (Enten + Mittellinie) |
 | `obstacle_color` | `green_hl/hh/sl/sh/vl/vh` | 40/85/60/255/40/255 | HSV-Bereich für Grün (Bonus-Enten) |
-| `zones` | `corridor_width_px` | 200 px | Breite des Fahrkorridors, **symmetrisch um die BEV-Bildmitte fixiert** – Bot-Breite + Ausweich-Spielraum, NICHT die ganze Spur |
+| `zones` | `corridor_width_px` | 300 px | Breite des Fahrkorridors, **symmetrisch um die BEV-Bildmitte fixiert** – Bot-Breite + Ausweich-Spielraum, NICHT die ganze Spur |
 | `zones` | `far_y_min/max` | 0.20 / 0.45 | FERN-Zone (oben im BEV) |
 | `zones` | `mid_y_min/max` | 0.45 / 0.70 | MITTEL-Zone |
 | `zones` | `near_y_min/max` | 0.70 / 0.95 | NAH-Zone (direkt vor Bot) |
