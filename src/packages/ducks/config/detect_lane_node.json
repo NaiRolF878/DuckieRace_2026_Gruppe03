@@ -71,7 +71,7 @@
                 "offset_px": {"default": 150, "min": 0, "max": 400}
             },
             "zones": {
-                "corridor_width_px":    {"default": 200, "min": 0, "max": 400},
+                "corridor_width_px":    {"default": 300, "min": 0, "max": 400},
                 "far_y_min":            {"default": 0.20, "min": 0.0, "max": 1.0},
                 "far_y_max":            {"default": 0.45, "min": 0.0, "max": 1.0},
                 "mid_y_min":            {"default": 0.45, "min": 0.0, "max": 1.0},

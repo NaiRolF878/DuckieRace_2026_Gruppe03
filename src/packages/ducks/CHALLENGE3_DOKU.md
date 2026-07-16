@@ -269,17 +269,22 @@ y=0 ─────────────────────────�
  │                                                       │
 y=400 ─────────────────────────────────────────────── y=400
                     ↑         ↑
-              x0 = Bildmitte    x1 = Bildmitte
+              x0 = Ankerpunkt   x1 = Ankerpunkt
                   - width/2          + width/2
               ← Korridor: Bot-Breite + Ausweich- →
                  Spielraum, NICHT die ganze Spur!
 ```
 
-Der Korridor ist **schmal** und **fest an der Bildmitte** verankert (`x = W/2`
-im BEV-Bild), `zones.corridor_width_px` die Gesamtbreite symmetrisch drumherum.
-Bewusst unabhängig von der weißen Linie/`lane_center`: würde der Korridor an
-`last_white_position` hängen, bliebe er bei kurzzeitig verlorener
-Linienerkennung an der zuletzt bekannten (ggf. veralteten) Position stehen.
+Der Korridor ist **schmal** und **fest an einem kalibrierten Ankerpunkt**
+verankert (`lane_center = W*0.95 - white_follow.offset_px` – derselbe
+Nominalwert, den `cbFindLane` auch als Fallback nutzt, wenn die weiße Linie
+nicht erkannt wird), `zones.corridor_width_px` die Gesamtbreite symmetrisch
+drumherum. Bewusst NICHT die geometrische Bildmitte (`W/2`) und NICHT die live
+erkannte `last_white_position`: Die reine Bildmitte trifft wegen des
+asymmetrischen Trapez-Zuschnitts (`crop_image`) nicht zwangsläufig die
+tatsächliche Spur; ein an `last_white_position` gekoppelter Korridor bliebe
+bei kurzzeitig verlorener Linienerkennung an der zuletzt bekannten (ggf.
+veralteten) Position hängen. Der feste Ankerpunkt löst beide Probleme.
 Würde der Korridor stattdessen die ganze Spur abdecken (feste Bildanteile
 `corridor_x_min/max`), löst **jede** Ente irgendwo in der Spur aus – auch wenn
 sie objektiv nicht im Fahrweg des Bots steht – und schlimmer: Die "breiteste
@@ -287,9 +292,13 @@ freie Lücke" (siehe Abschnitt 5) könnte jenseits der gelben Linie in der
 Gegenspur liegen, der Bot würde also genau dorthin lenken.
 
 **Wie eine Zone als belegt gilt:**
-- HSV-Farbmaske des BEV → gelb ODER grün (`obstacle_color`-Parameter, `_color_obstacle_mask()`)
-- Zähle farbige Pixel innerhalb der Zone
-- `belegt = farbige_pixel / Zonenfläche > pixel_threshold_frac` (Standard: 5%)
+- Keine eigene Farberkennung hier – nutzt `self.duck_zone_mask`, eine aus den
+  bereits im Originalbild erkannten und ins BEV reprojizierten Enten-
+  Bodenkontaktpunkten synthetisierte Maske (siehe Abschnitt zur Enten-
+  Erkennung). Vermeidet eine zweite, komplette `obstacle_color`-Farbmaske auf
+  dem BEV-Bild pro Frame.
+- Zähle Maskenpixel innerhalb der Zone
+- `belegt = Maskenpixel / Zonenfläche > pixel_threshold_frac` (Standard: 5%)
 
 **Erkennt gezielt Gelb/Grün:** gelbe Enten, grüne Bonus-Enten, gelbe Mittellinie –
 unbunte Reflexionen/Klebereste auf der Fahrbahn fallen automatisch raus, da sie

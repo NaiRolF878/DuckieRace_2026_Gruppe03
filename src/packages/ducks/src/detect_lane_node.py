@@ -89,6 +89,7 @@ class DetectLaneNode:
         self.duck_min_h           = 12
         self.debug_img_duck       = blank_color
         self.debug_img_duck_original = blank_color
+        self.duck_zone_mask       = blank
 
         # Kalman-Filter für die Enten-x-Position (Glättung + Aussetzer-Überbrückung)
         self.duck_kf_process_var     = 0.01
@@ -402,6 +403,23 @@ class DetectLaneNode:
             blobs.append((int(x), int(y), int(w), int(h)))
         return blobs
 
+    def _duck_zone_mask(self, projected, shape):
+        # Baut die Maske fuer die Zonen-Belegungspruefung (_process_zones) direkt
+        # aus den bereits reprojizierten Boden-Kontaktpunkten (projected) statt
+        # eine zweite, komplette Farbmaske auf dem BEV-Bild neu zu berechnen.
+        # Ein Blob wird als schmaler Balken an seiner tatsaechlichen BEV-y-
+        # Position eingetragen (Hoehe der Box ist nach der Reprojektion nicht
+        # mehr bekannt, nur der Bodenkontaktpunkt).
+        mask = np.zeros(shape[:2], dtype=np.uint8)
+        for (bx_left, bx_right, by, _box) in projected:
+            x0 = int(max(0, min(bx_left, bx_right)))
+            x1 = int(min(shape[1], max(bx_left, bx_right)))
+            y0 = int(max(0, by - 15))
+            y1 = int(min(shape[0], by + 15))
+            if x1 > x0 and y1 > y0:
+                mask[y0:y1, x0:x1] = 255
+        return mask
+
     def _duck_occupancy_from_bev(self, projected, width):
         # projected: Liste von (bx_left, bx_right, by, orig_box) – bereits ins
         # BEV projizierte Bodenkontakt-Kanten (siehe _process_ducks).
@@ -458,6 +476,7 @@ class DetectLaneNode:
                     projected.append((bx_left, bx_right, max(by_l, by_r), box))
 
             occ = self._duck_occupancy_from_bev(projected, bev_width)  # nur fuers Debug-Bild
+            self.duck_zone_mask = self._duck_zone_mask(projected, bev_bgr.shape)
 
             raw_duck_x = -99.0
             if projected:
@@ -527,17 +546,23 @@ class DetectLaneNode:
         return profile
 
     def _process_zones(self, bev_bgr, mask):
-        # mask: bereits berechnete Farbmaske (aus cbFindLane, ohne ROI-Beschnitt) –
-        # gleiche Gelb/Grün-Erkennung wie bei den Enten, keine Neuberechnung.
+        # mask: self.duck_zone_mask aus _process_ducks – synthetische Maske aus
+        # den bereits reprojizierten Boden-Kontaktpunkten der Enten-Erkennung,
+        # keine eigene Farberkennung hier.
         try:
             H, W = bev_bgr.shape[:2]
 
-            # Korridor x-Grenzen fest an der Bildmitte verankert – symmetrisch um
-            # die Bot-Breite + Ausweich-Spielraum, NICHT die ganze Spur. Bewusst
-            # unabhängig von der weißen Linie: wird diese kurzzeitig nicht mehr
-            # erkannt, bliebe ein an last_white_position gekoppelter Korridor an
-            # der zuletzt bekannten (ggf. veralteten) Position hängen.
-            lane_center = W / 2.0
+            # Korridor x-Grenzen fest verankert – symmetrisch um die Bot-Breite +
+            # Ausweich-Spielraum, NICHT die ganze Spur. Bewusst unabhängig von
+            # last_white_position (wird diese kurzzeitig nicht mehr erkannt,
+            # bliebe ein daran gekoppelter Korridor an der zuletzt bekannten,
+            # ggf. veralteten Position hängen). Verwendet stattdessen denselben
+            # kalibrierten Nominalwert wie der Fallback bei Linienverlust
+            # (white_alternative = W*0.95, siehe cbFindLane) statt der reinen
+            # geometrischen Bildmitte, da die Spur wegen des asymmetrischen
+            # Trapez-Zuschnitts nicht zwingend bei W/2 liegt.
+            nominal_white_x = W * 0.95
+            lane_center = nominal_white_x - self.white_follow_offset_px
             half_w      = self.zone_corridor_width_px / 2.0
             x0 = int(max(0, lane_center - half_w))
             x1 = int(min(W, lane_center + half_w))
@@ -636,13 +661,15 @@ class DetectLaneNode:
             if self.pub_debug_bird.get_num_connections() > 0:
                 self._publish_compressed(self.pub_debug_bird, img)
 
-            # ── ZONEN: BEV-Ansicht (vor CLAHE) ───────────────────────────────────
-            # Farbmaske (gelb/grün) für die Zonen-Erkennung (Korridor-Fahrbahn).
-            obstacle_mask = self._color_obstacle_mask(img)
             # ── ENTEN: im unverzerrten Originalbild (kein BEV-Trapez-Sichtfeldlimit,
             # keine Höhen-Verzerrung), Bodenkontaktpunkte werden ins BEV projiziert.
             self._process_ducks(cv_image, img, img.shape[1])
-            self._process_zones(img, obstacle_mask)  # overlay auf debug_img_duck
+            # ── ZONEN: Belegungspruefung nutzt dieselben reprojizierten
+            # Boden-Kontaktpunkte (self.duck_zone_mask, von _process_ducks
+            # gesetzt) statt einer zweiten, separat auf dem BEV-Bild berechneten
+            # Farbmaske – vermeidet doppelte Farberkennung pro Frame und haelt
+            # Enten-Position und Zonen-Belegung konsistent zueinander.
+            self._process_zones(img, self.duck_zone_mask)  # overlay auf debug_img_duck
 
             # ── Schritt 3: CLAHE – lokaler Helligkeitsausgleich ───────────────
             lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
@@ -694,7 +721,8 @@ class DetectLaneNode:
                              (len(img[0]), int(len(img)*0.75)+100), color=(255, 255, 255))
             image = cv2.line(image, (0, int(len(img)*0.75)-100),
                              (len(img[0]), int(len(img)*0.75)-100), color=(255, 255, 255))
-            # Grüne Linie = Bildmitte = Korridor-Mitte (siehe _process_zones)
+            # Grüne Linie = geometrische Bildmitte (reine Referenz, KEIN
+            # Bezug zum Korridor – siehe _process_zones fuer dessen Ankerpunkt)
             image = cv2.line(image, (int(len(img[0])/2), 0),
                              (int(len(img[0])/2), len(image)), (0, 255, 0))
             image = cv2.circle(image, (int(center_white), int(len(img)*0.75)), 5, (255, 255, 255))
