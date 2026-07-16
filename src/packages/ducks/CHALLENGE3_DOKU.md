@@ -73,9 +73,9 @@ Nimmt das Kamerabild und macht daraus Steuersignale:
    Position und überbrückt kurze Erkennungsaussetzer (statt sofort auf "keine
    Ente" zu springen).
 6. **Zonen-Belegung im BEV** – 3 Zonen (nah/mittel/fern) prüfen dieselbe Gelb/
-   Grün-Farbmaske im Fahrkorridor; der Korridor selbst ist **schmal** und
-   symmetrisch um die tatsächliche Fahrlinie zentriert (Bot-Breite +
-   Ausweich-Spielraum, nicht die ganze Spur)
+   Grün-Farbmaske im Fahrkorridor; der Korridor selbst ist **schmal** und fest
+   um die Bildmitte zentriert (Bot-Breite + Ausweich-Spielraum, nicht die
+   ganze Spur)
 
 **Publizierte Topics:**
 
@@ -269,21 +269,22 @@ y=0 ─────────────────────────�
  │                                                       │
 y=400 ─────────────────────────────────────────────── y=400
                     ↑         ↑
-              x0 = lane_center   x1 = lane_center
+              x0 = Bildmitte    x1 = Bildmitte
                   - width/2          + width/2
               ← Korridor: Bot-Breite + Ausweich- →
                  Spielraum, NICHT die ganze Spur!
 ```
 
-Wichtig – anders als in einer früheren Version: Der Korridor ist **schmal** und
-**wandert mit** – `lane_center` (= `center_white - white_follow_offset_px`,
-dieselbe Position wie die magenta Ziellinie im annotierten Bild) ist der
-Mittelpunkt, `zones.corridor_width_px` die Gesamtbreite symmetrisch drumherum.
-Würde der Korridor stattdessen die ganze Spur abdecken (frühere Version, feste
-Bildanteile `corridor_x_min/max`), löst **jede** Ente irgendwo in der Spur aus –
-auch wenn sie objektiv nicht im Fahrweg des Bots steht – und schlimmer: Die
-"breiteste freie Lücke" (siehe Abschnitt 5) könnte jenseits der gelben Linie in
-der Gegenspur liegen, der Bot würde also genau dorthin lenken.
+Der Korridor ist **schmal** und **fest an der Bildmitte** verankert (`x = W/2`
+im BEV-Bild), `zones.corridor_width_px` die Gesamtbreite symmetrisch drumherum.
+Bewusst unabhängig von der weißen Linie/`lane_center`: würde der Korridor an
+`last_white_position` hängen, bliebe er bei kurzzeitig verlorener
+Linienerkennung an der zuletzt bekannten (ggf. veralteten) Position stehen.
+Würde der Korridor stattdessen die ganze Spur abdecken (feste Bildanteile
+`corridor_x_min/max`), löst **jede** Ente irgendwo in der Spur aus – auch wenn
+sie objektiv nicht im Fahrweg des Bots steht – und schlimmer: Die "breiteste
+freie Lücke" (siehe Abschnitt 5) könnte jenseits der gelben Linie in der
+Gegenspur liegen, der Bot würde also genau dorthin lenken.
 
 **Wie eine Zone als belegt gilt:**
 - HSV-Farbmaske des BEV → gelb ODER grün (`obstacle_color`-Parameter, `_color_obstacle_mask()`)
@@ -353,7 +354,7 @@ Alle Parameter sind in den JSON-Dateien unter `config/` und können **live** üb
 | `duck` | `kf_max_missed_frames` | 5 | Max. Frames ohne Erkennung, bevor auf "keine Ente" (-99) zurückgefallen wird |
 | `obstacle_color` | `yellow_hl/hh/sl/sh/vl/vh` | 20/35/80/255/80/255 | HSV-Bereich für Gelb (Enten + Mittellinie) |
 | `obstacle_color` | `green_hl/hh/sl/sh/vl/vh` | 40/85/60/255/40/255 | HSV-Bereich für Grün (Bonus-Enten) |
-| `zones` | `corridor_width_px` | 200 px | Breite des Fahrkorridors, **symmetrisch um `lane_center`** – Bot-Breite + Ausweich-Spielraum, NICHT die ganze Spur |
+| `zones` | `corridor_width_px` | 200 px | Breite des Fahrkorridors, **symmetrisch um die BEV-Bildmitte fixiert** – Bot-Breite + Ausweich-Spielraum, NICHT die ganze Spur |
 | `zones` | `far_y_min/max` | 0.20 / 0.45 | FERN-Zone (oben im BEV) |
 | `zones` | `mid_y_min/max` | 0.45 / 0.70 | MITTEL-Zone |
 | `zones` | `near_y_min/max` | 0.70 / 0.95 | NAH-Zone (direkt vor Bot) |
@@ -504,7 +505,7 @@ rostopic echo /tick/obstacle/state
 | Problem | Ursache | Lösung |
 |---------|---------|--------|
 | Bot weicht aus obwohl keine Ente da | `pixel_threshold_frac` zu niedrig oder Korridor zu breit | Threshold erhöhen (z.B. 0.08–0.12); `corridor_width_px` verkleinern (Bot-Breite + Spielraum, nicht die ganze Spur) |
-| Bot fährt beim Ausweichen über die gelbe Linie | Korridor reicht über die eigene Spur hinaus, "breiteste Lücke" liegt in der Gegenspur | `corridor_width_px` verkleinern – Korridor ist symmetrisch um `lane_center`, sollte nie bis zur gelben Linie reichen |
+| Bot fährt beim Ausweichen über die gelbe Linie | Korridor reicht über die eigene Spur hinaus, "breiteste Lücke" liegt in der Gegenspur | `corridor_width_px` verkleinern – Korridor ist symmetrisch um die Bildmitte, sollte nie bis zur gelben Linie reichen |
 | EVADE startet und endet sofort wieder (flackert) | Farberkennung liefert einzelne unstabile Frames, kein Entprellen | `free_stable_frames` erhöhen (Standard 5) |
 | Ente wird nicht erkannt | `pixel_threshold_frac` zu hoch, oder `obstacle_color`-Bereiche zu eng | Senken/erweitern; `/tick/debug/duck_original` ansehen: wird die Box im Originalbild überhaupt erkannt? |
 | Ente "verschwindet" schnell, obwohl noch sichtbar | (Altes Problem der reinen BEV-Erkennung, durch Originalbild-Erkennung + Homographie-Projektion behoben) | Falls trotzdem noch auffällig: `duck.kf_max_missed_frames` erhöhen |

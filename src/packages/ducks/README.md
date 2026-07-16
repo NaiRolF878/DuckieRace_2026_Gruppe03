@@ -177,8 +177,9 @@ Wichtige Stellschrauben:
   für die Enten-x-Position (Glättung + Aussetzer-Überbrückung)
 - `zones.pixel_threshold_frac` – ab wann eine Zone als belegt gilt (Standard: 0.05 = 5%)
 - `zones.corridor_width_px` – Breite des überwachten Fahrkorridors, **symmetrisch um
-  die tatsächliche Fahrlinie** (`lane_center`, nicht die ganze Spur!) – entspricht
-  Bot-Breite + Ausweich-Spielraum (Standard: 200 px)
+  die Bildmitte des BEV-Bilds fixiert** (nicht die ganze Spur, und unabhängig von der
+  weißen Linie – bleibt dadurch auch bei kurzzeitig verlorener Linienerkennung stabil)
+  – entspricht Bot-Breite + Ausweich-Spielraum (Standard: 200 px)
 
 **`control_obstacle_node.json`**
 - `evade.evade_offset` – maximale Stärke des Ausweich-Offsets, Lücke am Korridorrand (Standard: 0.6)
@@ -213,8 +214,9 @@ Wichtige Stellschrauben:
    Fahrbahn und Klebereste schwarz bleiben.
 
 4. **Zonen/Korridor kalibrieren.** `/tick/debug/duck_bev` ansehen – das
-   Korridor-Rechteck ist symmetrisch um die magenta Ziellinie zentriert.
-   `zones.corridor_width_px` auf Bot-Breite + Ausweich-Spielraum einstellen
+   Korridor-Rechteck ist symmetrisch um die Bildmitte zentriert (unabhängig von
+   weißer Linie/magenta Ziellinie). `zones.corridor_width_px` auf Bot-Breite +
+   Ausweich-Spielraum einstellen
    (**nicht** die ganze Spur – sonst löst der Bot ständig unnötig aus).
    `pixel_threshold_frac` danach: Ente im Weg → Zone soll auf 1 springen,
    leere Fahrbahn → Zone soll 0 bleiben.
