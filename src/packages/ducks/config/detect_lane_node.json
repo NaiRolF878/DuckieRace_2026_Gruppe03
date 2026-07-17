@@ -11,14 +11,14 @@
     "parameters": {
         "default": {
             "crop_image": {
-                "bottom_left_x":  {"default": 606, "min": -100, "max": 1000},
-                "bottom_left_y":  {"default": 382, "min": -100, "max": 1000},
-                "bottom_right_x": {"default":  -29, "min": -100, "max": 1000},
-                "bottom_right_y": {"default": 382, "min": -100, "max": 1000},
-                "top_left_x":     {"default": 159, "min": -100, "max": 1000},
-                "top_left_y":     {"default": 218, "min": -100, "max": 1000},
-                "top_right_x":    {"default": 441, "min": -100, "max": 1000},
-                "top_right_y":    {"default": 218, "min": -100, "max": 1000}
+                "bottom_left_x":  {"default": 665, "min": -100, "max": 1000},
+                "bottom_left_y":  {"default": 428, "min": -100, "max": 1000},
+                "bottom_right_x": {"default":  -20, "min": -100, "max": 1000},
+                "bottom_right_y": {"default": 441, "min": -100, "max": 1000},
+                "top_left_x":     {"default": 148, "min": -100, "max": 1000},
+                "top_left_y":     {"default": 297, "min": -100, "max": 1000},
+                "top_right_x":    {"default": 506, "min": -100, "max": 1000},
+                "top_right_y":    {"default": 285, "min": -100, "max": 1000}
             },
             "white": {
                 "hl":             {"default":   0, "min": 0, "max": 255},
