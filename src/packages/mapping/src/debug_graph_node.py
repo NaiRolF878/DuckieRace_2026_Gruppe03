@@ -93,6 +93,11 @@ class DebugGraphNode:
         self.graph               = config["graph"]
         self.delivery_start_node = config.get("delivery_start_node", config["mapping_start_node"])
         self._node_positions_cfg = config.get("debug_layout", {}).get("node_positions", {})
+        # Wegpunkte je Knotenpaar (Schluessel "A-C", alphabetisch sortiert),
+        # damit Kanten dem echten, gebogenen Streckenverlauf folgen statt
+        # einer geraden Linie. Mehrere Kanten zwischen denselben zwei Knoten
+        # teilen sich dieselben Wegpunkte (rein visuell, keine Odometrie-Daten).
+        self._edge_waypoints_cfg = config.get("debug_layout", {}).get("edge_waypoints", {})
 
     def _build_edges(self):
         seen = set()
@@ -141,6 +146,70 @@ class DebugGraphNode:
             if node in positions:
                 positions[node] = tuple(pos)
         return positions
+
+    def _any_edge_for_pair(self, node_a, node_b):
+        # Fuer Stellen, an denen nur eine Knoten-Paarung (kein konkretes Tag)
+        # bekannt ist (z.B. der visualisierte Delivery-Pfad) - liefert
+        # irgendeine der ggf. mehreren parallelen Kanten zwischen den beiden.
+        pair = tuple(sorted((node_a, node_b)))
+        for edge in self.edges:
+            if edge["node_a"] == edge["node_b"]:
+                continue
+            if tuple(sorted((edge["node_a"], edge["node_b"]))) == pair:
+                return edge
+        return None
+
+    def _edge_waypoints(self, edge):
+        # Wegpunkte sind pro KONKRETER Kante hinterlegt (Schluessel z.B. "A3-C1"),
+        # nicht pro Knotenpaar: gibt es zwischen zwei Knoten mehrere Kanten
+        # (unterschiedliche Tags), bleibt in der Regel nur EINE davon gebogen -
+        # das allein trennt sie schon optisch von der geraden Gegenkante,
+        # ganz ohne zusaetzlichen Versatz.
+        key = f'{edge["node_a"]}{edge["tag_a"]}-{edge["node_b"]}{edge["tag_b"]}'
+        return [tuple(p) for p in self._edge_waypoints_cfg.get(key, [])]
+
+    def _edge_control_points(self, edge):
+        # Volle Kontrollpunktliste dieser Kante: [Start, Wegpunkt(e)..., Ende].
+        # Ohne konfigurierte Wegpunkte nur Start/Ende (= gerade Linie).
+        node_a, node_b = edge["node_a"], edge["node_b"]
+        return [self.node_positions[node_a]] + self._edge_waypoints(edge) + [self.node_positions[node_b]]
+
+    def _edge_line_points(self, edge):
+        # Flache Punktliste [x1,y1, wp1x,wp1y, ..., x2,y2] fuer create_line().
+        pts = []
+        for x, y in self._edge_control_points(edge):
+            pts.extend([x, y])
+        return pts
+
+    def _point_on_edge(self, edge, t):
+        # Punkt bei Parameter t in [0,1] auf der tatsaechlich gezeichneten
+        # (ggf. gebogenen) Kante - fuer die Tag-Label-Platzierung, damit ein
+        # Label auch bei gebogenen Kanten auf der Linie sitzt statt auf der
+        # gedachten Geraden. Gerade Linie: lineare Interpolation. Ein
+        # Wegpunkt (Regelfall hier): quadratische Bezier-Kurve, entspricht
+        # ungefaehr tkinters smooth=True. Mehr als ein Wegpunkt: stueckweise
+        # linear ueber die Kontrollpunkte (grobe Naeherung, aktuell ungenutzt).
+        pts = self._edge_control_points(edge)
+        if len(pts) == 2:
+            (x0, y0), (x1, y1) = pts
+            return x0 + (x1 - x0) * t, y0 + (y1 - y0) * t
+        if len(pts) == 3:
+            (x0, y0), (x1, y1), (x2, y2) = pts
+            mt = 1.0 - t
+            return (mt * mt * x0 + 2 * mt * t * x1 + t * t * x2,
+                    mt * mt * y0 + 2 * mt * t * y1 + t * t * y2)
+        seg_count = len(pts) - 1
+        pos = min(max(t, 0.0), 1.0) * seg_count
+        idx = min(int(pos), seg_count - 1)
+        local_t = pos - idx
+        x0, y0 = pts[idx]
+        x1, y1 = pts[idx + 1]
+        return x0 + (x1 - x0) * local_t, y0 + (y1 - y0) * local_t
+
+    def _edge_anchor_point(self, edge):
+        # Punkt zum Platzieren von Tor-Markern auf der Kante: Mitte der
+        # tatsaechlichen (ggf. gebogenen) Linie.
+        return self._point_on_edge(edge, 0.5)
 
     def _self_loop_bbox(self, node):
         # Bounding-Box eines kleinen Kreises oberhalb des Knotens, der eine
@@ -307,25 +376,37 @@ class DebugGraphNode:
 
     # ── Canvas: Ebene 1 (statisch, einmalig) ────────────────────────────────────
 
+    def _draw_edge_tag_label(self, x, y, text):
+        # Weisses "Badge" hinter der Tag-Zahl, damit sie sich von der grauen
+        # Linie darunter und von benachbarten Labels (parallele Kanten) klar
+        # abhebt, statt direkt auf der Linie zu "verschwimmen".
+        r = 9
+        self.canvas.create_oval(x - r, y - r, x + r, y + r,
+                                 fill="white", outline="#AAAAAA")
+        self.canvas.create_text(x, y, text=text, fill="#222222",
+                                 font=("Arial", 9, "bold"))
+
     def _draw_static_graph(self):
         for edge in self.edges:
             if edge["node_a"] == edge["node_b"]:
                 self.canvas.create_oval(*self._self_loop_bbox(edge["node_a"]),
                                          outline="#555555", width=2)
                 ax, ay = self._self_loop_anchor(edge["node_a"])
-                self.canvas.create_text(ax, ay - 10,
-                    text=f'{edge["tag_a"]}/{edge["tag_b"]}', fill="#555555",
-                    font=("Arial", 8))
+                label = f'{edge["tag_a"]}/{edge["tag_b"]}'
+                self.canvas.create_rectangle(ax - 14, ay - 19, ax + 14, ay - 1,
+                                              fill="white", outline="#AAAAAA")
+                self.canvas.create_text(ax, ay - 10, text=label, fill="#222222",
+                    font=("Arial", 8, "bold"))
                 continue
-            x1, y1 = self.node_positions[edge["node_a"]]
-            x2, y2 = self.node_positions[edge["node_b"]]
-            self.canvas.create_line(x1, y1, x2, y2, fill="#555555", width=2)
+            pts = self._edge_line_points(edge)
+            self.canvas.create_line(*pts, fill="#555555", width=2, smooth=True)
             # Tag-Nummer nahe jedem Kantenende: zeigt, ueber welchen Eingangs-Tag
-            # man den jeweils GEGENUEBERLIEGENDEN Knoten erreicht.
-            self.canvas.create_text(x1 + (x2 - x1) * 0.22, y1 + (y2 - y1) * 0.22,
-                text=edge["tag_a"], fill="#333333", font=("Arial", 9, "bold"))
-            self.canvas.create_text(x1 + (x2 - x1) * 0.78, y1 + (y2 - y1) * 0.78,
-                text=edge["tag_b"], fill="#333333", font=("Arial", 9, "bold"))
+            # man den jeweils GEGENUEBERLIEGENDEN Knoten erreicht. Liegt auf der
+            # tatsaechlichen (ggf. gebogenen) Linie, nicht auf der Geraden.
+            ax, ay = self._point_on_edge(edge, 0.22)
+            bx, by = self._point_on_edge(edge, 0.78)
+            self._draw_edge_tag_label(ax, ay, edge["tag_a"])
+            self._draw_edge_tag_label(bx, by, edge["tag_b"])
         for node, (x, y) in self.node_positions.items():
             self.canvas.create_oval(x - 20, y - 20, x + 20, y + 20,
                                      fill="#666666", outline="")
@@ -343,9 +424,8 @@ class DebugGraphNode:
                 self.canvas.create_oval(*self._self_loop_bbox(edge["node_a"]),
                                          outline="#00CC44", width=3, tags="visited")
                 continue
-            x1, y1 = self.node_positions[edge["node_a"]]
-            x2, y2 = self.node_positions[edge["node_b"]]
-            self.canvas.create_line(x1, y1, x2, y2, fill="#00CC44", width=3,
+            pts = self._edge_line_points(edge)
+            self.canvas.create_line(*pts, fill="#00CC44", width=3, smooth=True,
                                      tags="visited")
 
     def _redraw_planned_path(self):
@@ -362,9 +442,13 @@ class DebugGraphNode:
                                          outline="#4488FF", width=3, dash=(8, 4),
                                          tags="planned")
                 continue
-            x1, y1 = self.node_positions[a]
-            x2, y2 = self.node_positions[b]
-            self.canvas.create_line(x1, y1, x2, y2, fill="#4488FF", width=3,
+            # Delivery-Route kennt nur die Knotenfolge, kein konkretes Tag
+            # (Ebene-3-Visualisierung, siehe Kopfkommentar) - nimmt daher
+            # irgendeine der ggf. mehreren parallelen Kanten zwischen a und b.
+            edge = self._any_edge_for_pair(a, b)
+            pts = self._edge_line_points(edge) if edge else [
+                *self.node_positions[a], *self.node_positions[b]]
+            self.canvas.create_line(*pts, fill="#4488FF", width=3, smooth=True,
                                      dash=(8, 4), arrow=tk.LAST, tags="planned")
 
     def _redraw_gates(self):
@@ -377,9 +461,7 @@ class DebugGraphNode:
             if edge["node_a"] == edge["node_b"]:
                 mx, my = self._self_loop_anchor(edge["node_a"])
             else:
-                x1, y1 = self.node_positions[edge["node_a"]]
-                x2, y2 = self.node_positions[edge["node_b"]]
-                mx, my = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+                mx, my = self._edge_anchor_point(edge)
             try:
                 color = self.GATE_COLORS.get(int(gate_id), "#FFFFFF")
             except ValueError:
