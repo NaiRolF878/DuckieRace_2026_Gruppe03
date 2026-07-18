@@ -4,11 +4,15 @@
 # control_lane_node.py
 #
 # Challenge 1 (Lane Following + rote Haltelinie) als Basis.
-# Challenge-3-Erweiterung: additiver Ausweich-Offset von control_obstacle_node.
+# Challenge-3-Erweiterung: additiver Ausweich-Offset von control_obstacle_node
+# (Stufe 4b, mittel-Zone), sowie ein kompletter PID-Bypass im NOTFALL
+# (Stufe 4a, nah-Zone: /obstacle/emergency_active + /obstacle/emergency_cmd,
+# hoechste Prioritaet in run()).
 #
 # Diese Node bleibt die EINZIGE Stelle, die PID rechnet, Geschwindigkeit
 # reduziert und den Haltelinien-Automaten hält. control_obstacle_node liefert
-# nur /obstacle/error_offset, der hier zum Spurfehler addiert wird.
+# nur /obstacle/error_offset, der hier zum Spurfehler addiert wird (bzw. im
+# Notfall v/omega direkt vorgibt).
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
@@ -69,6 +73,17 @@ class ControlLaneNode:
             f'/{self._vehicle_name}/obstacle/stop',
             Bool, self.cbObstacleStop, queue_size=1)
 
+        # Stufe 4a: NOTFALL (nah-Zone) - control_obstacle_node uebernimmt
+        # v/omega komplett, PID wird dabei ignoriert (siehe run()).
+        self.emergency_active = False
+        self.emergency_cmd    = Twist2DStamped()
+        self.sub_emergency_active = rospy.Subscriber(
+            f'/{self._vehicle_name}/obstacle/emergency_active',
+            Bool, self.cbEmergencyActive, queue_size=1)
+        self.sub_emergency_cmd = rospy.Subscriber(
+            f'/{self._vehicle_name}/obstacle/emergency_cmd',
+            Twist2DStamped, self.cbEmergencyCmd, queue_size=1)
+
         # PID-Variablen
         self.lastError = 0
         self.integral  = 0
@@ -102,6 +117,12 @@ class ControlLaneNode:
 
     def cbObstacleStop(self, msg):
         self.obstacle_stop = msg.data
+
+    def cbEmergencyActive(self, msg):
+        self.emergency_active = msg.data
+
+    def cbEmergencyCmd(self, msg):
+        self.emergency_cmd = msg
 
     def cbUpdateParameters(self, parameters):
         self.kp      = parameters["pid"]["p"]["default"]
@@ -163,8 +184,15 @@ class ControlLaneNode:
                 twist = Twist2DStamped()
                 twist.header.stamp = rospy.Time.now()
 
+                # Stufe 4a: NOTFALL – control_obstacle_node uebernimmt v/omega
+                # komplett (Wiggle + feste Drehrate), PID wird hier ignoriert.
+                # Hoechste Prioritaet, auch vor der roten Haltelinie.
+                if self.emergency_active:
+                    twist.v     = self.emergency_cmd.v
+                    twist.omega = self.emergency_cmd.omega
+
                 # Stufe 6: WAIT-Signal von control_obstacle_node → vollständiger Stopp
-                if self.obstacle_stop:
+                elif self.obstacle_stop:
                     twist.v     = 0.0
                     twist.omega = 0.0
 

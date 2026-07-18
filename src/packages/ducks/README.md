@@ -21,7 +21,7 @@ ducks/
 ├── src/
 │   ├── detect_lane_node.py        # Kamera: BEV, weiße Linie, Zonen, Enten
 │   ├── control_lane_node.py       # PID-Spurregelung + Haltelinien-Automat
-│   ├── control_obstacle_node.py   # Ausweich-Zustandsautomat (5 Zustände)
+│   ├── control_obstacle_node.py   # Ausweich-Zustandsautomat (6 Zustände)
 │   ├── switch_control_node.py     # Umschaltung Lane ↔ Obstacle
 │   ├── camera_dashboard_node.py   # Debug-Visualisierung (2×2-Dashboard)
 │   ├── configuration_node.py      # Live-Parameter-GUI (tkinter)
@@ -71,9 +71,11 @@ Verarbeitet das Kamerabild vollständig in einer einzigen Node:
    (kein Sichtfeldlimit/Verzerrung durch die BEV-Trapez-Transformation); nur der
    Bodenkontaktpunkt jeder erkannten Box wird per Homographie ins BEV projiziert.
    Ein Kalman-Filter glättet die x-Position und überbrückt kurze Erkennungsaussetzer.
-6. **Zonen-Belegung** – drei Zonen (nah/mittel/fern) prüfen im Fahrkorridor (BEV)
-   dieselben reprojizierten Boden-Kontaktpunkte aus Schritt 5 (keine eigene,
-   zweite Farberkennung auf dem BEV-Bild)
+6. **Zonen-Belegung** – drei Zonen (nah/mittel/fern) prüfen rein geometrisch
+   (Rechteck-Überlappung, kein Flächen-Threshold), ob dieselben reprojizierten
+   Boden-Kontaktpunkte aus Schritt 5 im Korridor-x-Bereich und auf/vor der
+   jeweiligen Zonentiefe liegen (keine eigene, zweite Farberkennung auf dem
+   BEV-Bild)
 
 Erkennt gezielt **gelbe und grüne Objekte** – Enten **und** die gelbe Mittellinie,
 ohne sie zu unterscheiden (beide lösen dieselbe Reaktion aus). Unbunte Reflexionen/
@@ -81,29 +83,52 @@ Klebereste auf der Fahrbahn fallen automatisch raus, da sie nicht in den Farbber
 
 ### Ausweichen (`control_obstacle_node.py`)
 
-Enthält den **5-Zustands-Automaten**:
+Enthält den **6-Zustands-Automaten**. Die drei Zonen (nah/mittel/fern) lösen
+bewusst **unterschiedliche** Reaktionen aus, statt wie früher alle gleich zu
+behandeln:
+- **fern:** nur Beobachtung, kein Eingriff. Erkennung auf große Distanz ist
+  weniger zuverlässig, und da der Korridor genau der Bot-Breite entspricht,
+  gibt es ohnehin kein "sanftes" Teil-Ausweichen – jede Reaktion müsste
+  praktisch dieselbe Stärke haben wie in der mittel-Zone, nur früher
+  ausgelöst auf Basis unsichererer Daten.
+- **mittel:** normales Ausweichen (EVADE, PID-Offset).
+- **nah:** Notfall (EMERGENCY) – umgeht die PID komplett, feste Drehrate.
 
 ```
-         Zone nah/mittel        Zonen leer        Nachlauf ab
-IDLE ───────belegt────────► EVADE ──────────► PASS ───────────► RETURN ──fertig──► IDLE
-                              │                  ↑
-                           Timeout          frei / Timeout
-                              ▼                  │
-                            WAIT (v=0) ──────────┘
+                Zone nah         Zone mittel          NAH-Zone frei
+IDLE ────┬───────belegt───────► EMERGENCY ──────────────┐
+         │                                               │
+         └───────belegt───────► EVADE ──────────► PASS ◄─┘
+                                   │                 │  ↑
+                                Timeout        frei / Timeout
+                                   ▼                 │
+                                 WAIT (v=0) ──────────┘
+                                                       │
+                                                  Nachlauf ab
+                                                       ▼
+                                                    RETURN ──fertig──► IDLE
 ```
 
 - **IDLE:** Normalbetrieb, kein Eingriff
+- **EMERGENCY:** nah-Zone – feste Drehrate (`emergency_omega_rad`) + Wiggle
+  (v kippt im `wiggle_interval_secs`-Takt das Vorzeichen, gegen Standreibung
+  beim Drehen auf der Stelle), umgeht die PID komplett; `emergency_timeout_secs`
+  als Failsafe → WAIT, falls die nah-Zone nie stabil frei wird
 - **EVADE:** Ausweich-Offset aktiv, Encoder-Ticks werden akkumuliert
 - **WAIT:** Bot stoppt vollständig (Korridor blockiert, Stufe 6); Timeout erzwingt Weiterfahrt
 - **PASS:** Offset bleibt aktiv (Nachlauf), Ticks akkumulieren weiter
-- **RETURN:** Offset = 0, Encoder-basierte Rückkehr aktiv bis Kamera weiße Linie findet (Stufe 5)
+- **RETURN:** Offset = 0, Encoder+Kamera-basierte Rückkehr (Stufe 5), zusätzlich
+  ein hartes `return_timeout_secs`-Failsafe gegen endloses Drehen
 
-Die Node sendet **keine Fahrbefehle direkt**, sondern publiziert drei Steuersignale:
+Die Node sendet **keine Fahrbefehle direkt** (außer im Notfall), sondern
+publiziert Steuersignale:
 - `error_offset` – verschiebt die wahrgenommene Spurmitte → PID lenkt automatisch
 - `return_omega` – überschreibt PID-omega während Encoder-Rückkehr
 - `stop` – setzt v=0 im WAIT-Zustand
+- `emergency_active` / `emergency_cmd` – im EMERGENCY-Zustand übernimmt
+  `control_lane_node` `emergency_cmd` (v+omega) 1:1, PID greift nicht ein
 
-**Ausweichrichtung + -stärke** wird beim Eintritt in EVADE einmalig eingefroren:
+**Ausweichrichtung + -stärke** wird beim Eintritt in EMERGENCY/EVADE einmalig eingefroren:
 - Primär aus `/detect/corridor_occupancy` (Lückenprofil über den Fahrkorridor,
   der genau der Bot-Breite entspricht): gewählt wird die Seite mit dem
   **größeren freien Abstand vom Korridorrand bis zum nächsten Hindernis**
@@ -116,16 +141,19 @@ Die Node sendet **keine Fahrbefehle direkt**, sondern publiziert drei Steuersign
 - Fallback (kein Profil / Korridor komplett belegt) – alte `duck_x`-Heuristik:
   Ente rechts von BEV-Mitte → links ausweichen, Ente links → rechts ausweichen,
   kein Blob (z.B. gelbe Linie) → rechts als sicherer Standard
+- Im EMERGENCY-Zustand wird nur das **Vorzeichen** dieser Berechnung genutzt
+  (Richtung), die Stärke ist immer die feste `emergency_omega_rad`.
 
 ### Spurführung (`control_lane_node.py`)
 
 **Einzige Node**, die den Fahrbefehl an den Bot sendet. Priorität:
 
 ```
-1. obstacle/stop = True      →  v=0, omega=0             (WAIT-Zustand)
-2. Rote Haltelinie erkannt   →  v=0, omega=0             (Haltelinien-Automat)
-3. return_omega ≠ 0          →  v=PID, omega=return_omega (Encoder-Rückkehr)
-4. Normalbetrieb             →  v=PID, omega=PID
+1. emergency_active = True   →  v/omega = emergency_cmd  (NOTFALL, umgeht PID)
+2. obstacle/stop = True      →  v=0, omega=0             (WAIT-Zustand)
+3. Rote Haltelinie erkannt   →  v=0, omega=0             (Haltelinien-Automat)
+4. return_omega ≠ 0          →  v=PID, omega=return_omega (Encoder-Rückkehr)
+5. Normalbetrieb             →  v=PID, omega=PID
 ```
 
 ### Umschaltung (`switch_control_node.py`)
@@ -182,7 +210,6 @@ Wichtige Stellschrauben:
   (Hue/Saturation/Value je für Gelb und Grün, ersetzt die frühere Helligkeits-Schwelle)
 - `duck.kf_process_var` / `kf_measurement_var` / `kf_max_missed_frames` – Kalman-Filter
   für die Enten-x-Position (Glättung + Aussetzer-Überbrückung)
-- `zones.pixel_threshold_frac` – ab wann eine Zone als belegt gilt (Standard: 0.05 = 5%)
 - `zones.corridor_width_px` – Breite des überwachten Fahrkorridors, **symmetrisch um
   die Bildmitte des BEV-Bilds fixiert** (nicht die ganze Spur, und unabhängig von der
   weißen Linie – bleibt dadurch auch bei kurzzeitig verlorener Linienerkennung stabil)
@@ -201,8 +228,17 @@ Wichtige Stellschrauben:
 - `evade.evade_timeout_secs` – Max. Zeit im EVADE bevor WAIT (Standard: 5.0 s)
 - `evade.wait_timeout_secs` – Max. Wartezeit im WAIT (Standard: 3.0 s)
 - `evade.free_stable_frames` – wie viele Frames der Korridor **hintereinander** frei
-  sein muss, bevor EVADE/WAIT wirklich verlassen wird (Standard: 5, gegen Flackern)
+  sein muss, bevor EMERGENCY/EVADE/WAIT wirklich verlassen wird (Standard: 5, gegen Flackern)
 - `evade.active` – Gesamte Ausweichlogik ein (1) / aus (0)
+- `evade.return_timeout_secs` – hartes Zeitlimit für RETURN, falls weder Kamera
+  noch Encoder je "fertig" melden (Failsafe gegen endloses Drehen, Standard: 5.0 s)
+- `evade.emergency_omega_rad` – feste Drehrate im NOTFALL (nah-Zone), umgeht die
+  PID (Standard: 1.6 rad/s)
+- `evade.emergency_timeout_secs` – hartes Zeitlimit für NOTFALL, falls die
+  nah-Zone nie stabil frei wird (Failsafe → WAIT, Standard: 5.0 s)
+- `evade.wiggle_interval_secs` – wie oft `v` im NOTFALL das Vorzeichen wechselt,
+  gegen Standreibung beim Drehen auf der Stelle (Standard: 0.06 s)
+- `evade.wiggle_power` – Stärke des Wiggle-Ausschlags (Standard: 0.07)
 
 **`control_lane_node.json`**
 - `pid.p / i / d` – PID-Faktoren für Spurfolgen
@@ -230,9 +266,8 @@ Wichtige Stellschrauben:
    weißer Linie/magenta Ziellinie). `zones.corridor_width_px` auf die Bot-Breite
    einstellen (**nicht** die ganze Spur – sonst löst der Bot ständig unnötig aus).
    `zones.white_line_margin_px` so wählen, dass der Bot beim Ausweichen nie über
-   die weiße Linie fährt.
-   `pixel_threshold_frac` danach: Ente im Weg → Zone soll auf 1 springen,
-   leere Fahrbahn → Zone soll 0 bleiben.
+   die weiße Linie fährt. Die Zonen-Belegung selbst ist rein geometrisch (Ente
+   im Korridor-Bereich → Zone springt auf 1) – kein Schwellwert zum Tunen nötig.
 
 5. **Ausweichstärke einstellen.** `evade_offset` bestimmt, wie weit der Bot
    ausweicht. Zu niedrig → streift Ente; zu hoch → verlässt Fahrbahn.

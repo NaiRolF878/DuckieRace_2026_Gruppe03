@@ -18,11 +18,12 @@ from std_msgs.msg import Float64, Bool, String
 
 class CameraDashboardNode:
     STATE_COLORS = {
-        "Idle":   (0, 255, 0),
-        "Evade":  (0, 165, 255),
-        "Wait":   (0, 0, 255),
-        "Pass":   (0, 165, 255),
-        "Return": (255, 165, 0),
+        "Idle":      (0, 255, 0),
+        "Emergency": (0, 0, 255),
+        "Evade":     (0, 165, 255),
+        "Wait":      (0, 0, 255),
+        "Pass":      (0, 165, 255),
+        "Return":    (255, 165, 0),
     }
 
     def __init__(self, node_name):

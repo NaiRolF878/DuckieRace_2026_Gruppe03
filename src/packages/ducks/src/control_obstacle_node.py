@@ -2,10 +2,27 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # control_obstacle_node.py  (Challenge 3 – Stufen 4, 5, 6)
 #
-# Zustandsautomat: IDLE → EVADE → [WAIT] → PASS → RETURN → IDLE
+# Zustandsautomat: IDLE → EMERGENCY|EVADE → [WAIT] → PASS → RETURN → IDLE
 #
-# Stufe 4 – Ausweichen:
-#   Trigger : /detect/zones [nah, mittel, fern] – nah ODER mittel → EVADE
+# Drei Zonen, drei unterschiedliche Reaktionsstufen (/detect/zones [nah,
+# mittel, fern]):
+#   - fern:   nur Beobachtung, kein Eingriff (siehe Kalibrier-/Doku-Notizen -
+#     Erkennung auf Distanz weniger zuverlässig, und der Korridor entspricht
+#     ohnehin der Bot-Breite, es gibt kein "sanftes" Teil-Ausweichen)
+#   - mittel: normales Ausweichen (EVADE, siehe unten)
+#   - nah:    Notfall (EMERGENCY, siehe unten) - umgeht die PID komplett
+#
+# EMERGENCY (nah-Zone, Vorbild: andere Gruppe, Zone 0):
+#   Feste Drehrate (emergency_omega_rad) statt PID-Offset, dazu ein Wiggle
+#   (v kippt im Wiggle-Intervall das Vorzeichen), um die Standreibung beim
+#   Drehen auf der Stelle zu ueberwinden. control_lane_node uebernimmt
+#   /obstacle/emergency_cmd 1:1, sobald /obstacle/emergency_active=True -
+#   PID greift dabei gar nicht ein. Sobald die nah-Zone stabil frei ist,
+#   geht es weiter in PASS (dieselbe Nachlauf-/Rueckkehr-Logik wie EVADE).
+#   emergency_timeout_secs als Failsafe -> WAIT, falls die nah-Zone nie frei
+#   wird (z.B. dauerhafte Fehlerkennung).
+#
+# EVADE (mittel-Zone):
 #   Richtung + Stärke: aus /detect/corridor_occupancy (Lückenprofil, nah+mittel-
 #   Band) beim EVADE-Eintritt bestimmt, für die Dauer des Manövers eingefroren.
 #   Der Korridor entspricht der Bot-Breite - statt der breitesten Lücke
@@ -18,10 +35,13 @@
 #   vorliegt oder der Korridor komplett belegt ist.
 #
 # Stufe 5 – Encoder-Rückkehr:
-#   Während EVADE+PASS: Radencoder-Ticks akkumulieren (data zählt IMMER aufwärts,
-#   Richtung wird aus locked_offset-Vorzeichen abgeleitet, NICHT aus Encoder).
-#   RETURN: /obstacle/return_omega publizieren → control_lane_node ersetzt PID-omega.
-#   Stopp: Kamera (|lane_error| < threshold, N Frames) primär; Encoder als Backup.
+#   Während EMERGENCY+EVADE+PASS: Radencoder-Ticks akkumulieren (data zählt
+#   IMMER aufwärts, Richtung wird aus locked_offset-Vorzeichen abgeleitet,
+#   NICHT aus Encoder). RETURN: /obstacle/return_omega publizieren →
+#   control_lane_node ersetzt PID-omega. Stopp: Kamera (|lane_error| <
+#   threshold, N Frames) primär, Encoder als Backup, zusaetzlich ein hartes
+#   return_timeout_secs als Failsafe gegen endloses Drehen, falls weder
+#   Kamera noch Encoder je "fertig" melden.
 #
 # Stufe 6 – Sonderfall anhalten:
 #   EVADE-Timeout → WAIT. /obstacle/stop = True → control_lane_node v=0.
@@ -37,16 +57,17 @@ import os
 import rospy
 from enum import Enum
 from std_msgs.msg import Float64, Bool, Float32MultiArray, String
-from duckietown_msgs.msg import WheelEncoderStamped
+from duckietown_msgs.msg import WheelEncoderStamped, Twist2DStamped
 import util
 
 
 class EvadeState(Enum):
-    Idle   = 1
-    Evade  = 2
-    Wait   = 3   # Stufe 6: anhalten wenn EVADE-Timeout
-    Pass   = 4
-    Return = 5
+    Idle      = 1
+    Emergency = 2   # Stufe 4a: nah-Zone, PID umgangen, feste Drehrate + Wiggle
+    Evade     = 3   # Stufe 4b: mittel-Zone, PID-Offset
+    Wait      = 4   # Stufe 6: anhalten wenn EVADE-Timeout
+    Pass      = 5
+    Return    = 6
 
 
 class ControlObstacleNode:
@@ -60,15 +81,23 @@ class ControlObstacleNode:
         self.current_offset = 0.0
         self.locked_offset  = 0.0    # Richtung beim EVADE-Eintritt eingefroren
         self.evade_start    = None
+        self.emergency_start = None
         self.pass_start     = None
         self.wait_start     = None
+        self.return_start   = None
         self.return_stable  = 0
-        self.free_stable    = 0    # Zonen-frei-Zähler (EVADE/WAIT → PASS)
+        self.free_stable    = 0    # Zonen-frei-Zähler (EMERGENCY/EVADE/WAIT → PASS)
         self.return_omega_value = 0.0
         self.lane_error     = 0.0
         self.zones          = [0.0, 0.0, 0.0]
         self.duck_x         = -99.0
         self.corridor_occ   = []   # Lückenprofil von detect_lane_node (Stufe 4b)
+
+        # ── Notfall-Zustand (Stufe 4a: EMERGENCY) ────────────────────────────
+        self.emergency_v      = 0.0
+        self.emergency_omega  = 0.0
+        self.wiggle_direction = -1.0
+        self.last_wiggle_time = None
 
         # ── Encoder-Zustand (Stufe 5) ─────────────────────────────────────────
         # data zählt bei JEDER Bewegung aufwärts – Richtung aus Fahrbefehl!
@@ -88,8 +117,13 @@ class ControlObstacleNode:
         self.return_threshold     = 0.25
         self.return_stable_frames = 5
         self.return_omega         = 0.5
+        self.return_timeout_secs  = 5.0
         self.wait_timeout_secs    = 3.0
         self.free_stable_frames   = 5
+        self.emergency_omega_rad   = 1.6
+        self.emergency_timeout_secs = 5.0
+        self.wiggle_interval_secs  = 0.06
+        self.wiggle_power          = 0.07
 
         util.init_parameters(node_name, self.cbUpdateParameters)
 
@@ -102,9 +136,14 @@ class ControlObstacleNode:
             f'/{self._vehicle_name}/obstacle/stop', Bool, queue_size=1)
         self.pub_done = rospy.Publisher(
             f'/{self._vehicle_name}/obstacle/done', Bool, queue_size=1)
-        # Aktueller Zustand (Idle/Evade/Wait/Pass/Return) – für Debug-Overlays
+        # Aktueller Zustand (Idle/Emergency/Evade/Wait/Pass/Return) – für Debug-Overlays
         self.pub_state = rospy.Publisher(
             f'/{self._vehicle_name}/obstacle/state', String, queue_size=1)
+        # Notfall: umgeht die PID komplett (siehe control_lane_node.py)
+        self.pub_emergency_active = rospy.Publisher(
+            f'/{self._vehicle_name}/obstacle/emergency_active', Bool, queue_size=1)
+        self.pub_emergency_cmd = rospy.Publisher(
+            f'/{self._vehicle_name}/obstacle/emergency_cmd', Twist2DStamped, queue_size=1)
 
         # ── Subscriber ────────────────────────────────────────────────────────
         rospy.Subscriber(f'/{self._vehicle_name}/detect/zones',
@@ -142,8 +181,13 @@ class ControlObstacleNode:
         self.return_threshold     =     g("evade", "return_threshold",     0.25)
         self.return_stable_frames = int(g("evade", "return_stable_frames", 5))
         self.return_omega         =     g("evade", "return_omega",         0.5)
+        self.return_timeout_secs  =     g("evade", "return_timeout_secs",  5.0)
         self.wait_timeout_secs    =     g("evade", "wait_timeout_secs",    3.0)
         self.free_stable_frames   = int(g("evade", "free_stable_frames",   5))
+        self.emergency_omega_rad    =     g("evade", "emergency_omega_rad",   1.6)
+        self.emergency_timeout_secs =     g("evade", "emergency_timeout_secs", 5.0)
+        self.wiggle_interval_secs   =     g("evade", "wiggle_interval_secs",  0.06)
+        self.wiggle_power           =     g("evade", "wiggle_power",          0.07)
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
@@ -174,8 +218,13 @@ class ControlObstacleNode:
 
     # ── Hilfsfunktionen ───────────────────────────────────────────────────────
 
+    def _near_active(self):
+        """True wenn NAH-Zone belegt (Notfall-Stufe)."""
+        return self.zones[0] > 0.5
+
     def _zones_active(self):
-        """True wenn Zone nah ODER mittel belegt."""
+        """True wenn Zone nah ODER mittel belegt (fern loest bewusst nichts
+        aus - siehe Kopfkommentar)."""
         return self.zones[0] > 0.5 or self.zones[1] > 0.5
 
     def _find_best_gap(self, occ):
@@ -225,7 +274,9 @@ class ControlObstacleNode:
 
     def _determine_direction(self):
         """
-        Ausweichrichtung + -stärke beim EVADE-Eintritt:
+        Ausweichrichtung + -stärke, beim Eintritt in EMERGENCY oder EVADE
+        bestimmt (im EMERGENCY-Fall wird nur das Vorzeichen genutzt, siehe
+        _step_state_machine):
           1. Primär: Seite mit dem größeren freien Abstand vom Korridorrand
              bis zum nächsten Hindernis im Belegungsprofil
              (/detect/corridor_occupancy) → Offset zeigt dorthin, Stärke
@@ -237,11 +288,11 @@ class ControlObstacleNode:
         if gap is not None:
             offset = self._offset_from_gap(gap)
             rospy.loginfo(
-                f"[Evade] Luecke bei {gap[0]*100:.0f}% der Korridorbreite "
+                f"[Ausweichrichtung] Luecke bei {gap[0]*100:.0f}% der Korridorbreite "
                 f"(Breite {gap[1]*100:.0f}%) → Offset {offset:+.2f}")
             return offset
 
-        rospy.logwarn("[Evade] Kein Profil / Korridor komplett belegt – Fallback auf duck_x")
+        rospy.logwarn("[Ausweichrichtung] Kein Profil / Korridor komplett belegt – Fallback auf duck_x")
         if self.duck_x != -99.0 and self.duck_x >= 0.0:
             return -self.evade_offset
         return +self.evade_offset
@@ -263,7 +314,17 @@ class ControlObstacleNode:
             self.current_offset     = 0.0
             self.return_stable      = 0
             self.accumulated_ticks  = 0.0
-            if self._zones_active():
+            if self._near_active():
+                self.locked_offset   = self._determine_direction()
+                self.emergency_start = now
+                self.wiggle_direction = -1.0
+                self.last_wiggle_time = now
+                self.free_stable     = 0
+                self.state           = EvadeState.Emergency
+                rospy.logwarn(
+                    f"[Notfall] Hindernis in NAH-Zone – Nothalt + Drehung "
+                    f"{'links' if self.locked_offset < 0 else 'rechts'}")
+            elif self.zones[1] > 0.5:
                 self.locked_offset = self._determine_direction()
                 self.evade_start   = now
                 self.free_stable   = 0
@@ -272,6 +333,38 @@ class ControlObstacleNode:
                     f"[Evade] Auslösung – "
                     f"{'links' if self.locked_offset < 0 else 'rechts'}, "
                     f"Offset {self.locked_offset:+.2f}")
+
+        elif self.state == EvadeState.Emergency:
+            self.current_offset     = 0.0   # PID-Offset ungenutzt, siehe emergency_v/omega
+            self.accumulated_ticks += delta_ticks
+
+            # Wiggle: v kippt im Wiggle-Intervall das Vorzeichen, damit der Bot
+            # beim Drehen auf der Stelle nicht wegen Standreibung haengen bleibt.
+            if (now - self.last_wiggle_time).to_sec() > self.wiggle_interval_secs:
+                self.wiggle_direction *= -1.0
+                self.last_wiggle_time = now
+            self.emergency_v = self.wiggle_power * self.wiggle_direction
+            # Gleiche Vorzeichen-Konvention wie locked_offset/error (positiv = rechts).
+            self.emergency_omega = self.emergency_omega_rad if self.locked_offset >= 0.0 else -self.emergency_omega_rad
+
+            if self._near_active():
+                self.free_stable = 0
+            else:
+                self.free_stable += 1
+
+            elapsed = (now - self.emergency_start).to_sec()
+
+            if elapsed > self.emergency_timeout_secs:
+                rospy.logwarn(f"[Notfall] Timeout {elapsed:.1f}s → WAIT")
+                self.wait_start  = now
+                self.state       = EvadeState.Wait
+                self.free_stable = 0
+            elif self.free_stable >= self.free_stable_frames:
+                rospy.loginfo(
+                    f"[Notfall] NAH-Zone frei ({self.free_stable} Frames stabil) → PASS")
+                self.pass_start  = now
+                self.state       = EvadeState.Pass
+                self.free_stable = 0
 
         elif self.state == EvadeState.Evade:
             self.current_offset     = self.locked_offset
@@ -321,7 +414,14 @@ class ControlObstacleNode:
             self.accumulated_ticks += delta_ticks
             elapsed = (now - self.pass_start).to_sec()
 
-            if self._zones_active():
+            if self._near_active():
+                rospy.logwarn("[Evade] PASS: Hindernis in NAH-Zone → NOTFALL")
+                self.emergency_start  = now
+                self.wiggle_direction = -1.0
+                self.last_wiggle_time = now
+                self.free_stable      = 0
+                self.state            = EvadeState.Emergency
+            elif self.zones[1] > 0.5:
                 rospy.loginfo("[Evade] PASS: Objekt wieder da → EVADE")
                 self.evade_start = now
                 self.free_stable = 0
@@ -332,6 +432,7 @@ class ControlObstacleNode:
                     f"(akkum. {self.accumulated_ticks:.0f} Ticks)")
                 self.return_ticks_remaining = self.accumulated_ticks
                 self.return_stable          = 0
+                self.return_start           = now
                 self.state                  = EvadeState.Return
 
         elif self.state == EvadeState.Return:
@@ -342,7 +443,18 @@ class ControlObstacleNode:
             return_dir = -1.0 if self.locked_offset > 0 else 1.0
             self.return_omega_value = self.return_omega * return_dir
 
-            if self._zones_active():
+            if self._near_active():
+                rospy.logwarn("[Evade] RETURN: Hindernis in NAH-Zone → NOTFALL")
+                self.return_omega_value = 0.0
+                self.locked_offset    = self._determine_direction()
+                self.emergency_start  = now
+                self.wiggle_direction = -1.0
+                self.last_wiggle_time = now
+                self.accumulated_ticks = 0.0
+                self.free_stable      = 0
+                self.state            = EvadeState.Emergency
+                return
+            if self.zones[1] > 0.5:
                 rospy.loginfo("[Evade] RETURN: neues Objekt → EVADE")
                 self.return_omega_value = 0.0
                 self.locked_offset      = self._determine_direction()
@@ -359,9 +471,11 @@ class ControlObstacleNode:
 
             camera_done  = self.return_stable >= self.return_stable_frames
             encoder_done = self.return_ticks_remaining <= 0
+            elapsed      = (now - self.return_start).to_sec() if self.return_start is not None else 0.0
+            timeout_done = elapsed >= self.return_timeout_secs
 
-            if camera_done or encoder_done:
-                reason = "Kamera" if camera_done else "Encoder-Backup"
+            if camera_done or encoder_done or timeout_done:
+                reason = "Kamera" if camera_done else ("Encoder-Backup" if encoder_done else "Timeout-Failsafe")
                 rospy.loginfo(f"[Evade] Rückkehr fertig ({reason}) → IDLE")
                 self.return_omega_value = 0.0
                 self.state              = EvadeState.Idle
@@ -378,13 +492,24 @@ class ControlObstacleNode:
             else:
                 self.current_offset     = 0.0
                 self.return_omega_value = 0.0
+                self.emergency_v        = 0.0
+                self.emergency_omega    = 0.0
                 self.state              = EvadeState.Idle
+
+            emergency_active = (self.state == EvadeState.Emergency)
 
             self.pub_offset.publish(Float64(data=self.current_offset))
             self.pub_return_omega.publish(Float64(data=self.return_omega_value))
             # Stop-Signal: True nur im WAIT-Zustand (Stufe 6)
             self.pub_stop.publish(Bool(data=(self.state == EvadeState.Wait)))
             self.pub_state.publish(String(data=self.state.name))
+            # Notfall: control_lane_node uebernimmt v/omega 1:1, PID wird umgangen
+            self.pub_emergency_active.publish(Bool(data=emergency_active))
+            emergency_cmd = Twist2DStamped()
+            if emergency_active:
+                emergency_cmd.v     = self.emergency_v
+                emergency_cmd.omega = self.emergency_omega
+            self.pub_emergency_cmd.publish(emergency_cmd)
 
             rospy.loginfo_throttle(2.0,
                 f"[Evade] {self.state.name}  "

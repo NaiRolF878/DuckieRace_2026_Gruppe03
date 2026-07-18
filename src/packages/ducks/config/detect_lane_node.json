@@ -78,7 +78,6 @@
                 "mid_y_max":            {"default": 0.70, "min": 0.0, "max": 1.0},
                 "near_y_min":           {"default": 0.70, "min": 0.0, "max": 1.0},
                 "near_y_max":           {"default": 0.95, "min": 0.0, "max": 1.0},
-                "pixel_threshold_frac": {"default": 0.05, "min": 0.0, "max": 1.0},
                 "white_line_margin_px": {"default": 20, "min": 0, "max": 100}
             }
         }

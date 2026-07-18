@@ -89,7 +89,7 @@ class DetectLaneNode:
         self.duck_min_h           = 12
         self.debug_img_duck       = blank_color
         self.debug_img_duck_original = blank_color
-        self.duck_zone_mask       = blank
+        self.duck_projected       = []
 
         # Kalman-Filter für die Enten-x-Position (Glättung + Aussetzer-Überbrückung)
         self.duck_kf_process_var     = 0.01
@@ -121,10 +121,9 @@ class DetectLaneNode:
         self.zone_mid_y_max            = 0.70
         self.zone_near_y_min           = 0.70
         self.zone_near_y_max           = 0.95
-        self.zone_pixel_threshold_frac = 0.05
         self.zone_white_line_margin_px = 20
 
-        # Zustand von control_obstacle_node (Idle/Evade/Wait/Pass/Return) – nur fürs Debug-Overlay
+        # Zustand von control_obstacle_node (Idle/Emergency/Evade/Wait/Pass/Return) – nur fürs Debug-Overlay
         self.obstacle_state = "Idle"
 
         # Parameter aus JSON laden + Live-Update Callback registrieren
@@ -258,7 +257,6 @@ class DetectLaneNode:
         self.zone_mid_y_max            = gd("zones", "mid_y_max",            0.70)
         self.zone_near_y_min           = gd("zones", "near_y_min",           0.70)
         self.zone_near_y_max           = gd("zones", "near_y_max",           0.95)
-        self.zone_pixel_threshold_frac = gd("zones", "pixel_threshold_frac", 0.05)
         self.zone_white_line_margin_px = gd("zones", "white_line_margin_px", 20)
 
 
@@ -405,27 +403,6 @@ class DetectLaneNode:
             blobs.append((int(x), int(y), int(w), int(h)))
         return blobs
 
-    def _duck_zone_mask(self, projected, shape):
-        # Baut die Maske fuer die Zonen-Belegungspruefung (_process_zones) direkt
-        # aus den bereits reprojizierten Boden-Kontaktpunkten (projected) statt
-        # eine zweite, komplette Farbmaske auf dem BEV-Bild neu zu berechnen.
-        # Jeder Blob fuellt seine x-Spalte (bx_left..bx_right) vom Boden-
-        # kontaktpunkt (by) bis zum unteren Bildrand (= naeher am Bot). Die
-        # Flaeche HINTER dem Kontaktpunkt (weiter weg als die Ente) interessiert
-        # nicht - eine Spalte mit Ente irgendwo drin ist fuer die Ausweich-
-        # Entscheidung ohnehin blockiert. Vermeidet eine willkuerliche feste
-        # Markierungshoehe, deren Flaeche den pixel_threshold_frac oft knapp
-        # verfehlt hat.
-        mask = np.zeros(shape[:2], dtype=np.uint8)
-        H = shape[0]
-        for (bx_left, bx_right, by, _box) in projected:
-            x0 = int(max(0, min(bx_left, bx_right)))
-            x1 = int(min(shape[1], max(bx_left, bx_right)))
-            y0 = int(max(0, by))
-            if x1 > x0 and H > y0:
-                mask[y0:H, x0:x1] = 255
-        return mask
-
     def _duck_occupancy_from_bev(self, projected, width):
         # projected: Liste von (bx_left, bx_right, by, orig_box) – bereits ins
         # BEV projizierte Bodenkontakt-Kanten (siehe _process_ducks).
@@ -482,7 +459,7 @@ class DetectLaneNode:
                     projected.append((bx_left, bx_right, max(by_l, by_r), box))
 
             occ = self._duck_occupancy_from_bev(projected, bev_width)  # nur fuers Debug-Bild
-            self.duck_zone_mask = self._duck_zone_mask(projected, bev_bgr.shape)
+            self.duck_projected = projected
 
             raw_duck_x = -99.0
             if projected:
@@ -534,27 +511,37 @@ class DetectLaneNode:
     #  ZONEN-ERKENNUNG (Stufe 3) – drei Bereiche im Fahrkorridor
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _corridor_gap_profile(self, mask, x0, x1, y0, y1):
-        # Bins den Fahrkorridor (nah+mittel-Band) in GAP_BINS Spalten und markiert
-        # jede Spalte als belegt/frei – dieselbe Maske wie die Zonen (gelbe Linie
-        # zählt also mit als Hindernis, keine separate Farbfilterung).
+    def _corridor_gap_profile(self, projected, x0, x1, y1):
+        # Bins den Fahrkorridor (nah+mittel-Band) in GAP_BINS Spalten. Rein
+        # geometrisch anhand der bereits reprojizierten Enten-Bodenkontakte
+        # (bx_left, bx_right, by) - keine Maske, kein Flaechen-Threshold: eine
+        # Ente markiert ihre x-Spalte als belegt, wenn ihr Bodenkontaktpunkt
+        # auf/vor der Bandtiefe y1 liegt (siehe _process_zones).
         profile = np.zeros(self.GAP_BINS, dtype=np.float32)
         band_w = x1 - x0
-        if band_w <= 0 or y1 <= y0:
+        if band_w <= 0:
             return profile
-        band = mask[y0:y1, x0:x1]
-        for i in range(self.GAP_BINS):
-            bx0 = int(i / self.GAP_BINS * band_w)
-            bx1 = max(bx0 + 1, int((i + 1) / self.GAP_BINS * band_w))
-            col  = band[:, bx0:bx1]
-            area = max(1, col.shape[0] * col.shape[1])
-            profile[i] = 1.0 if (cv2.countNonZero(col) / area) > self.zone_pixel_threshold_frac else 0.0
+        for (bx_left, bx_right, by, _box) in projected:
+            if by > y1:
+                continue
+            left  = max(x0, min(bx_left, bx_right))
+            right = min(x1, max(bx_left, bx_right))
+            if right <= left:
+                continue
+            b0 = max(0, min(self.GAP_BINS - 1, int((left  - x0) / band_w * self.GAP_BINS)))
+            b1 = max(0, min(self.GAP_BINS - 1, int((right - x0) / band_w * self.GAP_BINS)))
+            if b1 < b0:
+                b0, b1 = b1, b0
+            profile[b0:b1 + 1] = 1.0
         return profile
 
-    def _process_zones(self, bev_bgr, mask):
-        # mask: self.duck_zone_mask aus _process_ducks – synthetische Maske aus
-        # den bereits reprojizierten Boden-Kontaktpunkten der Enten-Erkennung,
-        # keine eigene Farberkennung hier.
+    def _process_zones(self, bev_bgr, projected):
+        # projected: Liste (bx_left, bx_right, by, box) aus _process_ducks -
+        # bereits ins BEV reprojizierte Enten-Bodenkontakte. Belegung wird rein
+        # geometrisch geprueft (ueberlappt die Ente Korridor-x-Bereich UND
+        # liegt sie auf/vor der jeweiligen Zonentiefe?) - kein Flaechen-
+        # Threshold mehr, der bei schmalen Enten in breiten Zonen leicht
+        # unter der Erkennungsschwelle bleiben konnte.
         try:
             H, W = bev_bgr.shape[:2]
 
@@ -576,13 +563,16 @@ class DetectLaneNode:
                 ('fern',   self.zone_far_y_min,  self.zone_far_y_max),
             ]
 
+            def zone_occupied(y1_z):
+                for (bx_left, bx_right, by, _box) in projected:
+                    if bx_right >= x0 and bx_left <= x1 and by <= y1_z:
+                        return True
+                return False
+
             results = {}
             for name, y_min_f, y_max_f in zone_defs:
-                y0_z = int(y_min_f * H)
                 y1_z = int(y_max_f * H)
-                roi  = mask[y0_z:y1_z, x0:x1]
-                area = max(1, (y1_z - y0_z) * (x1 - x0))
-                results[name] = cv2.countNonZero(roi) / area > self.zone_pixel_threshold_frac
+                results[name] = zone_occupied(y1_z)
 
             near_occ, mid_occ, far_occ = (
                 results['nah'], results['mittel'], results['fern'])
@@ -598,9 +588,8 @@ class DetectLaneNode:
             # ── Korridor-Lückenprofil (nah+mittel-Band zusammen) ──────────────
             # Für control_obstacle_node: Ausweich-Offset aus der tatsächlich
             # freien Lücke statt aus einem festen Wert berechnen.
-            y0_gap = int(self.zone_mid_y_min * H)
             y1_gap = int(self.zone_near_y_max * H)
-            gap_profile = self._corridor_gap_profile(mask, x0, x1, y0_gap, y1_gap)
+            gap_profile = self._corridor_gap_profile(projected, x0, x1, y1_gap)
 
             # Rechten Rand fuer die Luecken-Suche zusaetzlich durch die live
             # erkannte weisse Linie begrenzen (Sicherheitsabstand
@@ -682,11 +671,11 @@ class DetectLaneNode:
             # keine Höhen-Verzerrung), Bodenkontaktpunkte werden ins BEV projiziert.
             self._process_ducks(cv_image, img, img.shape[1])
             # ── ZONEN: Belegungspruefung nutzt dieselben reprojizierten
-            # Boden-Kontaktpunkte (self.duck_zone_mask, von _process_ducks
-            # gesetzt) statt einer zweiten, separat auf dem BEV-Bild berechneten
-            # Farbmaske – vermeidet doppelte Farberkennung pro Frame und haelt
-            # Enten-Position und Zonen-Belegung konsistent zueinander.
-            self._process_zones(img, self.duck_zone_mask)  # overlay auf debug_img_duck
+            # Boden-Kontaktpunkte (self.duck_projected, von _process_ducks
+            # gesetzt) geometrisch statt einer Farbmaske mit Flaechen-
+            # Threshold – haelt Enten-Position und Zonen-Belegung konsistent
+            # zueinander und braucht keinen Schwellwert.
+            self._process_zones(img, self.duck_projected)  # overlay auf debug_img_duck
 
             # ── Schritt 3: CLAHE – lokaler Helligkeitsausgleich ───────────────
             lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)

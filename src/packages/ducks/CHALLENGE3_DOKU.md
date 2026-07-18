@@ -96,10 +96,11 @@ Diese Node ist die **einzige**, die den Fahrbefehl sendet. Sie berechnet aus dem
 **Priorität der Fahrbefehle** (von oben nach unten, erstes Zutreffende gewinnt):
 
 ```
-1. obstacle_stop = True   → v=0, omega=0          (WAIT-Zustand, Stufe 6)
-2. StopState.Stopping     → v=0, omega=0          (rote Haltelinie erkannt)
-3. return_omega ≠ 0       → v=PID, omega=return_omega  (Encoder-Rückkehr, Stufe 5)
-4. Normalbetrieb          → v=PID, omega=PID
+1. emergency_active = True → v/omega = emergency_cmd   (NOTFALL, Stufe 4a, umgeht PID)
+2. obstacle_stop = True     → v=0, omega=0              (WAIT-Zustand, Stufe 6)
+3. StopState.Stopping       → v=0, omega=0              (rote Haltelinie erkannt)
+4. return_omega ≠ 0         → v=PID, omega=return_omega (Encoder-Rückkehr, Stufe 5)
+5. Normalbetrieb            → v=PID, omega=PID
 ```
 
 **Subscriptions:**
@@ -109,9 +110,11 @@ Diese Node ist die **einzige**, die den Fahrbefehl sendet. Sie berechnet aus dem
 | `/tick/detect/lane` | detect_lane_node | Spurversatz → PID-Eingang |
 | `/tick/detect/stop_line` | detect_lane_node | Haltelinien-Automat |
 | `/tick/enable/lane` | switch_control_node | Node ein/aus |
-| `/tick/obstacle/error_offset` | control_obstacle_node | Ausweich-Offset (Stufe 4) |
+| `/tick/obstacle/error_offset` | control_obstacle_node | Ausweich-Offset (Stufe 4b) |
 | `/tick/obstacle/return_omega` | control_obstacle_node | Encoder-Rückkehr omega (Stufe 5) |
 | `/tick/obstacle/stop` | control_obstacle_node | Vollstopp-Signal (Stufe 6) |
+| `/tick/obstacle/emergency_active` | control_obstacle_node | Notfall aktiv? (Stufe 4a) |
+| `/tick/obstacle/emergency_cmd` | control_obstacle_node | v/omega-Vorgabe im Notfall, umgeht PID |
 
 **Der Ausweich-Offset** – das Kernprinzip des Ausweichens:
 
@@ -127,7 +130,7 @@ Der Offset verschiebt die wahrgenommene Spurmitte. Der PID-Regler bemerkt den k�
 
 ### `control_obstacle_node.py` – Der Stratege
 
-Enthält den **Zustandsautomaten** für das gesamte Ausweichmanöver. Sendet **keine Fahrbefehle direkt** – steuert ausschließlich über die drei Topics, die `control_lane_node` verarbeitet.
+Enthält den **Zustandsautomaten** für das gesamte Ausweichmanöver. Sendet **keine Fahrbefehle direkt** (außer im Notfall) – steuert über die Topics, die `control_lane_node` verarbeitet.
 
 **Publizierte Topics:**
 
@@ -137,6 +140,8 @@ Enthält den **Zustandsautomaten** für das gesamte Ausweichmanöver. Sendet **k
 | `/tick/obstacle/return_omega` | `Float64` | Rückkehr-Lenkung (0 = Normalbetrieb) |
 | `/tick/obstacle/stop` | `Bool` | True nur im WAIT-Zustand |
 | `/tick/obstacle/done` | `Bool` | True wenn Manöver abgeschlossen |
+| `/tick/obstacle/emergency_active` | `Bool` | True nur im EMERGENCY-Zustand |
+| `/tick/obstacle/emergency_cmd` | `Twist2DStamped` | v/omega-Vorgabe im Notfall (Wiggle + feste Drehrate) |
 | `/tick/obstacle/state` | `String` | Aktueller Zustand als Klartext (`Idle`/`Evade`/`Wait`/`Pass`/`Return`) – für Debug-Overlays in detect_lane_node und camera_dashboard_node |
 
 ---
@@ -153,47 +158,73 @@ Entscheidet, ob `control_obstacle_node` aktiv ist. Publisht `enable/lane` (immer
 
 In `control_obstacle_node.py`, Klasse `EvadeState`, Methode `_step_state_machine()`.
 
+Die drei Zonen lösen bewusst **unterschiedliche** Reaktionen aus (nicht mehr
+alle drei gleich):
+- **fern:** nur Beobachtung, kein Zustandswechsel. Erkennung auf Distanz ist
+  weniger zuverlässig, und da der Korridor der Bot-Breite entspricht, gäbe es
+  ohnehin kein "sanftes" Teil-Ausweichen – nur dieselbe Reaktion wie mittel,
+  bloß früher auf unsichereren Daten ausgelöst.
+- **mittel → EVADE:** normales Ausweichen, PID-Offset.
+- **nah → EMERGENCY:** Notfall, umgeht die PID komplett (Vorbild: andere
+  Gruppe, deren nächste Zone löst ebenfalls einen Sofort-Nothalt aus).
+
 ```
-                                    ┌──────────────────────────────────────────────────────┐
-                                    │                                                      │
-                                    ▼                                                      │ neue Ente
-                             ┌─────────────┐                                               │
-               ┌────────────►│    IDLE     │                                               │
-               │             │ offset = 0  │                                               │
-               │             └──────┬──────┘                                               │
-               │                    │ Zone nah oder mittel belegt                          │
-               │                    ▼                                                      │
-               │             ┌─────────────┐  Timeout (evade_timeout_secs)  ┌───────────┐ │
-               │             │    EVADE    │──────────────────────────────►  │   WAIT    │ │
-               │             │ offset=±X   │                                 │  v = 0    │ │
-    fertig     │             │ Ticks akkum.│◄───────────────────────────────►│ stop=True │ │
-  (Kamera oder │             └──────┬──────┘  Zone wieder belegt             └─────┬─────┘ │
-   Encoder)    │                    │ Zone leer                                    │       │
-               │                    │              ┌──── Zone leer ────────────────┘       │
-               │                    ▼              │  oder wait_timeout                    │
-               │             ┌─────────────┐       │                                       │
-               │             │    PASS     │◄──────┘                                       │
-               │             │ offset=±X   │                                               │
-               │             │ Ticks akkum.│──── Zone wieder belegt ──► zurück zu EVADE    │
-               │             └──────┬──────┘                                               │
-               │                    │ nachlauf_secs abgelaufen                             │
-               │                    ▼                                                      │
-               │             ┌─────────────┐                                               │
-               └─────────────│   RETURN    │───────────────────────────────────────────────┘
-                             │ offset = 0  │
-                             │ ret_omega≠0 │
-                             │ Ticks --    │
-                             └─────────────┘
+              Zone nah          ┌──────────────────────────────────────────┐
+        ┌───────────────────►┌─────────────┐                              │
+        │                    │  EMERGENCY  │──NAH-Zone frei (free_stable)─┐│
+┌───────┴───┐  Zone mittel    │ v=Wiggle    │                             ││
+│   IDLE    │───────────────► │ ω=fest, PID │◄─── nah-Zone belegt ────┐   ││
+│ offset=0  │                 │  umgangen   │      (aus PASS/RETURN)  │   ││
+└───────────┘                 └─────────────┘                        │   ▼▼
+      ▲                                                               │ ┌──────┐
+      │ fertig (Kamera/                                               │ │ PASS │
+      │ Encoder/Timeout)                                              │ │offset│
+      │                                                               │ │=±X   │
+┌───────────┐  nachlauf_secs abgelaufen                                │ └──┬───┘
+│  RETURN   │◄───────────────────────────────────────────────────────┘    │
+│ offset=0  │                                            Zone mittel      │
+│ ret_ω≠0   │◄──────────── zurück zu EVADE ───────────────wieder belegt───┤
+└───────────┘                                                             │
+      ▲                                                                   │
+      │ evade_timeout_secs         Zone leer (free_stable)                │
+      │                    ┌──────────────────────────────────────────────┘
+┌───────────┐  Timeout    ▼
+│   EVADE   │────────────►┌──────────┐
+│ offset=±X │             │   WAIT   │
+│Ticks akkum│◄────────────│  v=0     │
+└───────────┘ Zone leer/   │stop=True │
+              wait_timeout └──────────┘
 ```
+
+(Kurz zusammengefasst: IDLE verzweigt je nach Zone zu EMERGENCY oder EVADE;
+beide führen über PASS zu RETURN zurück zu IDLE; EVADE kann bei Timeout über
+WAIT ebenfalls in PASS münden; aus PASS/RETURN heraus kann ein neues
+Hindernis wieder zurück in EMERGENCY oder EVADE springen – Details in der
+Zustandsbeschreibung unten.)
 
 ### Was in jedem Zustand passiert:
 
 #### IDLE – Normalbetrieb
 - `error_offset = 0` → kein Eingriff, Bot folgt der weißen Linie normal
 - Encoder-Akkumulator wird auf 0 zurückgesetzt
-- **Übergang → EVADE:** Zone **nah** oder **mittel** ist belegt
+- **Übergang → EMERGENCY:** Zone **nah** ist belegt
+- **Übergang → EVADE:** Zone **mittel** ist belegt (nah hat Vorrang, falls beides)
 
-#### EVADE – Ausweichen
+#### EMERGENCY – Notfall (nah-Zone)
+- PID wird komplett umgangen: `control_lane_node` übernimmt `emergency_cmd`
+  (v+omega) 1:1, solange `emergency_active=True`
+- `omega = ±emergency_omega_rad` (feste Drehrate, Vorzeichen von der
+  Richtungsberechnung wie bei EVADE, siehe unten – nur das Vorzeichen zählt,
+  nicht die Stärke)
+- `v` = Wiggle: kippt alle `wiggle_interval_secs` das Vorzeichen
+  (`wiggle_power`) – schnelles Vor-Zurück-Wackeln, überwindet die
+  Standreibung der Räder beim Drehen auf der Stelle
+- Encoder-Ticks werden akkumuliert (für spätere Rückkehr)
+- **Übergang → PASS:** NAH-Zone `free_stable_frames` Frames **hintereinander** leer
+- **Übergang → WAIT:** `emergency_timeout_secs` überschritten (Failsafe, falls
+  die nah-Zone nie stabil frei wird, z.B. dauerhafte Fehlerkennung)
+
+#### EVADE – Ausweichen (mittel-Zone)
 - `error_offset = ±locked_offset` → Bot weicht zur freien Seite aus
 - Die Ausweichrichtung wird beim Eintritt **einmalig eingefroren** (auch wenn die Ente sich danach bewegt)
 - Encoder-Ticks werden akkumuliert (für spätere Rückkehr)
@@ -212,15 +243,20 @@ In `control_obstacle_node.py`, Klasse `EvadeState`, Methode `_step_state_machine
 #### PASS – Nachlauf
 - `error_offset = locked_offset` (Offset bleibt aktiv, damit Bot sicher vorbei fährt)
 - Encoder-Ticks akkumulieren weiter
-- **Übergang → EVADE:** Ente taucht erneut auf
+- **Übergang → EMERGENCY:** nah-Zone belegt (Vorrang)
+- **Übergang → EVADE:** mittel-Zone belegt
 - **Übergang → RETURN:** `nachlauf_secs` abgelaufen
 
-#### RETURN – Encoder-Rückkehr (Stufe 5)
+#### RETURN – Encoder+Kamera-Rückkehr (Stufe 5)
 - `error_offset = 0` (kein künstlicher Spurversatz mehr)
 - `return_omega ≠ 0` publiziert → Bot dreht in **entgegengesetzter** Richtung zu EVADE
 - `return_ticks_remaining` wird mit jedem Encoder-Delta dekrementiert
-- **Übergang → IDLE:** Kamera sieht weiße Linie (primär) **oder** Ticks aufgebraucht (Backup)
-- **Übergang → EVADE:** neue Ente erkannt (Manöver neu starten)
+- **Übergang → IDLE:** Kamera sieht weiße Linie (primär) **oder** Ticks
+  aufgebraucht (Backup) **oder** `return_timeout_secs` überschritten
+  (Failsafe, falls weder Kamera noch Encoder je "fertig" melden – verhindert
+  endloses Drehen)
+- **Übergang → EMERGENCY:** nah-Zone belegt (Vorrang)
+- **Übergang → EVADE:** mittel-Zone belegt (neue Ente erkannt)
 
 ### Ausweichrichtung – wie wird sie bestimmt?
 
@@ -298,13 +334,17 @@ Ausweichrichtung (siehe Abschnitt 5) könnte jenseits der gelben Linie in der
 Gegenspur liegen, der Bot würde also genau dorthin lenken.
 
 **Wie eine Zone als belegt gilt:**
-- Keine eigene Farberkennung hier – nutzt `self.duck_zone_mask`, eine aus den
-  bereits im Originalbild erkannten und ins BEV reprojizierten Enten-
-  Bodenkontaktpunkten synthetisierte Maske (siehe Abschnitt zur Enten-
-  Erkennung). Vermeidet eine zweite, komplette `obstacle_color`-Farbmaske auf
-  dem BEV-Bild pro Frame.
-- Zähle Maskenpixel innerhalb der Zone
-- `belegt = Maskenpixel / Zonenfläche > pixel_threshold_frac` (Standard: 5%)
+- Keine eigene Farberkennung und keine Maske/Flächen-Threshold hier – rein
+  geometrische Prüfung auf den bereits im Originalbild erkannten und ins BEV
+  reprojizierten Enten-Bodenkontaktpunkten (`bx_left`, `bx_right`, `by`; siehe
+  Abschnitt zur Enten-Erkennung):
+  ```
+  belegt = (bx_right >= x0 UND bx_left <= x1)   # X-Überlappung mit Korridor
+           UND by <= y1_zone                     # Ente auf/vor dieser Zonentiefe
+  ```
+- Kein Schwellwert nötig: eine schmale Ente in einer breiten Zone wird genauso
+  zuverlässig erkannt wie eine breite (die frühere Flächen-Prozent-Prüfung
+  konnte das bei schmalen Enten knapp verfehlen)
 
 **Erkennt gezielt Gelb/Grün:** gelbe Enten, grüne Bonus-Enten, gelbe Mittellinie –
 unbunte Reflexionen/Klebereste auf der Fahrbahn fallen automatisch raus, da sie
@@ -373,7 +413,6 @@ Alle Parameter sind in den JSON-Dateien unter `config/` und können **live** üb
 | `zones` | `far_y_min/max` | 0.20 / 0.45 | FERN-Zone (oben im BEV) |
 | `zones` | `mid_y_min/max` | 0.45 / 0.70 | MITTEL-Zone |
 | `zones` | `near_y_min/max` | 0.70 / 0.95 | NAH-Zone (direkt vor Bot) |
-| `zones` | `pixel_threshold_frac` | 0.05 | 5% Maskenpixel (aus reprojizierten Enten-Punkten) → Zone gilt als belegt |
 | `zones` | `white_line_margin_px` | 20 px | Sicherheitsabstand: rechter Korridorrand für die Lücken-Suche zusätzlich durch die live erkannte weiße Linie begrenzt |
 
 ### `config/control_obstacle_node.json`
@@ -390,6 +429,11 @@ Alle Parameter sind in den JSON-Dateien unter `config/` und können **live** üb
 | `return_stable_frames` | 5 | Frames die Versatz < threshold sein muss (Entprellung) |
 | `return_omega` | 0.5 rad/s | Drehrate bei der Encoder-Rückkehr |
 | `wait_timeout_secs` | 3.0 s | Zeit im WAIT bis erzwungenes PASS |
+| `return_timeout_secs` | 5.0 s | Hartes Zeitlimit für RETURN – Failsafe gegen endloses Drehen, falls weder Kamera noch Encoder je "fertig" melden |
+| `emergency_omega_rad` | 1.6 rad/s | Feste Drehrate im NOTFALL (nah-Zone), umgeht die PID |
+| `emergency_timeout_secs` | 5.0 s | Hartes Zeitlimit für NOTFALL, falls die nah-Zone nie stabil frei wird (Failsafe → WAIT) |
+| `wiggle_interval_secs` | 0.06 s | Wie oft `v` im NOTFALL das Vorzeichen wechselt (Wiggle gegen Standreibung beim Drehen auf der Stelle) |
+| `wiggle_power` | 0.07 | Stärke des Wiggle-Ausschlags |
 
 ### `config/control_lane_node.json`
 
@@ -520,14 +564,14 @@ rostopic echo /tick/obstacle/state
 
 | Problem | Ursache | Lösung |
 |---------|---------|--------|
-| Bot weicht aus obwohl keine Ente da | `pixel_threshold_frac` zu niedrig oder Korridor zu breit | Threshold erhöhen (z.B. 0.08–0.12); `corridor_width_px` verkleinern (entspricht Bot-Breite, nicht die ganze Spur) |
+| Bot weicht aus obwohl keine Ente da | Korridor zu breit, oder Fehlerkennung im Originalbild | `corridor_width_px` verkleinern (entspricht Bot-Breite, nicht die ganze Spur); `/tick/debug/duck_original` prüfen, ob dort fälschlich etwas erkannt wird |
 | Bot fährt beim Ausweichen über die weiße/gelbe Linie | Korridor reicht über die eigene Spur hinaus | `corridor_width_px` verkleinern (Korridor ist symmetrisch um die Bildmitte); `white_line_margin_px` erhöhen, damit der rechte Rand der Lücken-Suche mehr Abstand zur weißen Linie hält |
 | EVADE startet und endet sofort wieder (flackert) | Farberkennung liefert einzelne unstabile Frames, kein Entprellen | `free_stable_frames` erhöhen (Standard 5) |
-| Ente wird nicht erkannt | `pixel_threshold_frac` zu hoch, oder `obstacle_color`-Bereiche zu eng | Senken/erweitern; `/tick/debug/duck_original` ansehen: wird die Box im Originalbild überhaupt erkannt? |
+| Ente wird nicht erkannt | `obstacle_color`-Bereiche zu eng, oder Mindestgrößen (`duck.min_area/min_w/min_h`) zu hoch | Senken/erweitern; `/tick/debug/duck_original` ansehen: wird die Box im Originalbild überhaupt erkannt? |
 | Ente "verschwindet" schnell, obwohl noch sichtbar | (Altes Problem der reinen BEV-Erkennung, durch Originalbild-Erkennung + Homographie-Projektion behoben) | Falls trotzdem noch auffällig: `duck.kf_max_missed_frames` erhöhen |
 | Rückkehr endet zu früh | `return_threshold` zu hoch oder `return_stable_frames` zu niedrig | Threshold senken (z.B. 0.15); Frames erhöhen (z.B. 8) |
 | Rückkehr dreht zu weit | `return_omega` zu hoch | Senken (z.B. 0.3 rad/s) |
-| Bot hält dauerhaft an (WAIT) | Falsch-Positiv-Erkennung | `wait_timeout_secs` kürzer setzen; `pixel_threshold_frac` erhöhen |
+| Bot hält dauerhaft an (WAIT) | Falsch-Positiv-Erkennung | `wait_timeout_secs` kürzer setzen; `/tick/debug/duck_original` auf Fehlerkennungen prüfen |
 | Nachlauf zu lang/kurz | `nachlauf_secs` nicht zur Geschwindigkeit passend | Anpassen nach tatsächlicher Fahrgeschwindigkeit |
 | Weiße Linie nicht gefunden | HSV-Parameter `white.vl/vh` falsch kalibriert | Via configuration_node live anpassen; `/tick/debug/lane_white` ansehen |
 | Bot folgt Linie mit falschem Abstand | `white_follow.offset_px` falsch | Anpassen (150 px = Standard; größer = näher an weiße Linie) |
