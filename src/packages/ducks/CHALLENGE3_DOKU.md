@@ -85,7 +85,7 @@ Nimmt das Kamerabild und macht daraus Steuersignale:
 | `/tick/detect/stop_line` | `Bool` | Rote Linie sichtbar? |
 | `/tick/detect/duck` | `Float64` | Kalman-gefilterte x-Position der nächsten Ente ([-1,+1]; -99 = kein Blob) |
 | `/tick/detect/zones` | `Float32MultiArray` | `[nah, mittel, fern]` je 0.0 oder 1.0 |
-| `/tick/detect/corridor_occupancy` | `Float32MultiArray` | Lückenprofil (20 Spalten) über den Fahrkorridor, nah+mittel-Band, gleiche Maske wie Zonen (gelbe Linie zählt als belegt) |
+| `/tick/detect/corridor_occupancy` | `Float32MultiArray` | `[links_frei, rechts_frei]` - exakter freier Pixel-Anteil der Korridorbreite (kein Bin-Raster), nah+mittel-Band, gleiche Maske wie Zonen (gelbe Linie zählt als belegt) |
 
 ---
 
@@ -260,9 +260,10 @@ Zustandsbeschreibung unten.)
 
 ### Ausweichrichtung – wie wird sie bestimmt?
 
-Primär aus dem **Korridor-Lückenprofil** (`/detect/corridor_occupancy`, 20 Spalten
-über den Fahrkorridor, nah+mittel-Band, rechter Rand zusätzlich durch die live
-erkannte weiße Linie begrenzt via `white_line_margin_px`). Der Korridor
+Primär aus dem **Korridor-Lückenabstand** (`/detect/corridor_occupancy`,
+2 Werte `[links_frei, rechts_frei]` als exakter Pixel-Anteil der Korridorbreite,
+nah+mittel-Band, rechter Rand zusätzlich durch die live erkannte weiße Linie
+begrenzt via `white_line_margin_px`). Der Korridor
 entspricht der Bot-Breite – ein Hindernis irgendwo darin heißt grundsätzlich
 "so nicht durchfahrbar", außer die freie Seite ist (fast) so breit wie der
 ganze Korridor. `_find_best_gap()` sucht deshalb NICHT die breiteste Lücke
@@ -458,7 +459,7 @@ detect_lane_node
                /tick/detect/stop_line       Bool              Rote Linie sichtbar
                /tick/detect/duck            Float64           Kalman-gefilterte Enten-x ([-1,+1]; -99 = kein Blob)
                /tick/detect/zones           Float32MultiArray [nah, mittel, fern] ∈ {0,1}
-               /tick/detect/corridor_occupancy Float32MultiArray Lückenprofil (20 Spalten, für Ausweich-Offset)
+               /tick/detect/corridor_occupancy Float32MultiArray [links_frei, rechts_frei] (exakter Anteil, für Ausweich-Offset)
                /tick/debug/original         CompressedImage   Rohbild
                /tick/debug/annotated        CompressedImage   Bild mit Linien eingezeichnet
                /tick/debug/bird_view        CompressedImage   BEV ohne Annotation

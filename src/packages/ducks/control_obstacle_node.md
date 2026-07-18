@@ -86,12 +86,15 @@ Dokumentation der Parameter in `control_obstacle_node.json` für die Node `contr
 
 ## Ausweichstrategie (Kurzfassung)
 
-1. `control_obstacle_node` sucht in `/detect/corridor_occupancy` (Lückenprofil
-   über den Fahrkorridor, von `detect_lane_node` berechnet) die breiteste freie
-   Lücke.
-2. Der Offset zeigt zur Mitte dieser Lücke; die Stärke skaliert zwischen
-   `evade_offset_min` und `evade_offset`, je nachdem wie weit die Lücke von der
-   Korridormitte entfernt liegt.
+1. `control_obstacle_node` liest aus `/detect/corridor_occupancy` (`[links_frei,
+   rechts_frei]`, exakter Pixel-Anteil der Korridorbreite, von
+   `detect_lane_node` berechnet) den freien Abstand vom linken bzw. rechten
+   Korridorrand bis zum nächstgelegenen Hindernis und wählt die Seite mit mehr
+   Abstand (nicht die breiteste Lücke ZWISCHEN zwei Hindernissen – kein
+   Durchquetschen).
+2. Der Offset zeigt zur Mitte dieser freien Seite; die Stärke skaliert zwischen
+   `evade_offset_min` und `evade_offset`, je nachdem wie breit diese freie Seite
+   relativ zur Korridorbreite ist.
 3. Ist kein Profil vorhanden oder der Korridor komplett belegt (keine Lücke
    gefunden), fällt die Node auf die einfachere `duck_x`-Heuristik zurück
    (Objekt rechts → links ausweichen, sonst rechts).

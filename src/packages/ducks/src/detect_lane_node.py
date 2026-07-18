@@ -53,7 +53,6 @@ class _Kalman1D:
 
 class DetectLaneNode:
     OCC_BINS = 40  # Auflösung des Enten-Belegungsprofils (x-Spalten)
-    GAP_BINS = 20  # Auflösung des Korridor-Lückenprofils (x-Spalten, nur Fahrkorridor)
     # Morphologie-Kernel ändern sich nie – einmal anlegen statt pro Frame neu.
     _MORPH_KERNEL_3 = np.ones((3, 3), np.uint8)
     _MORPH_KERNEL_5 = np.ones((5, 5), np.uint8)
@@ -152,9 +151,10 @@ class DetectLaneNode:
         # Zonen-Belegung [nah, mittel, fern] ∈ {0.0, 1.0}
         self.pub_zones = rospy.Publisher(
             f'/{self._vehicle_name}/detect/zones', Float32MultiArray, queue_size=1)
-        # Korridor-Lückenprofil (GAP_BINS Spalten, nur Fahrkorridor, nah+mittel-Band,
-        # gleiche Maske wie Zonen → gelbe Linie zählt als belegt). Für control_obstacle_node,
-        # um den Ausweich-Offset aus der tatsächlich freien Lücke zu berechnen.
+        # Korridor-Lückenabstand [links_frei, rechts_frei] als exakter Anteil
+        # der Korridorbreite (nur Fahrkorridor, nah+mittel-Band). Für
+        # control_obstacle_node, um den Ausweich-Offset aus der tatsächlich
+        # freien Lücke zu berechnen.
         self.pub_corridor_occupancy = rospy.Publisher(
             f'/{self._vehicle_name}/detect/corridor_occupancy', Float32MultiArray, queue_size=1)
 
@@ -511,29 +511,50 @@ class DetectLaneNode:
     #  ZONEN-ERKENNUNG (Stufe 3) – drei Bereiche im Fahrkorridor
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _corridor_gap_profile(self, projected, x0, x1, y1):
-        # Bins den Fahrkorridor (nah+mittel-Band) in GAP_BINS Spalten. Rein
-        # geometrisch anhand der bereits reprojizierten Enten-Bodenkontakte
-        # (bx_left, bx_right, by) - keine Maske, kein Flaechen-Threshold: eine
-        # Ente markiert ihre x-Spalte als belegt, wenn ihr Bodenkontaktpunkt
-        # auf/vor der Bandtiefe y1 liegt (siehe _process_zones).
-        profile = np.zeros(self.GAP_BINS, dtype=np.float32)
-        band_w = x1 - x0
+    def _corridor_gap_spacing(self, projected, x0, x1, y1):
+        # Exakter Pixel-Abstand vom linken/rechten Korridorrand zum
+        # naechstgelegenen Hindernis - rein geometrisch anhand der bereits
+        # reprojizierten Enten-Bodenkontakte (bx_left, bx_right, by), keine
+        # Maske, kein Flaechen-Threshold und kein quantisiertes Bin-Array
+        # mehr: eine Ente verkleinert den freien Abstand auf ihrer Seite genau
+        # um ihre tatsaechliche Breite, wenn ihr Bodenkontaktpunkt auf/vor der
+        # Bandtiefe y1 liegt (siehe _process_zones).
+        #
+        # Der rechte Rand wird zusaetzlich durch die live erkannte weisse
+        # Linie begrenzt (Sicherheitsabstand zone_white_line_margin_px) - der
+        # feste Korridor-Rand x1 folgt der weissen Linie bewusst nicht (siehe
+        # _process_zones), kann also in Kurven naeher an sie heranreichen als
+        # kalibriert. Jenseits dieser Grenze zaehlt der Korridor als "nicht
+        # nutzbar", damit hier nie ueber die weisse Linie hinaus ausgewichen wird.
+        #
+        # Rueckgabe: (left_frac, right_frac, nearest_left_px, nearest_right_px,
+        # eff_x1) - die Fracs in [0,1] relativ zur (ggf. weiss-linien-
+        # begrenzten) Korridorbreite, die Pixelwerte fuers Debug-Overlay.
+        eff_x1 = x1
+        if self.last_white_position is not None:
+            safe_right_x = self.last_white_position - self.zone_white_line_margin_px
+            eff_x1 = max(x0, min(x1, safe_right_x))
+
+        band_w = eff_x1 - x0
         if band_w <= 0:
-            return profile
+            return 0.0, 0.0, x0, x0, eff_x1
+
+        nearest_left  = eff_x1   # noch kein Hindernis -> ganzer Korridor frei
+        nearest_right = x0
         for (bx_left, bx_right, by, _box) in projected:
             if by > y1:
                 continue
             left  = max(x0, min(bx_left, bx_right))
-            right = min(x1, max(bx_left, bx_right))
+            right = min(eff_x1, max(bx_left, bx_right))
             if right <= left:
                 continue
-            b0 = max(0, min(self.GAP_BINS - 1, int((left  - x0) / band_w * self.GAP_BINS)))
-            b1 = max(0, min(self.GAP_BINS - 1, int((right - x0) / band_w * self.GAP_BINS)))
-            if b1 < b0:
-                b0, b1 = b1, b0
-            profile[b0:b1 + 1] = 1.0
-        return profile
+            nearest_left  = min(nearest_left, left)
+            nearest_right = max(nearest_right, right)
+
+        left_space_px  = max(0.0, nearest_left - x0)
+        right_space_px = max(0.0, eff_x1 - nearest_right)
+        return (left_space_px / band_w, right_space_px / band_w,
+                nearest_left, nearest_right, eff_x1)
 
     def _process_zones(self, bev_bgr, projected):
         # projected: Liste (bx_left, bx_right, by, box) aus _process_ducks -
@@ -585,26 +606,17 @@ class DetectLaneNode:
                 f"mittel={'X' if mid_occ else 'O'}  "
                 f"fern={'X' if far_occ else 'O'}")
 
-            # ── Korridor-Lückenprofil (nah+mittel-Band zusammen) ──────────────
+            # ── Korridor-Lückenabstand (nah+mittel-Band zusammen) ─────────────
             # Für control_obstacle_node: Ausweich-Offset aus der tatsächlich
-            # freien Lücke statt aus einem festen Wert berechnen.
+            # freien Lücke statt aus einem festen Wert berechnen. Weisse-Linie-
+            # Begrenzung des rechten Rands passiert bereits innerhalb von
+            # _corridor_gap_spacing().
             y1_gap = int(self.zone_near_y_max * H)
-            gap_profile = self._corridor_gap_profile(projected, x0, x1, y1_gap)
+            (left_frac, right_frac, nearest_left, nearest_right,
+             eff_x1) = self._corridor_gap_spacing(projected, x0, x1, y1_gap)
 
-            # Rechten Rand fuer die Luecken-Suche zusaetzlich durch die live
-            # erkannte weisse Linie begrenzen (Sicherheitsabstand
-            # white_line_margin_px) - der feste Korridor-Rand x1 folgt der
-            # weissen Linie bewusst nicht (siehe oben), kann also in Kurven
-            # naeher an sie heranreichen als kalibriert. Bins jenseits dieser
-            # Grenze werden als belegt markiert, damit control_obstacle_node
-            # nie ueber die weisse Linie hinaus ausweicht.
-            if self.last_white_position is not None:
-                safe_right_x = self.last_white_position - self.zone_white_line_margin_px
-                if safe_right_x < x1:
-                    safe_bin = int(max(0, (safe_right_x - x0) / max(1, x1 - x0) * self.GAP_BINS))
-                    gap_profile[safe_bin:] = 1.0
-
-            self.pub_corridor_occupancy.publish(Float32MultiArray(data=gap_profile.tolist()))
+            self.pub_corridor_occupancy.publish(
+                Float32MultiArray(data=[left_frac, right_frac]))
 
             # Zonen als halbtransparente Rechtecke auf duck_bev zeichnen – alle drei
             # Füllungen in EINEM Overlay/Blend statt einer Kopie pro Zone.
@@ -624,14 +636,18 @@ class DetectLaneNode:
                 cv2.putText(dbg, name, (x0 + 4, y0_z + 18),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
 
-            # Lückenprofil als Balken am unteren Korridorrand (für Kalibrierung)
+            # Lückenabstand als Balken am unteren Korridorrand (für Kalibrierung):
+            # frei (gruen) links vom naechsten Hindernis, belegt (rot) dazwischen,
+            # frei (gruen) rechts davon, und - falls die weisse Linie den
+            # nutzbaren Rand vor x1 abschneidet - rot bis zum echten Korridorrand.
             bar_h = 10
-            for i in range(self.GAP_BINS):
-                bx0 = x0 + int(i / self.GAP_BINS * (x1 - x0))
-                bx1 = x0 + int((i + 1) / self.GAP_BINS * (x1 - x0))
-                color = (0, 0, 255) if gap_profile[i] > 0.5 else (0, 200, 0)
-                cv2.rectangle(dbg, (bx0, y1_gap - bar_h), (bx1, y1_gap), color, -1)
-            cv2.putText(dbg, "Luecke", (x0 + 4, y1_gap - bar_h - 4),
+            bar_y = y1_gap
+            cv2.rectangle(dbg, (x0, bar_y - bar_h), (int(nearest_left), bar_y), (0, 200, 0), -1)
+            cv2.rectangle(dbg, (int(nearest_left), bar_y - bar_h), (int(nearest_right), bar_y), (0, 0, 255), -1)
+            cv2.rectangle(dbg, (int(nearest_right), bar_y - bar_h), (int(eff_x1), bar_y), (0, 200, 0), -1)
+            if eff_x1 < x1:
+                cv2.rectangle(dbg, (int(eff_x1), bar_y - bar_h), (x1, bar_y), (0, 0, 255), -1)
+            cv2.putText(dbg, "Luecke", (x0 + 4, bar_y - bar_h - 4),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
 
             self.debug_img_duck = dbg

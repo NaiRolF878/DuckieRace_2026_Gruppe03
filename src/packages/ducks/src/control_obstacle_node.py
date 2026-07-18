@@ -231,30 +231,27 @@ class ControlObstacleNode:
         """
         Sucht NICHT die breiteste Luecke zwischen zwei Hindernissen, sondern
         vergleicht den freien Abstand vom linken bzw. rechten Korridorrand bis
-        zum naechstgelegenen belegten Bin - und weicht zur Seite mit mehr
-        Abstand aus. Verhindert ein Durchquetschen durch eine schmale Luecke
-        zwischen zwei Hindernissen; der Bot faehrt stattdessen immer außen an
-        allen Hindernissen einer Seite vorbei.
+        zum naechstgelegenen Hindernis - und weicht zur Seite mit mehr Abstand
+        aus. Verhindert ein Durchquetschen durch eine schmale Luecke zwischen
+        zwei Hindernissen; der Bot faehrt stattdessen immer außen an allen
+        Hindernissen einer Seite vorbei.
+        occ: [left_frac, right_frac] - exakter freier Anteil (kein Bin-Raster
+        mehr) der Korridorbreite von detect_lane_node (_corridor_gap_spacing).
         Rückgabe: (center_frac, width_frac) in [0,1] über den Korridor,
         oder None wenn der komplette Korridor belegt ist.
         """
-        n = len(occ)
-        if n == 0:
+        if len(occ) < 2:
             return None
-        occupied = [i for i in range(n) if occ[i] >= 0.5]
-        if not occupied:
-            return (0.5, 1.0)
-        if len(occupied) == n:
+        left_frac, right_frac = occ[0], occ[1]
+        if left_frac <= 0.0 and right_frac <= 0.0:
             return None
-        left_space  = min(occupied)          # freie Bins vor dem ersten Hindernis
-        right_space = n - 1 - max(occupied)  # freie Bins nach dem letzten Hindernis
-        if left_space >= right_space:
-            width      = left_space
-            center_bin = left_space / 2.0
+        if left_frac >= right_frac:
+            width_frac  = left_frac
+            center_frac = left_frac / 2.0
         else:
-            width      = right_space
-            center_bin = max(occupied) + 1 + right_space / 2.0
-        return (center_bin / n, width / n)
+            width_frac  = right_frac
+            center_frac = 1.0 - right_frac / 2.0
+        return (center_frac, width_frac)
 
     def _offset_from_gap(self, gap):
         """
