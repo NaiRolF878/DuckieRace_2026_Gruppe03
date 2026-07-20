@@ -8,7 +8,8 @@
   "delivery_start_node": "A",
   "path_planning": {
     "mode": "optimal",
-    "fallback": "nearest_neighbor"
+    "fallback": "nearest_neighbor",
+    "gate_order": []
   },
   "debug_layout": {
     "node_positions": {

@@ -9,6 +9,15 @@
 # Kantengewicht 1) berechnet Kuerzeste-Wege-Distanzen zwischen dem
 # delivery_start_node und allen Tor-Positionen (aus gate_map).
 #
+# Die REIHENFOLGE, in der die Tore abgeliefert werden, wird NUR dann selbst
+# optimiert (Permutation/Greedy, siehe _plan_optimal/_plan_nearest_neighbor),
+# wenn keine externe Vorgabe existiert. Ist eine vorgegebene Reihenfolge
+# gesetzt (config path_planning.gate_order, live ueberschreibbar per
+# /navigation/gate_order vom debug_graph_node-Dashboard), wird sie
+# uebernommen statt neu berechnet - Dijkstra bestimmt dann nur noch den
+# kuerzesten WEG zwischen den vorgegebenen Stationen, nicht mehr deren
+# Reihenfolge (siehe _plan_fixed_order).
+#
 # Ein Tor gilt als "Position" wie folgt: gate_map[g] = {"node": N, "tag": T}
 # bedeutet, das Tor liegt auf der Kante die man von N aus ueber Tag T befaehrt.
 # Um das Tor abzuliefern, muss der Bot also (a) nach N navigieren und (b) dort
@@ -43,6 +52,15 @@ class PathPlannerNode:
 
         self._load_map()
 
+        # Vorgegebene Tor-Reihenfolge (leer = keine Vorgabe, Reihenfolge wird
+        # selbst optimiert). Aus der Config vorbelegt, per Dashboard live
+        # ueberschreibbar (cbGateOrder).
+        self.fixed_gate_order = list(self.path_planning.get("gate_order", []))
+        # Tore aus fixed_gate_order, die noch nicht gefunden wurden - vom
+        # Dashboard angezeigt, damit klar ist, WORAUF gewartet wird, statt
+        # dass "Delivery starten" wirkungslos bleibt (siehe _plan_fixed_order).
+        self.missing_gates = []
+
         self.gate_map          = {}
         self.current_node      = None
         self.current_edge      = None
@@ -72,6 +90,8 @@ class PathPlannerNode:
                          Bool, self.cbStartDelivery, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/navigation/phase',
                          String, self.cbPhase, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/navigation/gate_order',
+                         String, self.cbGateOrder, queue_size=1)
 
         self.pub_next_direction = rospy.Publisher(
             f'/{self._vehicle_name}/navigation/next_direction', String, queue_size=1)
@@ -124,6 +144,19 @@ class PathPlannerNode:
     def cbPhase(self, msg):
         if not self.delivery_active:
             self.phase = msg.data
+
+    def cbGateOrder(self, msg):
+        try:
+            new_order = json.loads(msg.data) if msg.data else []
+        except (ValueError, json.JSONDecodeError):
+            rospy.logwarn("[path_planner] Ungueltiges gate_order-JSON")
+            return
+        if new_order != self.fixed_gate_order:
+            self.fixed_gate_order = new_order
+            # Neuplanung erzwingen, auch wenn sich die Menge der gefundenen
+            # Tore seit der letzten Planung nicht geaendert hat.
+            self._last_planned_keys = None
+            rospy.loginfo(f"[path_planner] Neue vorgegebene Reihenfolge: {new_order}")
 
     # ── Dijkstra (nur heapq/collections/itertools) ──────────────────────────────
 
@@ -210,7 +243,29 @@ class PathPlannerNode:
             _, _, pos = self._gate_entry_and_exit(best_g)
         return order
 
+    def _plan_fixed_order(self, gate_ids):
+        # Reihenfolge wird extern vorgegeben (Config gate_order bzw. live
+        # per /navigation/gate_order vom Dashboard), NICHT mehr selbst
+        # optimiert. Solange nicht ALLE vorgegebenen Tore tatsaechlich
+        # gefunden wurden, wird bewusst NOCH KEINE Route geplant (leere
+        # Liste) - der Bot soll erst losfahren, wenn die komplette Vorgabe
+        # erfuellbar ist, statt mit einer unvollstaendigen/umsortierten Route
+        # zu starten. run() versucht es bei jedem neu gefundenen Tor erneut
+        # (siehe current_keys-Vergleich).
+        self.missing_gates = [g for g in self.fixed_gate_order if g not in gate_ids]
+        if self.missing_gates:
+            rospy.logwarn_throttle(5.0,
+                f"[path_planner] Warte auf Tor(e) {self.missing_gates} aus der "
+                f"vorgegebenen Reihenfolge - noch nicht gefunden, Route wird "
+                f"noch nicht geplant")
+            return []
+        extra = [g for g in gate_ids if g not in self.fixed_gate_order]
+        return list(self.fixed_gate_order) + extra
+
     def _compute_order(self, start_node, gate_ids):
+        self.missing_gates = []
+        if self.fixed_gate_order:
+            return self._plan_fixed_order(gate_ids)
         mode = self.path_planning.get("mode", "nearest_neighbor")
         if mode == "optimal" and len(gate_ids) > 10:
             fallback = self.path_planning.get("fallback", "nearest_neighbor")
@@ -275,6 +330,7 @@ class PathPlannerNode:
                 "done": self.delivered,
                 "remaining": self.remaining,
                 "planned_order": self.planned_order,
+                "missing_gates": self.missing_gates,
             })))
             rate.sleep()
 

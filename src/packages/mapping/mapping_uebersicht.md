@@ -28,7 +28,10 @@ Graph-Logik exakt, welche Richtung sie nehmen soll.
    die Kante gemappt, auf der sie liegen.
 2. **Planung (nicht bewertet).** Sobald Phase 1 fertig ist, berechnet eine
    Node im Hintergrund automatisch die kürzeste Reihenfolge, um alle
-   gefundenen Tore abzuliefern (Dijkstra + Rundreise-Optimierung). Das
+   gefundenen Tore abzuliefern (Dijkstra + Rundreise-Optimierung) – **außer**
+   im Debug-Fenster wurde eine vorgegebene Reihenfolge eingetragen (z.B. weil
+   die Challenge eine feste Abliefer-Reihenfolge vorschreibt), dann wird
+   diese übernommen und nur noch der kürzeste Weg dazwischen berechnet. Das
    Ergebnis wird im Debug-Fenster angezeigt, damit ein Mensch es vor dem
    Losfahren prüfen kann.
 3. **Delivery (bewertet: Zeit!).** Erst nach Klick auf "Delivery starten"
@@ -75,9 +78,10 @@ Richtungs-Logik.
 **`path_planner_node`** – Phase 2+3 (kürzeste Route)
 - Berechnet mit einer eigenen Dijkstra-Implementierung die Distanz zwischen
   dem Start und jedem gefundenen Tor.
-- Probiert (Brute-Force bei bis zu 10 Toren, sonst eine Greedy-Heuristik) alle
-  sinnvollen Reihenfolgen durch und wählt die mit der kürzesten
-  Gesamtstrecke.
+- Ist eine Reihenfolge vorgegeben (Dashboard-Eingabe / Config), wird sie
+  unverändert übernommen. Sonst probiert es (Brute-Force bei bis zu 10
+  Toren, sonst eine Greedy-Heuristik) alle sinnvollen Reihenfolgen durch und
+  wählt die mit der kürzesten Gesamtstrecke.
 - Fährt nach dem Startsignal die Route ab und erkennt automatisch, wenn ein
   Tor abgeliefert wurde (die dafür nötige Kante wurde tatsächlich befahren).
 

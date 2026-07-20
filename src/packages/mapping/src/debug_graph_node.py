@@ -80,6 +80,12 @@ class DebugGraphNode:
 
         self.pub_start_delivery = rospy.Publisher(
             f'/{self._vehicle_name}/navigation/start_delivery', Bool, queue_size=1)
+        # latch=True: path_planner_node soll die zuletzt eingetragene Vorgabe
+        # auch dann sehen, wenn es NACH diesem Publish-Aufruf startet/neu
+        # verbindet (Reihenfolge in der GUI eingetragen, bevor path_planner
+        # laeuft) - zusaetzlich zur Persistierung in mapping_node.json.
+        self.pub_gate_order = rospy.Publisher(
+            f'/{self._vehicle_name}/navigation/gate_order', String, queue_size=1, latch=True)
 
         self._build_gui()
         rospy.loginfo(f"[{node_name}] Bereit.")
@@ -92,6 +98,7 @@ class DebugGraphNode:
             config = json.load(f)
         self.graph               = config["graph"]
         self.delivery_start_node = config.get("delivery_start_node", config["mapping_start_node"])
+        self._gate_order_cfg     = config.get("path_planning", {}).get("gate_order", [])
         self._node_positions_cfg = config.get("debug_layout", {}).get("node_positions", {})
         # Wegpunkte je Knotenpaar (Schluessel "A-C", alphabetisch sortiert),
         # damit Kanten dem echten, gebogenen Streckenverlauf folgen statt
@@ -356,6 +363,19 @@ class DebugGraphNode:
 
         ttk.Separator(self.panel, orient="horizontal").pack(fill="x", padx=10, pady=10)
 
+        tk.Label(self.panel, text="Vorgegebene Tor-Reihenfolge (z.B. 5,9,3):",
+                 anchor="w", justify="left", wraplength=260).pack(fill="x", padx=10)
+        self.entry_gate_order = tk.Entry(self.panel)
+        self.entry_gate_order.insert(0, ",".join(self._gate_order_cfg))
+        self.entry_gate_order.pack(fill="x", padx=10, pady=(2, 4))
+        tk.Button(self.panel, text="Reihenfolge übernehmen",
+                  command=self._on_apply_gate_order).pack(fill="x", padx=10, pady=(0, 10))
+
+        ttk.Separator(self.panel, orient="horizontal").pack(fill="x", padx=10, pady=10)
+
+        self.lbl_ready = tk.Label(self.panel, anchor="w", justify="left", wraplength=260)
+        self.lbl_ready.pack(fill="x", padx=10, pady=(0, 4))
+
         btn_frame = tk.Frame(self.panel, width=200, height=50)
         btn_frame.pack(padx=10, pady=(0, 10))
         btn_frame.pack_propagate(False)
@@ -373,6 +393,30 @@ class DebugGraphNode:
     def _on_start_delivery_click(self):
         self.pub_start_delivery.publish(Bool(data=True))
         rospy.loginfo("[debug_graph] 'Delivery starten' gedrueckt")
+
+    def _on_apply_gate_order(self):
+        # Eingabe wie "5, 9, 3" -> ["5","9","3"]; leeres Feld -> [] (keine
+        # Vorgabe, path_planner_node optimiert die Reihenfolge wieder selbst).
+        raw = self.entry_gate_order.get()
+        order = [g.strip() for g in raw.replace(";", ",").split(",") if g.strip()]
+        self._gate_order_cfg = order
+        self._save_gate_order(order)
+        self.pub_gate_order.publish(String(data=json.dumps(order)))
+        rospy.loginfo(f"[debug_graph] Vorgegebene Tor-Reihenfolge uebernommen: {order}")
+
+    def _save_gate_order(self, order):
+        # In mapping_node.json zurueckschreiben, damit path_planner_node die
+        # Vorgabe auch nach einem Neustart (ohne laufendes Dashboard) sofort
+        # aus der Config kennt, statt nur ueber das Live-Topic.
+        path = os.path.join(os.path.dirname(__file__), "../config/mapping_node.json")
+        try:
+            with open(path, 'r') as f:
+                config = json.load(f)
+            config.setdefault("path_planning", {})["gate_order"] = order
+            with open(path, 'w') as f:
+                json.dump(config, f, indent=2)
+        except Exception as e:
+            rospy.logwarn(f"[debug_graph] Konnte gate_order nicht speichern: {e}")
 
     # ── Canvas: Ebene 1 (statisch, einmalig) ────────────────────────────────────
 
@@ -521,7 +565,24 @@ class DebugGraphNode:
             delivered_txt = "  -"
         self.lbl_delivered.config(text="Abgefahrene Tore:\n" + delivered_txt)
 
-        self.btn_start_delivery.config(state="normal" if self.exploration_done else "disabled")
+        # Bereit zur Abfahrt heisst nicht nur "Exploration fertig" (alle
+        # Kanten befahren), sondern bei vorgegebener Reihenfolge zusaetzlich
+        # "path_planner_node konnte tatsaechlich eine Route planen" - fehlt
+        # dort noch ein vorgegebenes Tor (missing_gates), bleibt der Button
+        # bewusst deaktiviert statt wirkungslos klickbar zu sein.
+        missing = self.delivery_progress.get("missing_gates", [])
+        ready = self.exploration_done and bool(planned)
+        if not self.exploration_done:
+            ready_txt = "Status: Erkunde Karte..."
+        elif missing:
+            ready_txt = "Status: Warte auf Tor(e) " + ", ".join(missing)
+        elif ready:
+            ready_txt = "Status: Alle Tore gefunden und gemappt ✓"
+        else:
+            ready_txt = "Status: Keine Tore gefunden"
+        self.lbl_ready.config(text=ready_txt, fg="#008800" if ready else "#AA0000")
+
+        self.btn_start_delivery.config(state="normal" if ready else "disabled")
 
     # ── Haupt-Update (Main-Thread, 5 Hz) ─────────────────────────────────────
 

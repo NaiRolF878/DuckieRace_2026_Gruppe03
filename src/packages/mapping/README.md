@@ -6,10 +6,14 @@ Der Duckiebot bekommt einen Stadtgraphen als JSON. In **Phase 1 (Mapping)**
 fährt er selbstständig (DFS) alle Kanten des Graphen ab und findet dabei
 farbige **Tore** (AprilTag-IDs 5–13), die er auf Graphenkanten mappt. In
 **Phase 2 (Planung)** wird automatisch die optimale Reihenfolge berechnet, in
-der alle Tore angefahren werden sollen. Nach manueller Bestätigung im
-Debug-Fenster fährt der Bot in **Phase 3 (Delivery)** diese Reihenfolge ab –
-**nur Phase 3 wird auf Zeit bewertet**, daher ist gute Pfadoptimierung
-entscheidend.
+der alle Tore angefahren werden sollen – **außer** im Debug-Fenster wurde eine
+**vorgegebene Reihenfolge** eingetragen (z.B. weil die Challenge eine feste
+Abliefer-Reihenfolge vorschreibt): dann wird diese Reihenfolge unverändert
+übernommen und nur noch der kürzeste Weg *zwischen* den vorgegebenen
+Stationen per Dijkstra berechnet, nicht mehr die Reihenfolge selbst. Nach
+manueller Bestätigung im Debug-Fenster fährt der Bot in **Phase 3
+(Delivery)** diese Reihenfolge ab – **nur Phase 3 wird auf Zeit bewertet**,
+daher ist gute Pfadoptimierung entscheidend.
 
 Dieses Paket baut auf `intersection_handling` (Challenge 2) auf: die
 Wahrnehmungs- und Steuerungs-Nodes (Spurfolgen, Kreuzung fahren) bleiben in
@@ -246,13 +250,17 @@ danach die Kontrolle über `/navigation/phase` ab.
 
 ### path_planner_node — Phase 2+3 (Dijkstra + TSP)
 Berechnet fortlaufend (sobald Phase 1 fertig ist) mit einer eigenen
-Dijkstra-Implementierung (nur `heapq`) die optimale Reihenfolge aller
-gefundenen Tore ab `delivery_start_node` – bei `mode: "optimal"` per
-Brute-Force über alle Permutationen (`itertools.permutations`, automatischer
-Fallback auf `nearest_neighbor` bei mehr als 10 Toren), sonst greedy nach
-kürzester Distanz. Nach Knopfdruck (`start_delivery`) fährt es die Route ab
-und erkennt abgefahrene Tore daran, dass `current_edge` mit einem
-`gate_map`-Eintrag übereinstimmt.
+Dijkstra-Implementierung (nur `heapq`) die Reihenfolge aller gefundenen Tore
+ab `delivery_start_node`. Ist `path_planning.gate_order` (Config oder live
+per `/navigation/gate_order` vom Dashboard) **nicht leer**, wird diese
+Reihenfolge unverändert übernommen (`_plan_fixed_order`) – sonst wird sie
+selbst optimiert: bei `mode: "optimal"` per Brute-Force über alle
+Permutationen (`itertools.permutations`, automatischer Fallback auf
+`nearest_neighbor` bei mehr als 10 Toren), sonst greedy nach kürzester
+Distanz. In beiden Fällen berechnet Dijkstra die kürzesten Wege *zwischen*
+den (vorgegebenen oder optimierten) Stationen. Nach Knopfdruck
+(`start_delivery`) fährt es die Route ab und erkennt abgefahrene Tore daran,
+dass `current_edge` mit einem `gate_map`-Eintrag übereinstimmt.
 **Publiziert:** `/navigation/next_direction`, `/navigation/phase` (nur
 während Delivery), `/navigation/delivery_progress`
 
@@ -261,7 +269,10 @@ Zeigt den statischen Graphen, live wachsende grüne "befahren"-Kanten, den
 geplanten Delivery-Pfad (blau gestrichelt mit Pfeilen), die aktuelle
 Bot-Position (gelb) sowie Tor-Symbole mit Häkchen für bereits abgefahrene
 Tore. Rechtes Panel zeigt Phase, Position, Fortschritt, gefundene Tore,
-geplante Reihenfolge und den Start-Button. ROS-Callbacks aktualisieren
+geplante Reihenfolge, ein Eingabefeld für eine **vorgegebene Tor-Reihenfolge**
+(kommagetrennte Gate-IDs, z.B. `5,9,3` – schreibt in `mapping_node.json`
+zurück und publiziert live auf `/navigation/gate_order`) und den Start-Button.
+ROS-Callbacks aktualisieren
 ausschließlich State-Variablen; gezeichnet wird nur im Hauptthread über
 `root.after(200, update_canvas)`.
 **Publiziert:** `/navigation/start_delivery` (bei Klick auf den Button)
