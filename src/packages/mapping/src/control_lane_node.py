@@ -2,9 +2,12 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # control_lane_node.py  (Challenge 4 – Mapping & Path Finding)
 #
-# Reiner PID-Spurfolge-Regler. KEINE Haltelinien-Logik mehr:
-# An der Kreuzung übernimmt die FSM (switch_control_node + control_intersection_node).
-# Diese Node wird dann über /enable/lane = False stillgelegt.
+# Reiner PID-Spurfolge-Regler. Abbiegen macht control_intersection_node,
+# Objekt-Ausweichen das separate Paket "ducks" (Challenge 3).
+#
+# Geschwindigkeit sinkt mit |error| (Kurven-Drosselung): speed_curve_factor
+# steuert wie stark, min_speed_factor begrenzt die Drosselung nach unten
+# (verhindert komplettes Stoppen in engen Kurven).
 #
 # Aktiv nur wenn /enable/lane == True.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -40,10 +43,10 @@ class ControlLaneNode:
         self.sub_enable = rospy.Subscriber(
             f'/{self._vehicle_name}/enable/lane', Bool, self.cbControl, queue_size=1)
 
-        # PID Variablen
+        # PID-Zustand
         self.lastError = 0
-        self.integral  = 0
-        self.dt        = 0.1
+        self.integral = 0
+        self.dt = 0.1
         # Anti-Windup: begrenzt den aufsummierten Fehler
         self.INTEGRAL_LIMIT = 3.0
 
@@ -61,17 +64,23 @@ class ControlLaneNode:
         self.enable = msg.data
 
     def cbUpdateParameters(self, parameters):
-        self.kp      = parameters["pid"]["p"]["default"]
-        self.ki      = parameters["pid"]["i"]["default"]
-        self.kd      = parameters["pid"]["d"]["default"]
+        self.kp = parameters["pid"]["p"]["default"]
+        self.ki = parameters["pid"]["i"]["default"]
+        self.kd = parameters["pid"]["d"]["default"]
         self.MAX_VEL = parameters["pid"]["max_vel"]["default"]
-        self.MIN_VEL = parameters["pid"]["min_vel"]["default"]
+        self.speed_curve_factor = parameters["pid"]["speed_curve_factor"]["default"]
+        # Untergrenze der Kurven-Drosselung: wie weit darf v in scharfen Kurven
+        # runter. 0.5 = max. halbe Geschwindigkeit, kleiner = langsamer/mehr
+        # Reaktionszeit, aber nie ganz auf 0 (sonst bleibt der Bot stehen).
+        self.min_speed_factor = parameters["pid"]["min_speed_factor"]["default"]
 
-    # Spurversatz error im Bereich [-1, +1]:
+    # error between 1 and -1
     # error > 0 → Bot zu weit links  → nach rechts lenken
     # error < 0 → Bot zu weit rechts → nach links lenken
-    def cbFollowLane(self, error):
-        error = error.data
+    def cbFollowLane(self, msg):
+        if not self.enable:
+            return
+        error = msg.data
 
         # Begrenzung damit PID nicht übersteuert
         error = max(min(error, 2.0), -2.0)
@@ -91,8 +100,9 @@ class ControlLaneNode:
         # Gesamtlenkung, begrenzt auf [-3, +3] rad/s
         self.a = max(min(P + I + D, 3), -3)
 
-        # Geschwindigkeit abhängig vom Fehler; MIN_VEL verhindert komplettes Stoppen
-        self.v = max(self.MIN_VEL, self.MAX_VEL * (1 - abs(error)))
+        # Geschwindigkeit sinkt mit |error| (Kurven-Drosselung), nie unter
+        # min_speed_factor * MAX_VEL.
+        self.v = self.MAX_VEL * max(self.min_speed_factor, 1 - abs(error) * self.speed_curve_factor)
 
         self.lastError = error
 

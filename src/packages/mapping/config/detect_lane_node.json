@@ -1,8 +1,5 @@
 {
     "debug_image_topics": [
-        "/debug/original",
-        "/debug/annotated",
-        "/debug/bird_view",
         "/debug/lane_croped",
         "/debug/lane_white",
         "/debug/lane_yellow",
@@ -20,6 +17,8 @@
                 "top_right_x": {"default": 441, "min": -100, "max": 1000},
                 "top_right_y": {"default": 218, "min": -100, "max": 1000}
             },
+            "detection_row_factor": {"default": 0.75, "min": 0.5, "max": 0.95},
+            "min_lane_width": {"default": 80, "min": 0, "max": 300},
             "yellow": {
                 "hh": {"default": 60, "min": 0, "max": 255},
                 "hl": {"default": 15, "min": 0, "max": 255},
@@ -34,22 +33,26 @@
                 "sh": {"default": 41, "min": 0, "max": 255},
                 "sl": {"default": 0, "min": 0, "max": 255},
                 "vh": {"default": 255, "min": 0, "max": 255},
-                "vl": {"default": 161, "min": 0, "max": 255},
-                "max_frame_jump": {"default": 80, "min": 0, "max": 400}
+                "vl": {"default": 161, "min": 0, "max": 255}
             },
-            "red": {
+            "red1": {
                 "hl": {"default": 0, "min": 0, "max": 179},
                 "hh": {"default": 10, "min": 0, "max": 179},
-                "hl2": {"default": 160, "min": 0, "max": 179},
-                "hh2": {"default": 179, "min": 0, "max": 179},
                 "sl": {"default": 100, "min": 0, "max": 255},
                 "sh": {"default": 255, "min": 0, "max": 255},
                 "vl": {"default": 100, "min": 0, "max": 255},
-                "vh": {"default": 255, "min": 0, "max": 255},
-                "pixel_threshold": {"default": 500, "min": 0, "max": 5000},
-                "detection_zone": {"default": 0.95, "min": 0.0, "max": 1.0},
-                "detection_x_start": {"default": 0.4, "min": 0.0, "max": 1.0},
-                "detection_x_end": {"default": 1.0, "min": 0.0, "max": 1.0}
+                "vh": {"default": 255, "min": 0, "max": 255}
+            },
+            "red2": {
+                "hl": {"default": 160, "min": 0, "max": 179},
+                "hh": {"default": 179, "min": 0, "max": 179},
+                "sl": {"default": 100, "min": 0, "max": 255},
+                "sh": {"default": 255, "min": 0, "max": 255},
+                "vl": {"default": 100, "min": 0, "max": 255},
+                "vh": {"default": 255, "min": 0, "max": 255}
+            },
+            "detection": {
+                "thresh": {"default": 500, "min": 0, "max": 10000}
             }
         }
     }

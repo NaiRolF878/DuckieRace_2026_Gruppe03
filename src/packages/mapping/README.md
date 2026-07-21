@@ -44,10 +44,10 @@ Graph-/Pfadplanungs-Logik vorgegeben.
 
 | Datei | Typ | Beschreibung |
 |---|---|---|
-| `detect_lane_node.py` | Node | Spurerkennung + rote Haltelinie (unverändert aus Challenge 2) |
+| `detect_lane_node.py` | Node | Spurerkennung (zeilenbasierte Sobel-Kantenerkennung) + rote Haltelinie in einer Node (ein Bild-Decode/Warp pro Frame) |
 | `detect_apriltag_node.py` | Node | Kreuzungs-Tags (1–4) **+ Tor-Tags (5–13)** |
 | `switch_control_node.py` | Node | FSM – Richtung kommt jetzt von `next_direction`, kein `random.choice` mehr |
-| `control_lane_node.py` | Node | PID-Spurregler (unverändert) |
+| `control_lane_node.py` | Node | PID-Spurregler mit Kurven-Drosselung (Neuaufbau nach `explore_duckietown_ii`-Vorbild) |
 | `control_intersection_node.py` | Node | Fährt die Kreuzung – zeitbasierte Segmente (`v`/`omega`/`duration`), unverändert aus Challenge 2 |
 | `graph_state_node.py` | Node | **Neu.** Verwaltet Graph-Zustand (Position, besuchte Kanten, gefundene Tore) |
 | `explore_control_node.py` | Node | **Neu.** Phase 1: DFS-Exploration über alle Graphkanten |
@@ -298,6 +298,31 @@ ausschließlich State-Variablen; gezeichnet wird nur im Hauptthread über
 **Publiziert:** `/navigation/start_delivery` (bei Klick auf den Button),
 `/graph/reload_gate_map` (bei Klick auf "Tor-Zuordnung neu laden")
 
+### detect_lane_node / control_lane_node (Neuaufbau)
+Ersetzt die Challenge-2-Implementierung, weil die Spurführung auf dieser
+Strecke unzuverlässig war (Spur verloren, unerklärliches Stehenbleiben) –
+neu aufgebaut nach dem Vorbild eines anderen Teams. Übernommen wurde bewusst
+**nur** die Wahrnehmungs-/Regelungs-Ebene, nicht deren Navigationskonzept
+(dort ein vorab berechneter Plan statt Live-Graph-Verfolgung) –
+`graph_state_node`, `explore_control_node`, `path_planner_node`,
+`control_intersection_node` und `switch_control_node` bleiben unverändert,
+die Topic-Schnittstellen (`/detect/lane`, `/detect/stop_line`, `/enable/lane`)
+ebenfalls.
+
+- **`detect_lane_node`**: zeilenbasierte Sobel-Kantenerkennung statt der
+  bisherigen Ankerpunkt-Logik. Gelb wird zuerst auf einer festen
+  `detection_row_factor`-Zeile gesucht, die weiße Maske wird links von
+  "Gelb + `min_lane_width`" ausgeblendet (Korridor-Filter gegen die
+  Gegenspur), und die Suchzeile für Weiß wandert schrittweise nach unten,
+  falls dort nichts gefunden wird. Haltelinie (Rot-Pixel-Schwellwert in einer
+  ROI, unteres Bilddrittel) läuft bewusst **in derselben Node** statt in
+  einer eigenen – ein Bild-Decode/Bird's-Eye-Warp pro Frame statt zwei
+  (Performance auf der begrenzten Rechenleistung des Bots).
+- **`control_lane_node`**: gleicher PID wie zuvor, zusätzlich
+  `speed_curve_factor`/`min_speed_factor` – die Geschwindigkeit sinkt jetzt
+  gezielt mit dem Betrag des Spurfehlers (Kurven-Drosselung) statt nur linear
+  über `min_vel` begrenzt zu werden.
+
 ### detect_apriltag_node (Erweiterung)
 Zusätzlich zur unveränderten Kreuzungs-Tag-Logik (1–4) wird jeder erkannte
 Tag im Bereich 5–13 als Tor-Tag ausgewertet (nur Mindestflächen-Filter, keine
@@ -395,11 +420,25 @@ die eingefrorene Live-Richtung nicht zu `next_direction` passt.
 | `timing.stop_duration` | Haltezeit an der roten Linie |
 | `timing.turning_timeout` | Sicherheits-Timeout fürs Abbiegen |
 
-### control_lane_node.json / detect_lane_node.json
+### control_lane_node.json
 
-Wie in Challenge 2 (PID-Parameter bzw. HSV-Schwellen/Bird's-Eye-Eckpunkte);
-enthalten jetzt nur noch `default` + `track` (alle anderen Bot-Blöcke
-entfernt).
+| Parameter | Zweck |
+|---|---|
+| `pid.p/i/d` | PID-Verstärkung auf den Spurfehler |
+| `pid.max_vel` | Grundgeschwindigkeit auf gerader Strecke |
+| `pid.speed_curve_factor` | Wie stark `v` mit `\|error\|` sinkt (Kurven-Drosselung) |
+| `pid.min_speed_factor` | Untergrenze der Drosselung (Anteil von `max_vel`), verhindert Stillstand in engen Kurven |
+
+### detect_lane_node.json
+
+| Parameter | Zweck |
+|---|---|
+| `crop_image.*` | Bird's-Eye-Eckpunkte (Perspektivtransformation) |
+| `detection_row_factor` | Zeile (Anteil der Bildhöhe), auf der Weiß gesucht wird – wandert nach unten, falls dort nichts gefunden wird |
+| `min_lane_width` | Korridor-Filter: blendet die weiße Maske links von "Gelb + `min_lane_width`" aus (gegen die Gegenspur) |
+| `white.*` / `yellow.*` | HSV-Schwellen der beiden Linienfarben |
+| `red1.*` / `red2.*` | HSV-Schwellen für Rot (Haltelinie, liegt an zwei Stellen des Hue-Kreises) |
+| `detection.thresh` | Rot-Pixel-Schwellwert in der ROI, ab dem die Haltelinie als erkannt gilt |
 
 ---
 

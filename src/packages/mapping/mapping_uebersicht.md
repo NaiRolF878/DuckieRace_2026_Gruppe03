@@ -43,7 +43,9 @@ Graph-Logik exakt, welche Richtung sie nehmen soll.
 
 ### Wahrnehmung (unverändert aus Challenge 2, minimal erweitert)
 
-**`detect_lane_node`** – Spur + rote Haltelinie, exakt wie in Challenge 2.
+**`detect_lane_node`** – Spur + rote Haltelinie in einer Node. Neu aufgebaut
+(zeilenbasierte Sobel-Kantenerkennung statt der Challenge-2-Logik), weil die
+Spurführung auf dieser Strecke unzuverlässig war.
 
 **`detect_apriltag_node`** – erkennt weiterhin die Kreuzungs-Tags (1–4) für
 die erlaubten Abbiegerichtungen, zusätzlich jetzt auch **Tor-Tags (5–13)**:
@@ -103,7 +105,9 @@ Graphen deterministisch vorhergesagten erlaubten Richtungen aus
 `predicted_entry_tag`) – kein Würfeln, aber auch kein permanentes
 Stehenbleiben nur weil ein einzelnes Foto misslingt.
 
-**`control_lane_node`** – unverändert (PID-Spurregler).
+**`control_lane_node`** – PID-Spurregler, neu aufgebaut mit
+Kurven-Drosselung (Geschwindigkeit sinkt gezielt mit dem Spurfehler statt
+nur linear begrenzt zu werden).
 
 **`control_intersection_node`** – fährt die Abbiege-Sequenzen 1:1 wie in
 Challenge 2, zeitbasiert (`v`/`omega`/`duration` je Segment). Ein
