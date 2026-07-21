@@ -34,7 +34,6 @@ Graph-/Pfadplanungs-Logik vorgegeben.
 - [Nodes](#nodes)
 - [Topics](#topics)
 - [Konfigurationsparameter](#konfigurationsparameter)
-- [Encoder-Kalibrierung](#encoder-kalibrierung)
 - [Setup & Starten](#setup--starten)
 - [Vor dem Challenge-Tag](#vor-dem-challenge-tag)
 - [Bekannte Einschränkungen](#bekannte-einschränkungen)
@@ -49,7 +48,7 @@ Graph-/Pfadplanungs-Logik vorgegeben.
 | `detect_apriltag_node.py` | Node | Kreuzungs-Tags (1–4) **+ Tor-Tags (5–13)** |
 | `switch_control_node.py` | Node | FSM – Richtung kommt jetzt von `next_direction`, kein `random.choice` mehr |
 | `control_lane_node.py` | Node | PID-Spurregler (unverändert) |
-| `control_intersection_node.py` | Node | Fährt die Kreuzung – Segment-Ende jetzt **encoder-basiert** (Ticks) statt zeitbasiert |
+| `control_intersection_node.py` | Node | Fährt die Kreuzung – zeitbasierte Segmente (`v`/`omega`/`duration`), unverändert aus Challenge 2 |
 | `graph_state_node.py` | Node | **Neu.** Verwaltet Graph-Zustand (Position, besuchte Kanten, gefundene Tore) |
 | `explore_control_node.py` | Node | **Neu.** Phase 1: DFS-Exploration über alle Graphkanten |
 | `path_planner_node.py` | Node | **Neu.** Phase 2+3: Dijkstra + TSP-Planung, fährt die Tore ab |
@@ -135,7 +134,7 @@ starten"-Button im Debug-Fenster, aktiv sobald `exploration_done == True`).
        |                   | enable/lane     | enable/intersection
        |                   |                 | phase . direction
        v                   v                 v
-   control_lane              control_intersection (jetzt Encoder-basiert)
+   control_lane              control_intersection (zeitbasiert, wie C2)
        |                       |         |
        |                       |     turn_done
        +-------------+---------+
@@ -306,13 +305,13 @@ Positions-/Stabilitäts-Filterung wie bei den Kreuzungs-Tags, da Tore an
 beliebiger Stelle im Bild auftauchen können).
 **Zusätzlich publiziert:** `/detect/gate/id` (Int32, -1 wenn keiner sichtbar)
 
-### control_intersection_node (Umbau auf Encoder)
-Segment-Ende wird nicht mehr über `duration` (Zeit), sondern über
-Radencoder-Ticks bestimmt: Geradeaus-Segmente über den Mittelwert der
-Ticks beider Räder, Dreh-Segmente über die Ticks-**Differenz** zwischen den
-Rädern. `timeout` bleibt als Sicherheitsnetz erhalten, falls das Ticks-Ziel
-nie erreicht wird. Tick-Referenzwerte werden bei **jedem** Segment-Start neu
-gesetzt.
+### control_intersection_node (unverändert aus Challenge 2)
+1:1 dieselbe zeitbasierte Segment-Logik wie in `intersection_handling`:
+jedes Segment gibt `{v, omega, duration}` vor, Segment-Ende wird über die
+**kumulierte** Segmentdauer seit Start der Sequenz bestimmt (kein Timeout
+nötig, da rein zeitgesteuert). Ein zwischenzeitlicher Umbau auf
+encoder-basierte (Ticks) Segment-Enden wurde wieder rückgängig gemacht, da
+er auf dieser Strecke nicht zuverlässig funktionierte.
 
 ### switch_control_node (Anpassung)
 Einzige fachliche Änderung: `random.choice(allowed_dirs)` wurde durch
@@ -358,7 +357,6 @@ die eingefrorene Live-Richtung nicht zu `next_direction` passt.
 | `/intersection/direction` | String | switch_control → control_intersection, graph_state |
 | `/intersection/turn_done` | Bool | control_intersection → switch_control |
 | `/enable/lane`, `/enable/intersection` | Bool | switch_control → control_lane / control_intersection |
-| `/left_wheel_encoder_node/tick`, `/right_wheel_encoder_node/tick` | WheelEncoderStamped | Hardware → control_intersection |
 | `/car_cmd_switch_node/cmd` | Twist2DStamped | control_lane / control_intersection → Motoren |
 
 ---
@@ -380,7 +378,7 @@ die eingefrorene Live-Richtung nicht zu `next_direction` passt.
 
 | Parameter | Zweck |
 |---|---|
-| `turn_segments.left/right/straight` | Segment-Sequenz je Richtung: `{v, omega, ticks, timeout}` |
+| `turn_segments.left/right/straight` | Segment-Sequenz je Richtung: `{v, omega, duration}` |
 
 ### detect_apriltag_node.json
 
@@ -402,28 +400,6 @@ die eingefrorene Live-Richtung nicht zu `next_direction` passt.
 Wie in Challenge 2 (PID-Parameter bzw. HSV-Schwellen/Bird's-Eye-Eckpunkte);
 enthalten jetzt nur noch `default` + `track` (alle anderen Bot-Blöcke
 entfernt).
-
----
-
-## Encoder-Kalibrierung
-
-| Parameter | Wert |
-|---|---|
-| Topics | `/left_wheel_encoder_node/tick`, `/right_wheel_encoder_node/tick` |
-| Typ | `duckietown_msgs/WheelEncoderStamped` (`data` = kumulative Ticks, `resolution` aus Message gelesen) |
-| `wheel_radius` | 0.0318 m |
-| `wheel_baseline` | 0.1 m |
-| Strecke/Tick | ≈ 1.48 mm |
-| Startwerte | 90°-Drehung ≈ 750 Ticks-Differenz, 0.3 m geradeaus ≈ 200 Ticks |
-
-`data` zählt laut Hardware **immer aufwärts**, unabhängig von der
-tatsächlichen Drehrichtung des Rads. `control_intersection_node.py` leitet
-deshalb pro Segment aus `v`/`omega` (mit `wheel_baseline`) die *erwartete*
-Drehrichtung jedes einzelnen Rads her und verrechnet den gemessenen
-Ticks-Betrag mit diesem Vorzeichen, bevor die Geradeaus-/Dreh-Formel
-angewendet wird – relevant z.B. beim scharfen Rechts-Segment, bei dem eines
-der Räder rechnerisch leicht rückwärts läuft (siehe Kommentare in
-`_wheel_signs`/`_segment_cmd`).
 
 ---
 
@@ -458,8 +434,9 @@ rosrun mapping debug_graph_node.py
    `mapping_start_node`, `delivery_start_node`, `node_positions`
    (Pixel-Koordinaten fürs Debug-Fenster) und `path_planning.mode`
    (`"optimal"` für die Challenge, `"nearest_neighbor"` zum schnellen Testen).
-2. **Encoder-Ticks kalibrieren:** Startwerte in `control_intersection_node.json`
-   sind Schätzungen (siehe oben) – vor Ort mit echten Segmenten feintunen.
+2. **Abbiege-Segmente kalibrieren:** `turn_segments` in
+   `control_intersection_node.json` sind zeitbasiert (`v`/`omega`/`duration`,
+   wie in Challenge 2) – vor Ort an die tatsächliche Strecke feintunen.
 3. **Tor-Tag-Erkennung prüfen:** `detect_apriltag_node.json` nutzt für Tore
    denselben `tag_filter.min_area`-Schwellwert wie für Kreuzungs-Tags; je nach
    Tag-Größe/Anbringung ggf. separat justieren.
@@ -471,15 +448,10 @@ rosrun mapping debug_graph_node.py
 
 ## Bekannte Einschränkungen
 
-- Die Encoder-Logik (`control_intersection_node.py`) leitet für jedes Rad aus
-  `v`/`omega` (mit `WHEEL_BASELINE = 0.1 m`) dessen erwartete Drehrichtung ab
-  und verrechnet den (immer positiven) Ticks-Betrag mit diesem Vorzeichen –
-  relevant z.B. beim scharfen Rechts-Segment (`v=0.15, omega=-3.2`), bei dem
-  das rechte Rad rechnerisch leicht rückwärts läuft. `WHEEL_BASELINE` ist ein
-  angenommener Konstantwert (nicht pro Bot kalibriert); bei spürbaren
-  Abweichungen zwischen Bots ggf. anpassen. Die Herleitung gilt pro Segment
-  (konstantes `v`/`omega` für die gesamte Segmentdauer) – ein Vorzeichenwechsel
-  *innerhalb* eines Segments wird nicht unterstützt.
+- `control_intersection_node` ist rein zeitbasiert (`duration` je Segment) –
+  driftet daher wie in Challenge 2 mit Akkustand/Bodenhaftung/Temperatur;
+  `turn_segments` müssen vor Ort an die tatsächliche Strecke kalibriert
+  werden (kein automatischer Ausgleich).
 - `debug_graph_node`s Delivery-Pfad-Visualisierung (Ebene 3) berechnet die
   Route mit einer eigenen, unabhängigen Dijkstra-Instanz rein für die
   Darstellung – sie beeinflusst nicht die tatsächliche Fahrt (die kommt

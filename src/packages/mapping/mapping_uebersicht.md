@@ -105,10 +105,10 @@ Stehenbleiben nur weil ein einzelnes Foto misslingt.
 
 **`control_lane_node`** – unverändert (PID-Spurregler).
 
-**`control_intersection_node`** – fährt die Abbiege-Sequenzen wie in
-Challenge 2, erkennt das Ende eines Segments aber jetzt an den
-**Radencoder-Ticks** statt an einer festen Zeit – präziser und weniger
-anfällig für Akkustand/Bodenhaftung.
+**`control_intersection_node`** – fährt die Abbiege-Sequenzen 1:1 wie in
+Challenge 2, zeitbasiert (`v`/`omega`/`duration` je Segment). Ein
+zwischenzeitlicher Umbau auf Radencoder-Ticks wurde wieder rückgängig
+gemacht, da er auf dieser Strecke nicht zuverlässig funktionierte.
 
 ### Sichtbarmachen
 
@@ -152,7 +152,7 @@ detect_lane   detect_apriltag  (Kreuzungs-Tag + Tor-Tag)
    │      └─────────────────────────────────────┘
    │          │ enable/lane    │ enable/intersection
    ▼          ▼                ▼
-control_lane            control_intersection (Encoder statt Zeit)
+control_lane            control_intersection (zeitbasiert, wie C2)
    │                          │
    └──────────┬───────────────┘
               ▼
@@ -194,11 +194,11 @@ Tor-Route") – eine zufällige Abweichung davon wäre nicht einfach suboptimal,
 sondern schlicht falsch (falscher Knoten im Graph-Modell). Lieber wartet der
 Bot, bis die richtige Richtung feststeht.
 
-**Warum Encoder statt fester Zeit beim Abbiegen?**
-Zeitbasierte Segmente hängen von Akkustand, Bodenhaftung und Batterietemperatur
-ab und driften über den Tag. Encoder-Ticks messen die tatsächlich gefahrene
-Strecke/Drehung direkt am Rad – robuster, auch wenn die Startwerte weiterhin
-vor Ort kalibriert werden müssen.
+**Warum `control_intersection_node` zeitbasiert statt encoder-basiert?**
+Ein Umbau auf Radencoder-Ticks (präziser in der Theorie, unabhängig von
+Akkustand/Bodenhaftung) hat sich in der Praxis auf dieser Strecke nicht
+zuverlässig verhalten – deshalb zurück auf die bewährte zeitbasierte Logik
+aus Challenge 2 (`v`/`omega`/`duration` je Segment).
 
 ---
 

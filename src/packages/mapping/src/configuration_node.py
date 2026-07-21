@@ -68,9 +68,25 @@ class ConfigurationNode:
         self.image_dropown = tk.OptionMenu(self.root, self.image_var, '')
         self.image_dropown.pack(fill='x', padx=10, pady=(10, 0))
 
-        # Frame für die dynamisch erzeugten Slider
-        self.slider_frame = tk.Frame(self.root)
-        self.slider_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        # Scrollbarer Bereich fuer die dynamisch erzeugten Slider - noetig seit
+        # turn_segments pro Segment/Feld einen eigenen Slider bekommt (z.B.
+        # 3 Richtungen x bis zu 3 Segmente x 3 Felder = deutlich mehr als in
+        # die feste Fensterhoehe passt).
+        slider_container = tk.Frame(self.root)
+        slider_container.pack(fill='both', expand=True, padx=10, pady=10)
+        slider_canvas = tk.Canvas(slider_container, highlightthickness=0)
+        slider_scrollbar = tk.Scrollbar(slider_container, orient='vertical',
+                                         command=slider_canvas.yview)
+        self.slider_frame = tk.Frame(slider_canvas)
+        self.slider_frame.bind(
+            '<Configure>',
+            lambda e: slider_canvas.configure(scrollregion=slider_canvas.bbox('all')))
+        slider_canvas.create_window((0, 0), window=self.slider_frame, anchor='nw')
+        slider_canvas.configure(yscrollcommand=slider_scrollbar.set)
+        slider_canvas.pack(side='left', fill='both', expand=True)
+        slider_scrollbar.pack(side='right', fill='y')
+        slider_canvas.bind_all(
+            '<MouseWheel>', lambda e: slider_canvas.yview_scroll(int(-1 * (e.delta / 120)), 'units'))
 
         # GUI mit der ersten verfügbaren Node initialisieren
         self.change_node(self.selected_node.get())
@@ -117,17 +133,34 @@ class ConfigurationNode:
         self.rebuild_sliders()
 
 
+    # Slider-Grenzen fuer turn_segments-Felder - dort steht kein {min,max}
+    # in der JSON (nur v/omega/duration je Segment), daher fest hier hinterlegt.
+    SEGMENT_FIELD_RANGES = {
+        'v':        (0.0, 1.0),
+        'omega':    (-5.0, 5.0),
+        'duration': (0.0, 5.0),
+    }
+
     def rebuild_sliders(self):
         # Alle bestehenden Schieberegler entfernen
         for widget in self.slider_frame.winfo_children():
             widget.destroy()
         self.sliders = {}
 
+        group_data = self.parameters.get(self.selected_group.get(), {})
+
+        # turn_segments-Gruppen (z.B. control_intersection_node): jede
+        # Richtung ist eine LISTE von Segment-Objekten ({v, omega, duration})
+        # statt eines einzelnen {min,max,default}-Werts - eigener Aufbau mit
+        # einem Slider pro Segment/Feld statt der generischen Schleife unten.
+        if group_data and all(isinstance(v, list) for v in group_data.values()):
+            self._build_segment_sliders(group_data)
+            return
+
         # Für jeden Parameter der aktuell gewählten Gruppe einen Schieberegler erzeugen.
-        # Manche Gruppen (z.B. turn_segments: Liste von Segment-Objekten statt
-        # {min,max,default}) sind nicht als Schieberegler darstellbar - werden
-        # übersprungen statt die GUI mit einem KeyError/TypeError abstürzen zu lassen.
-        for name, values in self.parameters.get(self.selected_group.get(), {}).items():
+        # Werte ohne {min,max,default} (unbekanntes Format) werden übersprungen
+        # statt die GUI mit einem KeyError/TypeError abstürzen zu lassen.
+        for name, values in group_data.items():
             if not (isinstance(values, dict) and 'min' in values and 'max' in values and 'default' in values):
                 continue
 
@@ -148,6 +181,38 @@ class ConfigurationNode:
             slider.set(values['default'])
             slider.pack(fill='x', pady=4)
             self.sliders[name] = slider
+
+    def _build_segment_sliders(self, group_data):
+        # Ein Slider pro (Richtung, Segment-Index, Feld) - z.B. fuer
+        # control_intersection_node.json's turn_segments.{left,right,straight}.
+        for direction in sorted(group_data.keys()):
+            segments = group_data[direction]
+            if not isinstance(segments, list) or not segments:
+                continue
+            tk.Label(self.slider_frame, text=direction, anchor='w',
+                     font=('TkDefaultFont', 9, 'bold')).pack(fill='x', pady=(10, 0))
+            for seg_index, segment in enumerate(segments):
+                if not isinstance(segment, dict):
+                    continue
+                for field in ('v', 'omega', 'duration'):
+                    if field not in segment:
+                        continue
+                    lo, hi = self.SEGMENT_FIELD_RANGES[field]
+                    slider = tk.Scale(
+                        self.slider_frame,
+                        from_=lo, to=hi,
+                        orient='horizontal',
+                        label=f"  Segment {seg_index + 1} · {field}",
+                        # Default-Breite (100px) schneidet den zusammengesetzten
+                        # Label-Text ab ("omega" -> "ome") - explizit verbreitern.
+                        length=280,
+                        command=lambda value, d=direction, idx=seg_index, f=field:
+                            self.update_segment_parameter(d, idx, f, value),
+                        resolution=0.01
+                    )
+                    slider.set(segment[field])
+                    slider.pack(fill='x', pady=2)
+                    self.sliders[f"{direction}[{seg_index}].{field}"] = slider
 
 
     def change_node(self, *_):
@@ -176,7 +241,21 @@ class ConfigurationNode:
         self.parameters[self.selected_group.get()][param]['default'] = float(value) if is_float else int(float(value))
 
         print(f"Updated {param} to {value} in group {self.selected_group.get()} for node {self.selected_node.get()}")
+        self._publish_and_save()
 
+    def update_segment_parameter(self, direction, seg_index, field, value):
+        # Geaenderten Wert eines einzelnen turn_segments-Feldes speichern
+        # (self.parameters[group][direction][seg_index] ist ein Dict-Objekt -
+        # direkte Mutation reicht, self.parameters muss nicht neu zugewiesen werden).
+        group = self.selected_group.get()
+        segment = self.parameters[group][direction][seg_index]
+        segment[field] = float(value)
+
+        print(f"Updated {direction}[{seg_index}].{field} to {value} in group {group} "
+              f"for node {self.selected_node.get()}")
+        self._publish_and_save()
+
+    def _publish_and_save(self):
         # Gesamte Parameterliste als JSON über ROS publizieren
         # → alle Nodes die cbUpdateParameters abonniert haben, erhalten die neuen Werte live
         payload = {'node': self.selected_node.get(), 'parameters': self.parameters}
