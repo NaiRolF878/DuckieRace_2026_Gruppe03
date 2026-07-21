@@ -123,8 +123,14 @@ class ConfigurationNode:
             widget.destroy()
         self.sliders = {}
 
-        # Für jeden Parameter der aktuell gewählten Gruppe einen Schieberegler erzeugen
+        # Für jeden Parameter der aktuell gewählten Gruppe einen Schieberegler erzeugen.
+        # Manche Gruppen (z.B. turn_segments: Liste von Segment-Objekten statt
+        # {min,max,default}) sind nicht als Schieberegler darstellbar - werden
+        # übersprungen statt die GUI mit einem KeyError/TypeError abstürzen zu lassen.
         for name, values in self.parameters.get(self.selected_group.get(), {}).items():
+            if not (isinstance(values, dict) and 'min' in values and 'max' in values and 'default' in values):
+                continue
+
             # Typ ermitteln: float-Schieberegler mit Auflösung 0.01, int-Schieberegler mit 1
             is_float = isinstance(values['min'], float)
 
