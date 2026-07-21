@@ -96,7 +96,12 @@ dafür nur an einer einzigen Stelle geändert werden.
 sondern von `explore_control_node`/`path_planner_node`. Passt die gewählte
 Richtung nicht (mehr) zu dem, was an der Kreuzung erlaubt ist, bleibt der Bot
 stehen und wartet – **kein Zufalls-Fallback**, weil Challenge 4 einen
-eindeutig bestimmten Weg verlangt.
+eindeutig bestimmten Weg verlangt. Kann die Kamera den Kreuzungs-Tag an
+dieser Kreuzung gar nicht lesen, weicht die Node stattdessen auf die vom
+Graphen deterministisch vorhergesagten erlaubten Richtungen aus
+(`graph_state_node` → `/graph/allowed_directions`, siehe dessen
+`predicted_entry_tag`) – kein Würfeln, aber auch kein permanentes
+Stehenbleiben nur weil ein einzelnes Foto misslingt.
 
 **`control_lane_node`** – unverändert (PID-Spurregler).
 

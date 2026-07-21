@@ -86,6 +86,12 @@ class DebugGraphNode:
         # laeuft) - zusaetzlich zur Persistierung in mapping_node.json.
         self.pub_gate_order = rospy.Publisher(
             f'/{self._vehicle_name}/navigation/gate_order', String, queue_size=1, latch=True)
+        # Notfall-Korrektur: mapping_node.json (Feld "gate_map") von Hand
+        # editiert (Tor-ID getauscht/entfernt) - dieser Button laesst
+        # graph_state_node sie neu einlesen, OHNE current_node/visited_edges
+        # zu verlieren (kein Neustart der Exploration noetig).
+        self.pub_reload_gate_map = rospy.Publisher(
+            f'/{self._vehicle_name}/graph/reload_gate_map', Bool, queue_size=1)
 
         self._build_gui()
         rospy.loginfo(f"[{node_name}] Bereit.")
@@ -371,6 +377,13 @@ class DebugGraphNode:
         tk.Button(self.panel, text="Reihenfolge übernehmen",
                   command=self._on_apply_gate_order).pack(fill="x", padx=10, pady=(0, 10))
 
+        tk.Label(self.panel,
+                 text="Notfall: Tor-Zuordnung in mapping_node.json (Feld "
+                      "\"gate_map\") von Hand tauschen/entfernen, dann:",
+                 anchor="w", justify="left", wraplength=260).pack(fill="x", padx=10)
+        tk.Button(self.panel, text="Tor-Zuordnung neu laden",
+                  command=self._on_reload_gate_map).pack(fill="x", padx=10, pady=(2, 10))
+
         ttk.Separator(self.panel, orient="horizontal").pack(fill="x", padx=10, pady=10)
 
         self.lbl_ready = tk.Label(self.panel, anchor="w", justify="left", wraplength=260)
@@ -393,6 +406,10 @@ class DebugGraphNode:
     def _on_start_delivery_click(self):
         self.pub_start_delivery.publish(Bool(data=True))
         rospy.loginfo("[debug_graph] 'Delivery starten' gedrueckt")
+
+    def _on_reload_gate_map(self):
+        self.pub_reload_gate_map.publish(Bool(data=True))
+        rospy.loginfo("[debug_graph] 'Tor-Zuordnung neu laden' gedrueckt")
 
     def _on_apply_gate_order(self):
         # Eingabe wie "5, 9, 3" -> ["5","9","3"]; leeres Feld -> [] (keine

@@ -8,19 +8,27 @@
 #   Stopping    – stehen bleiben (v=0)
 #   Turning     – Abbiege-SEQUENZ abfahren
 #
-# Segment-Ende wird encoder-basiert bestimmt:
-#   Segment-JSON: {"v":..., "omega":..., "ticks":..., "timeout":...}
-#   - Geradeaus (|omega| < 0.1): fertig wenn (Δlinks + Δrechts)/2 >= ticks
-#   - Drehen: fertig wenn |Δrechts − Δlinks| >= ticks
+# Segment-Ende wird encoder-basiert bestimmt, PRO RAD einzeln:
+#   Segment-JSON: {"v":..., "ticks_left":..., "ticks_right":..., "timeout":...}
+#   fertig wenn |Δlinks| >= |ticks_left| UND |Δrechts| >= |ticks_right|
 #   timeout ist ein Sicherheitsnetz falls das Encoder-Ziel nie erreicht wird.
 #
-# Vorzeichen-Korrektur: Ticks zaehlen laut Hardware IMMER aufwaerts, auch wenn
-# sich ein Rad wegen eines starken Differentials rueckwaerts dreht (z.B. bei
-# sehr grossem |omega| relativ zu v). Ein einfacher Betrag (delta_links -
-# delta_rechts) wuerde die Rueckwaertsdrehung dann faelschlich abziehen statt
-# addieren. Deshalb wird die ERWARTETE Drehrichtung jedes Rads separat aus
-# v/omega abgeleitet (v_rad = v +- omega*baseline/2) und als Vorzeichen auf
-# den jeweiligen Tick-Betrag angewendet, bevor die Segment-Formel greift.
+# Nur EINE Geschwindigkeit v pro Segment wird vorgegeben. v_left/v_right
+# werden daraus intern abgeleitet, proportional zum Verhaeltnis von
+# ticks_left zu ticks_right (das Rad mit dem groesseren Ticks-Ziel muss sich
+# schneller drehen, damit beide Raeder etwa gleichzeitig fertig werden):
+#   v_left  = sign(ticks_left)  * v * 2*|ticks_left|  / (|ticks_left|+|ticks_right|)
+#   v_right = sign(ticks_right) * v * 2*|ticks_right| / (|ticks_left|+|ticks_right|)
+# Das Vorzeichen von ticks_left/ticks_right legt dabei auch die Fahrtrichtung
+# des jeweiligen Rads fest (negativ = rueckwaerts, z.B. bei sehr scharfen
+# Kurven). Fuer die Stop-Bedingung zaehlt nur der Betrag, da die Ticks lt.
+# Hardware ohnehin immer aufwaerts zaehlen.
+#
+# car_cmd_switch_node nimmt nur Twist2DStamped (v/omega) entgegen, deshalb
+# werden die abgeleiteten v_left/v_right beim Publish ueber Standard-
+# Differentialantrieb-Kinematik zurueckgerechnet:
+#   v_cmd     = (v_left + v_right) / 2
+#   omega_cmd = (v_right - v_left) / WHEEL_BASELINE
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
@@ -82,10 +90,10 @@ class ControlIntersectionNode:
         for d in ("left", "right", "straight"):
             self.turn_segments[d] = [
                 {
-                    "v":       float(s["v"]),
-                    "omega":   float(s["omega"]),
-                    "ticks":   float(s["ticks"]),
-                    "timeout": float(s["timeout"]),
+                    "v":           float(s["v"]),
+                    "ticks_left":  float(s["ticks_left"]),
+                    "ticks_right": float(s["ticks_right"]),
+                    "timeout":     float(s["timeout"]),
                 }
                 for s in seg.get(d, [])
             ]
@@ -124,14 +132,20 @@ class ControlIntersectionNode:
         self._reset_segment_reference()
 
     @staticmethod
-    def _wheel_signs(v, omega):
-        # Erwartete Drehrichtung jedes Rads aus dem Fahrbefehl ableiten
-        # (v_rad = v +- omega*baseline/2). Ticks zaehlen immer aufwaerts,
-        # unabhaengig von dieser Richtung - das Vorzeichen muss daher separat
-        # bestimmt und auf den (immer positiven) Tick-Betrag angewendet werden.
-        v_left  = v - omega * WHEEL_BASELINE / 2.0
-        v_right = v + omega * WHEEL_BASELINE / 2.0
-        return (1.0 if v_left >= 0 else -1.0), (1.0 if v_right >= 0 else -1.0)
+    def _wheel_speeds(v, ticks_left, ticks_right):
+        # v_left/v_right proportional zu |ticks_left|/|ticks_right|, sodass
+        # beide Raeder ihr jeweiliges Ticks-Ziel etwa gleichzeitig erreichen.
+        # Vorzeichen von ticks_left/ticks_right legt die Fahrtrichtung des
+        # jeweiligen Rads fest (negativ = rueckwaerts).
+        a, b = abs(ticks_left), abs(ticks_right)
+        total = a + b
+        if total <= 0:
+            return v, v
+        sign_left  = 1.0 if ticks_left  >= 0 else -1.0
+        sign_right = 1.0 if ticks_right >= 0 else -1.0
+        v_left  = sign_left  * v * 2.0 * a / total
+        v_right = sign_right * v * 2.0 * b / total
+        return v_left, v_right
 
     def _segment_cmd(self):
         segments = self.turn_segments.get(self.direction, [])
@@ -139,48 +153,37 @@ class ControlIntersectionNode:
             return 0.0, 0.0, True
 
         seg = segments[self._seg_index]
-        v, omega, ticks, timeout = seg["v"], seg["omega"], seg["ticks"], seg["timeout"]
+        v = seg["v"]
+        ticks_left, ticks_right, timeout = seg["ticks_left"], seg["ticks_right"], seg["timeout"]
 
-        # data zaehlt immer aufwaerts -> Betrag der Drehung seit Segment-Start,
-        # anschliessend mit dem aus v/omega abgeleiteten Vorzeichen versehen
+        # data zaehlt immer aufwaerts, unabhaengig von der tatsaechlichen
+        # Drehrichtung - fuer die Stop-Bedingung reicht daher der Betrag.
         delta_left  = abs(self._left_ticks  - self._seg_left_ref)
         delta_right = abs(self._right_ticks - self._seg_right_ref)
-        sign_left, sign_right = self._wheel_signs(v, omega)
-        signed_left  = sign_left  * delta_left
-        signed_right = sign_right * delta_right
-        elapsed      = (rospy.Time.now() - self._seg_start_time).to_sec()
+        elapsed     = (rospy.Time.now() - self._seg_start_time).to_sec()
 
-        if abs(omega) <= 0.1:
-            # Geradeaus-Segment (<=, damit z.B. omega=0.1 fuer "straight" nicht
-            # faelschlich als Dreh-Segment mit der Diff-Formel ausgewertet wird)
-            progress = (signed_left + signed_right) / 2.0
-        elif omega > 0:
-            # Linksdrehung: rechtes Rad dreht weiter -> Δrechts > Δlinks
-            progress = signed_right - signed_left
-        else:
-            # Rechtsdrehung: linkes Rad dreht weiter -> Δlinks > Δrechts
-            progress = signed_left - signed_right
-
-        target_reached = progress >= ticks
+        target_reached = delta_left >= abs(ticks_left) and delta_right >= abs(ticks_right)
         timed_out       = elapsed >= timeout
 
         if target_reached or timed_out:
             if timed_out and not target_reached:
                 rospy.logwarn(f"[control_intersection] Segment {self._seg_index} "
                               f"({self.direction}) Timeout ({timeout:.1f}s) - "
-                              f"Ticks-Ziel nicht erreicht ({progress:.0f}/{ticks:.0f})")
+                              f"Ticks-Ziel nicht erreicht (links {delta_left:.0f}/{abs(ticks_left):.0f}, "
+                              f"rechts {delta_right:.0f}/{abs(ticks_right):.0f})")
             self._seg_index += 1
             if self._seg_index < len(segments):
                 self._reset_segment_reference()
                 return self._segment_cmd()
             return 0.0, 0.0, True
 
-        return v, omega, False
+        v_left, v_right = self._wheel_speeds(v, ticks_left, ticks_right)
+        return v_left, v_right, False
 
     def _compute_cmd(self):
         if self.phase == "Turning":
-            v, omega, done = self._segment_cmd()
-            return v, omega, done
+            v_left, v_right, done = self._segment_cmd()
+            return v_left, v_right, done
         # Stopping oder Lane -> Motor aus
         return 0.0, 0.0, False
 
@@ -197,11 +200,14 @@ class ControlIntersectionNode:
             self._last_phase = self.phase
 
             if self.enable:
-                v, omega, done = self._compute_cmd()
+                v_left, v_right, done = self._compute_cmd()
+
+                # car_cmd_switch_node nimmt nur Twist2DStamped (v/omega) an ->
+                # aus den kommandierten Radgeschwindigkeiten zurueckrechnen.
                 twist = Twist2DStamped()
                 twist.header.stamp = rospy.Time.now()
-                twist.v     = v
-                twist.omega = omega
+                twist.v     = (v_left + v_right) / 2.0
+                twist.omega = (v_right - v_left) / WHEEL_BASELINE
                 self.pub_cmd.publish(twist)
 
                 if self.phase == "Turning" and done and not self._turn_done_sent:

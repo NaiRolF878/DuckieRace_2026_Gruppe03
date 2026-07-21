@@ -6,48 +6,48 @@
                 "left": [
                     {
                         "v": 0.2,
-                        "omega": 0.3,
-                        "ticks": 65,
+                        "ticks_left": 10,
+                        "ticks_right": 10,
                         "timeout": 2.0
                     },
                     {
                         "v": 0.2,
-                        "omega": 2.5,
-                        "ticks": 685,
+                        "ticks_left": 380,
+                        "ticks_right": 480,
                         "timeout": 2.5
                     },
                     {
                         "v": 0.2,
-                        "omega": 0.0,
-                        "ticks": 65,
+                        "ticks_left": 10,
+                        "ticks_right": 10,
                         "timeout": 1.0
                     }
                 ],
                 "right": [
                     {
                         "v": 0.2,
-                        "omega": 0.2,
-                        "ticks": 90,
+                        "ticks_left": 10,
+                        "ticks_right": 10,
                         "timeout": 1.7
                     },
                     {
                         "v": 0.15,
-                        "omega": -3.2,
-                        "ticks": 640,
+                        "ticks_left": 260,
+                        "ticks_right": 170,
                         "timeout": 1.0
                     },
                     {
                         "v": 0.2,
-                        "omega": 0.1,
-                        "ticks": 65,
+                        "ticks_left": 10,
+                        "ticks_right": 10,
                         "timeout": 1.0
                     }
                 ],
                 "straight": [
                     {
                         "v": 0.2,
-                        "omega": 0.1,
-                        "ticks": 280,
+                        "ticks_left": 100,
+                        "ticks_right": 100,
                         "timeout": 3.5
                     }
                 ]

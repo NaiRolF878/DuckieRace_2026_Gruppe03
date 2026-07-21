@@ -6,6 +6,7 @@
   },
   "mapping_start_node": "A",
   "delivery_start_node": "A",
+  "gate_map": {},
   "path_planning": {
     "mode": "optimal",
     "fallback": "nearest_neighbor",

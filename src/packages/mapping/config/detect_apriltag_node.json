@@ -12,6 +12,8 @@
     "4": ["straight", "right"]
   },
 
+  "gate_tag_range": { "min": 5, "max": 13 },
+
   "parameters": {
     "default": {
       "tag_memory": {

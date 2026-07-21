@@ -44,7 +44,7 @@
 import json
 import os
 import rospy
-from std_msgs.msg import String, Int32
+from std_msgs.msg import String, Int32, Bool
 
 
 class GraphStateNode:
@@ -57,6 +57,7 @@ class GraphStateNode:
         self._vehicle_name = os.environ['VEHICLE_NAME']
 
         self._load_map()
+        self._load_tag_directions()
 
         self.current_node     = self.mapping_start_node
         self.current_edge     = None   # {"from": node, "tag": "2"} oder None - NUR waehrend
@@ -65,9 +66,22 @@ class GraphStateNode:
         self._pending_edge    = None   # von _advance_graph gesetzt, wird erst beim
                                         # Turning->Lane-Wechsel zu current_edge (s.u.)
         self.visited_edges    = []     # [[node, tag], ...] normalisiert
-        self.gate_map         = {}     # {"5": {"node":.., "tag":..}, ...}
+        # {"5": {"node":.., "tag":..}, ...} - vorbelegt aus mapping_node.json
+        # (Feld "gate_map"), damit ein von Hand dort eingetragener/korrigierter
+        # Eintrag nicht durch eine neue Live-Erkennung ueberschrieben wird
+        # (siehe cbGateId: "nicht ueberschreiben falls bereits vorhanden").
+        self.gate_map         = self._load_gate_map_from_config()
 
-        self.current_entry_tag = None  # zuletzt gesehener Kreuzungs-Tag (1-4)
+        self.current_entry_tag = None  # zuletzt LIVE gesehener Kreuzungs-Tag (1-4)
+        # Rein aus dem Graph vorhergesagter Eingangs-Tag fuer current_node -
+        # von _advance_graph() gesetzt, sobald die Abbiegeentscheidung an der
+        # VORHERIGEN Kreuzung feststeht (also lange bevor der Bot ueberhaupt
+        # an dieser Kreuzung ankommt). Dient als Fallback fuer current_entry_tag,
+        # wenn die Kamera den Tag diesmal gar nicht lesen kann (siehe
+        # _effective_entry_tag) - wir kennen die Einfahrt-Geometrie durch die
+        # eigene Kartenverfolgung ohnehin deterministisch, unabhaengig davon,
+        # ob die Kamera sie gerade bestaetigen kann.
+        self.predicted_entry_tag = None
         self._last_direction    = ""   # zuletzt von switch_control gewaehltes Wort
         self.phase               = "Lane"
         self._last_phase         = "Lane"
@@ -80,6 +94,12 @@ class GraphStateNode:
                          String, self.cbPhase, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/detect/gate/id',
                          Int32, self.cbGateId, queue_size=1)
+        # Notfall-Korrektur: mapping_node.json von Hand editiert (Tor-ID
+        # getauscht/entfernt) - auf diesem Trigger wird NUR gate_map neu von
+        # der Platte gelesen, current_node/visited_edges bleiben unberuehrt
+        # (kein Neustart der Exploration noetig).
+        rospy.Subscriber(f'/{self._vehicle_name}/graph/reload_gate_map',
+                         Bool, self.cbReloadGateMap, queue_size=1)
 
         self.pub_current_node = rospy.Publisher(
             f'/{self._vehicle_name}/graph/current_node', String, queue_size=1)
@@ -91,13 +111,21 @@ class GraphStateNode:
             f'/{self._vehicle_name}/graph/gate_map', String, queue_size=1)
         self.pub_exit_directions = rospy.Publisher(
             f'/{self._vehicle_name}/graph/exit_directions', String, queue_size=1)
+        # Vom Graph vorhergesagte erlaubte Richtungen (aus predicted_entry_tag
+        # + tag_directions) - Fallback-Quelle fuer switch_control_node, falls
+        # dessen eigene Live-Erkennung an dieser Kreuzung ausbleibt/steckenbleibt.
+        self.pub_allowed_directions = rospy.Publisher(
+            f'/{self._vehicle_name}/graph/allowed_directions', String, queue_size=1)
 
         rospy.loginfo(f"[{node_name}] Bereit. Start-Knoten: {self.current_node}")
 
     # ── Config laden ─────────────────────────────────────────────────────────
 
+    def _mapping_config_path(self):
+        return os.path.join(os.path.dirname(__file__), "../config/mapping_node.json")
+
     def _load_map(self):
-        path = os.path.join(os.path.dirname(__file__), "../config/mapping_node.json")
+        path = self._mapping_config_path()
         try:
             with open(path, 'r') as f:
                 config = json.load(f)
@@ -108,6 +136,55 @@ class GraphStateNode:
         except Exception as e:
             rospy.logerr(f"[graph_state] mapping_node.json konnte nicht geladen werden: {e}")
             raise
+
+    def _load_gate_map_from_config(self):
+        # Liest NUR das gate_map-Feld frisch von der Platte - fuer den
+        # Notfall-Reload (cbReloadGateMap) bewusst getrennt von _load_map(),
+        # damit graph/mapping_start_node/path_planning dabei unangetastet
+        # bleiben.
+        path = self._mapping_config_path()
+        try:
+            with open(path, 'r') as f:
+                config = json.load(f)
+            raw = config.get("gate_map", {})
+        except Exception as e:
+            rospy.logwarn(f"[graph_state] gate_map konnte nicht geladen werden: {e}")
+            return {}
+        gate_map = {}
+        for gate_id, entry in raw.items():
+            if not isinstance(entry, dict) or "node" not in entry or "tag" not in entry:
+                rospy.logwarn(f"[graph_state] Ungueltiger gate_map-Eintrag fuer Tor "
+                              f"{gate_id} ignoriert: {entry}")
+                continue
+            gate_map[str(gate_id)] = {"node": entry["node"], "tag": str(entry["tag"])}
+        return gate_map
+
+    def _save_gate_map(self):
+        # Neu entdecktes Tor in mapping_node.json zurueckschreiben, damit die
+        # Datei jederzeit den aktuell bekannten Stand zeigt - Grundlage fuer
+        # die manuelle Notfall-Korrektur (von Hand editieren, dann per
+        # /graph/reload_gate_map neu einlesen, siehe cbReloadGateMap).
+        path = self._mapping_config_path()
+        try:
+            with open(path, 'r') as f:
+                config = json.load(f)
+            config["gate_map"] = self.gate_map
+            with open(path, 'w') as f:
+                json.dump(config, f, indent=2)
+        except Exception as e:
+            rospy.logwarn(f"[graph_state] gate_map konnte nicht gespeichert werden: {e}")
+
+    def _load_tag_directions(self):
+        # Gleiche Datei/gleicher Schluessel wie detect_apriltag_node._load_tag_config
+        # (keine zweite Kopie der Zuordnung pflegen) - Tag-ID -> erlaubte
+        # Wort-Richtungen ist eine feste Geometrie-Eigenschaft der Kreuzung,
+        # unabhaengig davon ob sie live erkannt oder aus dem Graph
+        # vorhergesagt wurde.
+        path = os.path.join(os.path.dirname(__file__), "../config/detect_apriltag_node.json")
+        with open(path, 'r') as f:
+            config = json.load(f)
+        raw = config.get("tag_directions", {})
+        self.tag_directions = {int(k): v for k, v in raw.items()}
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
@@ -134,6 +211,18 @@ class GraphStateNode:
         # (path_planner_node/debug_graph_node erwarten explizit "node").
         self.gate_map[key] = {"node": self.current_edge["from"], "tag": self.current_edge["tag"]}
         rospy.loginfo(f"[graph_state] Tor {gate_id} -> Kante {self.gate_map[key]}")
+        self._save_gate_map()
+
+    def cbReloadGateMap(self, msg):
+        # Notfall-Korrektur: mapping_node.json wurde von Hand editiert (Tor-ID
+        # getauscht/entfernt) - komplett durch den neu eingelesenen Stand
+        # ersetzen (nicht nur mergen), damit z.B. ein entferntes Tor auch
+        # wirklich verschwindet. current_node/visited_edges bleiben unberuehrt.
+        if not msg.data:
+            return
+        new_map = self._load_gate_map_from_config()
+        rospy.loginfo(f"[graph_state] gate_map neu geladen: {self.gate_map} -> {new_map}")
+        self.gate_map = new_map
 
     def cbPhase(self, msg):
         phase = msg.data
@@ -170,16 +259,40 @@ class GraphStateNode:
         offset = (exit_tag - entry_tag) % 4
         return self._DIR_FOR_OFFSET.get(offset)
 
+    def _effective_entry_tag(self):
+        # Live-Lesung bevorzugen (echte Kamera-Bestaetigung), aber NIE
+        # komplett blockieren, wenn sie diesmal ausbleibt: current_node wird
+        # ohnehin ausschliesslich aus der eigenen Kartenverfolgung bestimmt
+        # (kein Tag identifiziert je einen Knoten, siehe Kopfkommentar) - der
+        # Eingangs-Tag fuer den aktuellen Knoten ist daher bereits durch die
+        # VORHERIGE Abbiegeentscheidung deterministisch bekannt (predicted_
+        # entry_tag), unabhaengig davon ob die Kamera ihn diesmal bestaetigen
+        # kann. Ohne diesen Fallback bleibt exit_directions leer -> next_direction
+        # bleibt dauerhaft "" -> die FSM haengt fest (siehe Diskussion).
+        return self.current_entry_tag if self.current_entry_tag is not None \
+            else self.predicted_entry_tag
+
     def _compute_exit_directions(self):
         # Fuer jede moegliche Ausfahrt am current_node: passendes Wort, damit
         # explore_control_node/path_planner_node ihre Tag-ID-Entscheidung in
         # left/right/straight uebersetzen koennen.
+        entry = self._effective_entry_tag()
         result = {}
         for exit_tag_str in self.graph.get(self.current_node, {}).keys():
-            word = self._word_for_exit(self.current_entry_tag, int(exit_tag_str))
+            word = self._word_for_exit(entry, int(exit_tag_str))
             if word is not None:
                 result[exit_tag_str] = word
         return result
+
+    def _predicted_allowed_directions(self):
+        # Rein aus dem Graph vorhergesagte erlaubte Richtungen fuer
+        # current_node - bewusst UNABHAENGIG von jeder Live-Kamera-Lesung
+        # (auch unabhaengig von current_entry_tag), damit switch_control_node
+        # eine wirklich zweite, eigenstaendige Quelle hat, wenn seine eigene
+        # Live-Erkennung steckenbleibt/ausbleibt.
+        if self.predicted_entry_tag is None:
+            return []
+        return self.tag_directions.get(self.predicted_entry_tag, [])
 
     # ── Graph-Uebergang ───────────────────────────────────────────────────────
 
@@ -199,7 +312,12 @@ class GraphStateNode:
             self.visited_edges.append(normalized)
 
     def _advance_graph(self):
-        entry     = self.current_entry_tag
+        # Effektiven (live oder vorhergesagten) Tag verwenden, NICHT nur
+        # current_entry_tag: sonst wuerde ein per Graph-Fallback erfolgreich
+        # gefahrener Abbiegevorgang (siehe switch_control_node) hier trotzdem
+        # verworfen ("Graph-Update uebersprungen") und die Karte liefe der
+        # physischen Position des Bots hinterher.
+        entry     = self._effective_entry_tag()
         direction = self._last_direction
 
         if entry is None or not direction or direction == "unknown":
@@ -225,8 +343,12 @@ class GraphStateNode:
         self._pending_edge = {"from": self.current_node, "tag": str(exit_tag)}
         rospy.loginfo(f"[graph_state] {self.current_node} --{exit_tag}({direction})--> {neighbor_node}")
         self.current_node = neighbor_node
-        # Neue Kreuzung: alter Eingangs-Tag gilt nicht mehr, bis ein neuer erkannt wird
+        # Neue Kreuzung: alter Eingangs-Tag gilt nicht mehr, bis ein neuer erkannt wird.
         self.current_entry_tag = None
+        # Eingangs-Tag der NEUEN Kreuzung ist durch diese Abbiegeentscheidung
+        # bereits deterministisch bekannt, lange bevor der Bot dort ankommt
+        # und unabhaengig davon, ob die Kamera ihn dort lesen kann.
+        self.predicted_entry_tag = int(neighbor_tag)
 
     # ── Hauptschleife ─────────────────────────────────────────────────────────
 
@@ -239,6 +361,8 @@ class GraphStateNode:
             self.pub_visited_edges.publish(String(data=json.dumps(self.visited_edges)))
             self.pub_gate_map.publish(String(data=json.dumps(self.gate_map)))
             self.pub_exit_directions.publish(String(data=json.dumps(self._compute_exit_directions())))
+            self.pub_allowed_directions.publish(
+                String(data=",".join(self._predicted_allowed_directions())))
             rate.sleep()
 
 

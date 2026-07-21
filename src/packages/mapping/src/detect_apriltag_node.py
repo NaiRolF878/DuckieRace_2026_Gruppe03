@@ -140,6 +140,9 @@ class DetectApriltagNode:
         raw = config.get("tag_directions", {})
         self.tag_directions = {int(k): v for k, v in raw.items()}
         self.tag_families   = config.get("tag_families", ["tagStandard52h13"])
+        gate_range          = config.get("gate_tag_range", {"min": 5, "max": 13})
+        self.gate_tag_min   = int(gate_range.get("min", 5))
+        self.gate_tag_max   = int(gate_range.get("max", 13))
 
     def cbUpdateParameters(self, parameters):
         t = parameters["tag_filter"]
@@ -221,15 +224,17 @@ class DetectApriltagNode:
         return self._stable_id
 
     def _detect_gate_id(self, all_tags):
-        # Tor-Tags (5-13) erscheinen NICHT in tag_directions und durchlaufen daher
-        # nicht die Positions-/Richtungsfilter der Kreuzungs-Tags. Kriterium hier:
-        # Mindestflaeche (gleiche Schwelle wie bei den Kreuzungs-Tags) UND dieselbe
+        # Tor-Tags (Bereich aus JSON "gate_tag_range", Default 5-13) erscheinen
+        # NICHT in tag_directions und durchlaufen daher nicht die Positions-/
+        # Richtungsfilter der Kreuzungs-Tags. Kriterium hier: Mindestflaeche
+        # (gleiche Schwelle wie bei den Kreuzungs-Tags) UND dieselbe
         # Stabilitaetspruefung (stability_required Frames in Folge) wie bei den
         # Kreuzungs-Tags - graph_state_node uebernimmt einen gemeldeten Tor-Tag
         # dauerhaft und ueberschreibt ihn nie wieder, daher darf hier keine
         # Einzelframe-Fehlerkennung (Bewegungsunschaerfe, Rauschen) durchrutschen.
         candidates = [t for t in all_tags
-                      if 5 <= t.tag_id <= 13 and self._tag_area(t) >= self.min_tag_area]
+                      if self.gate_tag_min <= t.tag_id <= self.gate_tag_max
+                      and self._tag_area(t) >= self.min_tag_area]
         raw_id = max(candidates, key=self._tag_area).tag_id if candidates else -1
 
         if raw_id == -1:

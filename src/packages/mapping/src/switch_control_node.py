@@ -16,6 +16,18 @@
 # Zufalls-Fallback. Die Richtungspruefung liegt deshalb in _update_state (nicht
 # in cbStopLine): sie muss bei jedem STOPPING-Tick neu versucht werden, weil
 # next_direction erst NACH dem Anhalten eintreffen kann.
+#
+# Graph-Fallback: allowed_dirs stammt normalerweise aus der LIVE Tag-Erkennung
+# (/detect/apriltag/direction). Kann die Kamera den Tag an dieser Kreuzung gar
+# nicht (mehr) lesen, bliebe der Bot sonst fuer immer in STOPPING haengen -
+# graph_state_node kennt die erlaubten Richtungen an dieser Kreuzung aber
+# bereits deterministisch aus der eigenen Kartenverfolgung (/graph/
+# allowed_directions), unabhaengig von der Kamera. Diese Quelle wird daher als
+# Fallback verwendet: sofort, falls beim Eintritt in STOPPING gar keine Live-
+# Richtung vorliegt (cbStopLine), und nach stopping_fallback_timeout Sekunden,
+# falls die eingefrorene Live-Richtung zwar vorliegt aber nicht zu
+# next_direction passt (_update_state) - z.B. weil sie noch ein Rest der
+# vorherigen Kreuzung war ("Speicher hat noch die letzte ID").
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
@@ -36,14 +48,20 @@ class SwitchControlNode:
         self.phase            = self.LANE
         self.phase_start_time = rospy.Time.now()
         self.allowed_dirs     = []
+        self.graph_allowed_dirs = []   # Fallback aus /graph/allowed_directions
+        self.used_graph_fallback = False   # nur fuers Debug-Dashboard
         self.direction        = "straight"
         self.next_direction   = ""     # von explore_control_node/path_planner_node
         self.stop_line        = False
         self.turn_done        = False
 
         # Timing-Defaults
-        self.stop_duration   = 2.0
-        self.turning_timeout = 8.0
+        self.stop_duration            = 2.0
+        self.turning_timeout          = 8.0
+        # Deutlich laenger als detect_apriltag_node's tag_memory.seconds (3.0s
+        # Default), damit dem Live-Pfad genug Zeit bleibt, bevor auf den
+        # Graph-Fallback zurueckgegriffen wird.
+        self.stopping_fallback_timeout = 6.0
 
         util.init_parameters(node_name, self.cbUpdateParameters)
 
@@ -58,6 +76,8 @@ class SwitchControlNode:
             f'/{self._vehicle_name}/intersection/direction', String, queue_size=1)
 
         # ── Subscriber ────────────────────────────────────────────────────────
+        rospy.Subscriber(f'/{self._vehicle_name}/graph/allowed_directions',
+                         String, self.cbGraphAllowedDirections, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/detect/stop_line',
                          Bool, self.cbStopLine, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/detect/apriltag/direction',
@@ -72,12 +92,18 @@ class SwitchControlNode:
     def cbUpdateParameters(self, parameters):
         # Safely get parameters to avoid KeyErrors
         timing = parameters.get("timing", {})
-        
+
         if "stop_duration" in timing:
             self.stop_duration = timing["stop_duration"].get("default", 2.0)
-        
+
         if "turning_timeout" in timing:
             self.turning_timeout = timing["turning_timeout"].get("default", 8.0)
+
+        if "stopping_fallback_timeout" in timing:
+            self.stopping_fallback_timeout = timing["stopping_fallback_timeout"].get("default", 6.0)
+
+    def cbGraphAllowedDirections(self, msg):
+        self.graph_allowed_dirs = msg.data.split(",") if msg.data else []
 
     def cbStopLine(self, msg):
         self.stop_line = msg.data
@@ -85,13 +111,26 @@ class SwitchControlNode:
         if not (msg.data and self.phase == self.LANE):
             return
 
-        if not self.allowed_dirs or self.allowed_dirs == ["unknown"]:
+        dirs = self.allowed_dirs
+        self.used_graph_fallback = False
+        if not dirs or dirs == ["unknown"]:
+            # Live-Erkennung liefert gerade nichts Brauchbares - sofort auf
+            # den Graph-Fallback ausweichen statt erst noch stopping_fallback_
+            # timeout in STOPPING zu verlieren (hier gibt es ja gar keinen
+            # Live-Wert, den es abzuwarten lohnt).
+            dirs = self.graph_allowed_dirs
+            self.used_graph_fallback = bool(dirs)
+
+        if not dirs or dirs == ["unknown"]:
             rospy.loginfo_throttle(2.0,
-                "[switch] Rote Linie ohne Tag-Richtung -> keine Kreuzung, fahre weiter")
+                "[switch] Rote Linie ohne Tag-Richtung (auch kein Graph-Fallback) "
+                "-> keine Kreuzung, fahre weiter")
             return
 
+        self.allowed_dirs = dirs
+        source = "Graph-Fallback" if self.used_graph_fallback else "Live-Tag"
         rospy.loginfo(f"[switch] Kreuzung (Linie+Tag) -> STOPPING | "
-                      f"erlaubte Richtungen: {self.allowed_dirs}")
+                      f"erlaubte Richtungen ({source}): {self.allowed_dirs}")
         self._transition_to(self.STOPPING)
 
     def cbApriltagDirection(self, msg):
@@ -122,6 +161,21 @@ class SwitchControlNode:
                 self.direction = self.next_direction
                 rospy.loginfo(f"[switch] Richtung bestaetigt: {self.direction} "
                               f"(aus {self.allowed_dirs}) -> TURNING")
+                self._transition_to(self.TURNING)
+            elif (self.next_direction and not self.used_graph_fallback
+                    and elapsed >= self.stopping_fallback_timeout
+                    and self.next_direction in self.graph_allowed_dirs):
+                # Die beim STOPPING-Eintritt eingefrorene Live-Richtung passt
+                # seit stopping_fallback_timeout Sekunden nicht zu next_direction
+                # (z.B. weil sie noch ein Rest der vorherigen Kreuzung war) -
+                # auf den unabhaengigen Graph-Fallback ausweichen, statt fuer
+                # immer haengen zu bleiben (siehe Kopfkommentar).
+                self.used_graph_fallback = True
+                self.direction = self.next_direction
+                rospy.logwarn(f"[switch] Live-Richtung {self.allowed_dirs} passt seit "
+                              f"{elapsed:.1f}s nicht zu next_direction "
+                              f"('{self.next_direction}') -> Graph-Fallback "
+                              f"{self.graph_allowed_dirs} -> TURNING")
                 self._transition_to(self.TURNING)
             else:
                 rospy.logwarn_throttle(1.0,

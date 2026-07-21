@@ -235,8 +235,28 @@ andere JSON-Struktur ohne `parameters`-Block). Verwaltet `current_node`,
 `current_edge`, `visited_edges` und `gate_map`. Der Graph-Übergang wird genau
 beim Wechsel von `/intersection/phase` nach `"Turning"` ausgelöst (garantiert
 frische Richtung, siehe Kommentar im Code).
+
+Verfolgt zusätzlich `predicted_entry_tag`: den Eingangs-Tag der Kreuzung, an
+der der Bot gerade steht, rein aus der eigenen Kartenverfolgung berechnet
+(bereits bei der vorherigen Abbiegeentscheidung bekannt, lange bevor die
+Kamera überhaupt etwas sehen muss). Kann die Kamera den Tag diesmal nicht
+lesen (`current_entry_tag` bleibt `None`), springt `_effective_entry_tag()`
+auf diese Vorhersage ein – ohne diesen Fallback bliebe `exit_directions`
+leer und `next_direction` dauerhaft `""` (garantierter Deadlock in
+`switch_control_node`, siehe dort).
 **Publiziert:** `/graph/current_node`, `/graph/current_edge`,
-`/graph/visited_edges`, `/graph/gate_map`, `/graph/exit_directions`
+`/graph/visited_edges`, `/graph/gate_map`, `/graph/exit_directions`,
+`/graph/allowed_directions` (Fallback-Quelle für `switch_control_node`)
+
+**Notfall-Korrektur der Tor-Zuordnung:** `gate_map` wird bei jedem neu
+entdeckten Tor automatisch nach `mapping_node.json` (Feld `"gate_map"`)
+zurückgeschrieben. Ein dort bereits vorhandener Eintrag wird von einer
+späteren Live-Erkennung nie überschrieben (siehe `cbGateId`). Damit lässt
+sich ein falsch erkanntes Tor mitten im Lauf korrigieren: Datei von Hand
+editieren (ID tauschen/Eintrag entfernen), im Dashboard auf "Tor-Zuordnung
+neu laden" klicken (`/graph/reload_gate_map`) – `gate_map` wird komplett
+durch den neu eingelesenen Stand ersetzt, `current_node`/`visited_edges`
+bleiben unberührt (kein Neustart der Exploration nötig).
 
 ### explore_control_node — Phase 1 (DFS)
 Wählt an jeder Kreuzung die erste noch unbesuchte, aktuell wählbare Ausfahrt.
@@ -271,11 +291,13 @@ Bot-Position (gelb) sowie Tor-Symbole mit Häkchen für bereits abgefahrene
 Tore. Rechtes Panel zeigt Phase, Position, Fortschritt, gefundene Tore,
 geplante Reihenfolge, ein Eingabefeld für eine **vorgegebene Tor-Reihenfolge**
 (kommagetrennte Gate-IDs, z.B. `5,9,3` – schreibt in `mapping_node.json`
-zurück und publiziert live auf `/navigation/gate_order`) und den Start-Button.
-ROS-Callbacks aktualisieren
+zurück und publiziert live auf `/navigation/gate_order`), einen Button
+**"Tor-Zuordnung neu laden"** (Notfall-Korrektur, siehe `graph_state_node`)
+und den Start-Button. ROS-Callbacks aktualisieren
 ausschließlich State-Variablen; gezeichnet wird nur im Hauptthread über
 `root.after(200, update_canvas)`.
-**Publiziert:** `/navigation/start_delivery` (bei Klick auf den Button)
+**Publiziert:** `/navigation/start_delivery` (bei Klick auf den Button),
+`/graph/reload_gate_map` (bei Klick auf "Tor-Zuordnung neu laden")
 
 ### detect_apriltag_node (Erweiterung)
 Zusätzlich zur unveränderten Kreuzungs-Tag-Logik (1–4) wird jeder erkannte
@@ -299,6 +321,16 @@ in `allowed_dirs` enthalten, bleibt der Bot in `STOPPING` und wartet weiter –
 **kein Fallback auf Zufall**, da Challenge 4 einen deterministischen Pfad
 verlangt. Alle anderen FSM-Zustände sind unverändert.
 
+**Graph-Fallback gegen permanentes Steckenbleiben:** `allowed_dirs` stammt
+normalerweise aus der Live-Tag-Erkennung. Kann die Kamera den Tag an dieser
+Kreuzung gar nicht (mehr) lesen, würde der Bot sonst für immer in `STOPPING`
+warten (z.B. wenn eine veraltete Richtung "im Speicher" hängen bleibt). Die
+Node weicht daher auf `/graph/allowed_directions` (von `graph_state_node`,
+rein aus der Kartenverfolgung vorhergesagt) aus: sofort, falls beim
+`STOPPING`-Eintritt gar keine Live-Richtung vorliegt, sonst nach
+`stopping_fallback_timeout` Sekunden (Default 6.0, Config `timing`), falls
+die eingefrorene Live-Richtung nicht zu `next_direction` passt.
+
 ---
 
 ## Topics
@@ -315,6 +347,8 @@ verlangt. Alle anderen FSM-Zustände sind unverändert.
 | `/graph/visited_edges` | String (JSON) | graph_state → explore, debug |
 | `/graph/gate_map` | String (JSON) | graph_state → path_planner, debug |
 | `/graph/exit_directions` | String (JSON) | graph_state → explore, path_planner |
+| `/graph/allowed_directions` | String (Worte, kommagetrennt) | graph_state → switch_control (Fallback) |
+| `/graph/reload_gate_map` | Bool | debug (Button) → graph_state (Notfall-Korrektur) |
 | `/navigation/next_direction` | String (Wort) | explore / path_planner → switch_control |
 | `/navigation/phase` | String | explore / path_planner → alle |
 | `/navigation/exploration_done` | Bool | explore → debug |
