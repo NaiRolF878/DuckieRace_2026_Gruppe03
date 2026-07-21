@@ -115,6 +115,12 @@ class DetectLaneNode:
         self.lightness_red2_h = parameters["red2"]["vh"]["default"]
 
         self.thresh_red_pixels = parameters["detection"]["thresh"]["default"]
+        # Erkennungszone der Haltelinie (Anteil der Bild-Hoehe/-Breite) - ueber
+        # die JSON einstellbar statt fest im Code, damit sie sich ohne
+        # Code-Aenderung an die Kamera-Montage/Strecke anpassen laesst.
+        self.red_detection_zone    = parameters["detection"]["zone"]["default"]
+        self.red_detection_x_start = parameters["detection"]["x_start"]["default"]
+        self.red_detection_x_end   = parameters["detection"]["x_end"]["default"]
 
     # ── Bildvorverarbeitung ──────────────────────────────────────────────────
 
@@ -160,13 +166,17 @@ class DetectLaneNode:
         return cv2.bitwise_or(mask_red1, mask_red2)
 
     def detect_stop_line(self, img, hsv):
-        # ROI: unteres Drittel des BEV-Bilds, direkt vor dem Bot.
+        # ROI ueber JSON konfigurierbar: detection_zone schneidet oben ab (nur
+        # unterer Bildteil), x_start/x_end schneiden links/rechts ab (eigene
+        # Spur, Gegenspur ausschliessen).
         height, width = img.shape[:2]
-        row_start, col_start = int(height * 0.70), int(width * 0.3)
-        mask_red = self.fnGetRedMask(hsv[row_start:, col_start:])
+        row_start = int(height * self.red_detection_zone)
+        col_start = int(width * self.red_detection_x_start)
+        col_end   = int(width * self.red_detection_x_end)
+        mask_red = self.fnGetRedMask(hsv[row_start:, col_start:col_end])
         num_red_pixels = cv2.countNonZero(mask_red)
 
-        debug_img = img[row_start:, col_start:].copy()
+        debug_img = img[row_start:, col_start:col_end].copy()
         debug_img[mask_red > 0] = (0, 0, 255)
         cv2.putText(debug_img, f"Red pixels: {num_red_pixels}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)

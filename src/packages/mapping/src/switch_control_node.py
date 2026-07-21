@@ -74,6 +74,15 @@ class SwitchControlNode:
             f'/{self._vehicle_name}/intersection/phase', String, queue_size=1)
         self.pub_direction = rospy.Publisher(
             f'/{self._vehicle_name}/intersection/direction', String, queue_size=1)
+        # Bündelt Start-Signal + Richtung in EINER Nachricht (einmalig beim
+        # Uebergang nach TURNING, nicht wie /intersection/phase & /intersection/
+        # direction jeden Tick auf getrennten Topics) - verhindert, dass
+        # control_intersection_node die Abbiege-Sequenz mit einer noch alten
+        # Richtung startet, falls die "phase"-Nachricht dort vor der
+        # "direction"-Nachricht verarbeitet wird (zwei unabhaengige Topics,
+        # keine Verarbeitungsreihenfolge garantiert).
+        self.pub_turn_start = rospy.Publisher(
+            f'/{self._vehicle_name}/intersection/turn_start', String, queue_size=1)
 
         # ── Subscriber ────────────────────────────────────────────────────────
         rospy.Subscriber(f'/{self._vehicle_name}/graph/allowed_directions',
@@ -149,6 +158,10 @@ class SwitchControlNode:
         self.phase_start_time = rospy.Time.now()
         if new_phase == self.TURNING:
             self.turn_done = False
+            # self.direction ist an beiden Aufrufstellen (_update_state) bereits
+            # auf die bestaetigte Richtung gesetzt, BEVOR _transition_to
+            # aufgerufen wird - hier also garantiert aktuell.
+            self.pub_turn_start.publish(String(data=self.direction))
         rospy.loginfo(f"[switch] -> {new_phase}")
 
     def _update_state(self):

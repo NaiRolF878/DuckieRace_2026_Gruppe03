@@ -48,7 +48,7 @@ Graph-/Pfadplanungs-Logik vorgegeben.
 | `detect_apriltag_node.py` | Node | Kreuzungs-Tags (1–4) **+ Tor-Tags (5–13)** |
 | `switch_control_node.py` | Node | FSM – Richtung kommt jetzt von `next_direction`, kein `random.choice` mehr |
 | `control_lane_node.py` | Node | PID-Spurregler mit Kurven-Drosselung (Neuaufbau nach `explore_duckietown_ii`-Vorbild) |
-| `control_intersection_node.py` | Node | Fährt die Kreuzung – zeitbasierte Segmente (`v`/`omega`/`duration`), unverändert aus Challenge 2 |
+| `control_intersection_node.py` | Node | Fährt die Kreuzung – zeitbasierte Segmente (`v`/`omega`/`duration`), Start ereignisgesteuert über `/intersection/turn_start` |
 | `graph_state_node.py` | Node | **Neu.** Verwaltet Graph-Zustand (Position, besuchte Kanten, gefundene Tore) |
 | `explore_control_node.py` | Node | **Neu.** Phase 1: DFS-Exploration über alle Graphkanten |
 | `path_planner_node.py` | Node | **Neu.** Phase 2+3: Dijkstra + TSP-Planung, fährt die Tore ab |
@@ -330,13 +330,25 @@ Positions-/Stabilitäts-Filterung wie bei den Kreuzungs-Tags, da Tore an
 beliebiger Stelle im Bild auftauchen können).
 **Zusätzlich publiziert:** `/detect/gate/id` (Int32, -1 wenn keiner sichtbar)
 
-### control_intersection_node (unverändert aus Challenge 2)
-1:1 dieselbe zeitbasierte Segment-Logik wie in `intersection_handling`:
-jedes Segment gibt `{v, omega, duration}` vor, Segment-Ende wird über die
-**kumulierte** Segmentdauer seit Start der Sequenz bestimmt (kein Timeout
-nötig, da rein zeitgesteuert). Ein zwischenzeitlicher Umbau auf
-encoder-basierte (Ticks) Segment-Enden wurde wieder rückgängig gemacht, da
-er auf dieser Strecke nicht zuverlässig funktionierte.
+### control_intersection_node
+Segment-Logik 1:1 wie in `intersection_handling`: jedes Segment gibt
+`{v, omega, duration}` vor, Segment-Ende wird über die **kumulierte**
+Segmentdauer seit Start der Sequenz bestimmt (kein Timeout nötig, da rein
+zeitgesteuert). Ein zwischenzeitlicher Umbau auf encoder-basierte (Ticks)
+Segment-Enden wurde wieder rückgängig gemacht, da er auf dieser Strecke
+nicht zuverlässig funktionierte.
+
+**Start-Trigger (`/intersection/turn_start`, nicht mehr Polling):** Bündelt
+Richtung + Start-Zeitpunkt in einer Nachricht. Vorher wurde der Start der
+Sequenz durch Beobachten von `/intersection/phase == "Turning"` erkannt,
+während die Richtung separat über `/intersection/direction` kam – zwei
+unabhängige Topics ohne garantierte Verarbeitungsreihenfolge. Kam die
+`phase`-Nachricht zuerst an, startete die Sequenz mit der Richtung der
+**vorherigen** Kreuzung (Bot bog z.B. rechts ab, obwohl "geradeaus" geplant
+war). `switch_control_node` legt die Richtung beim Übergang Stopping→Turning
+fest und ändert sie danach nie wieder – `control_intersection_node` wartet
+jetzt einfach (Motor aus), bis `turn_start` eintrifft, statt mit einer
+möglicherweise veralteten Richtung loszufahren.
 
 ### switch_control_node (Anpassung)
 Einzige fachliche Änderung: `random.choice(allowed_dirs)` wurde durch
@@ -379,7 +391,8 @@ die eingefrorene Live-Richtung nicht zu `next_direction` passt.
 | `/navigation/start_delivery` | Bool | debug (Button) → path_planner |
 | `/navigation/delivery_progress` | String (JSON) | path_planner → debug |
 | `/intersection/phase` | String | switch_control → control_intersection, graph_state |
-| `/intersection/direction` | String | switch_control → control_intersection, graph_state |
+| `/intersection/direction` | String | switch_control → graph_state, debug (Anzeige) |
+| `/intersection/turn_start` | String (Wort) | switch_control → control_intersection (einmalig pro Abbiegung) |
 | `/intersection/turn_done` | Bool | control_intersection → switch_control |
 | `/enable/lane`, `/enable/intersection` | Bool | switch_control → control_lane / control_intersection |
 | `/car_cmd_switch_node/cmd` | Twist2DStamped | control_lane / control_intersection → Motoren |

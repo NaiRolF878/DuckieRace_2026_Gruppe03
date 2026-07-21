@@ -72,10 +72,13 @@ class DetectApriltagNode:
         # Filter-/Memory-Defaults (werden aus JSON überschrieben)
         self.stability_required  = 3
         self.pos_filter_enabled  = True
-        self.pos_x_min           = 0.5
-        self.pos_x_max           = 1.0
         self.pos_y_max           = 0.85
         self.min_tag_area        = 200
+        # Anteil der Bildbreite, der von LINKS abgeschnitten wird, bevor
+        # ueberhaupt detektiert wird (0.5 = linke Haelfte weg) - verhindert
+        # Tags auf der linken Bildseite fuer Kreuzungs- UND Tor-Tags
+        # gleichermassen (statt eines Nachfilters nur fuer Kreuzungs-Tags).
+        self.roi_width           = 0.5
         self.tag_memory_seconds  = 3.0
         self.tag_memory_min_area = 1500
 
@@ -148,14 +151,14 @@ class DetectApriltagNode:
         t = parameters["tag_filter"]
         self.stability_required = int(t["stability_frames"]["default"])
         self.pos_filter_enabled = bool(t["pos_filter_enabled"]["default"])
-        self.pos_x_min          = t["pos_x_min"]["default"]
-        self.pos_x_max          = t["pos_x_max"]["default"]
         self.pos_y_max          = t["pos_y_max"]["default"]
         self.min_tag_area       = t["min_area"]["default"]
 
         m = parameters["tag_memory"]
         self.tag_memory_seconds  = m["seconds"]["default"]
         self.tag_memory_min_area = m["min_area"]["default"]
+
+        self.roi_width = parameters["roi"]["width"]["default"]
 
     def cbChosenDirection(self, msg):
         # Von der FSM gewuerfelte Abbiegerichtung (nur Anzeige)
@@ -186,14 +189,11 @@ class DetectApriltagNode:
             (c[0][0]*c[1][1] - c[1][0]*c[0][1]) + (c[1][0]*c[2][1] - c[2][0]*c[1][1]) +
             (c[2][0]*c[3][1] - c[3][0]*c[2][1]) + (c[3][0]*c[0][1] - c[0][0]*c[3][1]))
 
-    def _is_valid_tag(self, tag, img_h, img_w):
+    def _is_valid_tag(self, tag, img_h):
         if tag.tag_id not in self.tag_directions:
             return False
         if self.pos_filter_enabled:
-            cx_rel = tag.center[0] / img_w
             cy_rel = tag.center[1] / img_h
-            if not (self.pos_x_min <= cx_rel <= self.pos_x_max):
-                return False
             if cy_rel > self.pos_y_max:
                 return False
         if self._tag_area(tag) < self.min_tag_area:
@@ -256,11 +256,23 @@ class DetectApriltagNode:
             self._update_stability(-1)
             return False, -1, "unknown", debug_img, 0.0, -1
 
-        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        img_h, img_w = img_bgr.shape[:2]
+        # Links abschneiden VOR der Detektion (nicht nur nachtraeglich filtern):
+        # Tags in der abgeschnittenen Zone koennen so gar nicht erst erkannt
+        # werden - gilt automatisch fuer Kreuzungs- UND Tor-Tags gleichermassen.
+        crop_x0 = int(img_w * self.roi_width)
+        gray = cv2.cvtColor(img_bgr[:, crop_x0:], cv2.COLOR_BGR2GRAY)
         all_tags = []
         for _, det in self.detectors:
             all_tags.extend(det.detect(gray))
-        img_h, img_w = img_bgr.shape[:2]
+
+        # Koordinaten zurueck in Vollbild-Referenz verschieben, damit Debug-
+        # Zeichnung und die verbleibende Positions-/Flaechenberechnung weiter
+        # mit dem vollen Kamerabild arbeiten.
+        offset = np.array([crop_x0, 0])
+        for tag in all_tags:
+            tag.corners = tag.corners + offset
+            tag.center = tag.center + offset
 
         # Roh erkannte Tags grau
         for tag in all_tags:
@@ -270,7 +282,7 @@ class DetectApriltagNode:
 
         gate_id = self._detect_gate_id(all_tags)
 
-        valid = [t for t in all_tags if self._is_valid_tag(t, img_h, img_w)]
+        valid = [t for t in all_tags if self._is_valid_tag(t, img_h)]
         best_area = 0.0
         if valid:
             best      = max(valid, key=self._tag_area)

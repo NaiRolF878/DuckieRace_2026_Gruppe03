@@ -13,6 +13,13 @@
 # fertig sobald die kumulierte Segmentdauer verstrichen ist. Einfacher und
 # robuster als die vorherige Encoder-Variante, die auf dieser Strecke nicht
 # zuverlaessig funktionierte.
+#
+# Start der Sequenz ist ereignisgesteuert ueber /intersection/turn_start
+# (Richtung + Start-Zeitpunkt in EINER Nachricht), NICHT durch Polling von
+# /intersection/phase: phase und direction sind zwei unabhaengige Topics ohne
+# garantierte Verarbeitungsreihenfolge - kaeme "Turning" vor der neuen
+# Richtung an, wuerde sonst mit der Richtung der VORHERIGEN Kreuzung
+# losgefahren.
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
@@ -32,9 +39,10 @@ class ControlIntersectionNode:
         self.direction  = "straight"
         self.turn_segments = {"left": [], "right": [], "straight": []}
 
-        self._turn_active     = False
+        # None = noch keine (frische) Sequenz gestartet - siehe cbTurnStart/
+        # cbPhase. Verhindert, dass _compute_cmd() bei Phase "Turning" ohne
+        # frisch eingetroffenes turn_start faelschlich "fertig" meldet.
         self._turn_start      = None
-        self._last_phase      = "Lane"
         self._turn_done_sent  = False
 
         util.init_parameters(node_name, self.cbUpdateParameters)
@@ -43,8 +51,8 @@ class ControlIntersectionNode:
                          Bool, self.cbEnable, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/intersection/phase',
                          String, self.cbPhase, queue_size=1)
-        rospy.Subscriber(f'/{self._vehicle_name}/intersection/direction',
-                         String, self.cbDirection, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/intersection/turn_start',
+                         String, self.cbTurnStart, queue_size=1)
 
         self.pub_cmd = rospy.Publisher(
             f'/{self._vehicle_name}/car_cmd_switch_node/cmd', Twist2DStamped, queue_size=1)
@@ -66,10 +74,22 @@ class ControlIntersectionNode:
         self.enable = msg.data
 
     def cbPhase(self, msg):
-        self.phase = msg.data
+        new_phase = msg.data
+        if self.phase == "Turning" and new_phase != "Turning":
+            # Sequenz beendet (Wechsel weg von Turning) - fuer die naechste
+            # Kreuzung wieder ein frisches turn_start verlangen, statt einen
+            # veralteten Zeitstempel weiterzuverwenden.
+            self._turn_start = None
+        self.phase = new_phase
 
-    def cbDirection(self, msg):
-        self.direction = msg.data
+    def cbTurnStart(self, msg):
+        # Einzige, atomare Quelle fuer "jetzt starten" + "in dieser Richtung" -
+        # beides kommt aus derselben Nachricht, kein Wettlauf zwischen Topics
+        # moeglich.
+        self.direction       = msg.data
+        self._turn_start     = rospy.Time.now()
+        self._turn_done_sent = False
+        rospy.loginfo(f"[control_intersection] Starte Sequenz: {self.direction}")
 
     def _segment_cmd(self):
         segments = self.turn_segments.get(self.direction, [])
@@ -85,6 +105,12 @@ class ControlIntersectionNode:
 
     def _compute_cmd(self):
         if self.phase == "Turning":
+            if self._turn_start is None:
+                # Phase ist zwar schon "Turning", turn_start aber noch nicht
+                # eingetroffen - kurz warten (Motor aus) statt mit einer
+                # unbekannten/alten Richtung loszufahren oder faelschlich
+                # "fertig" zu melden.
+                return 0.0, 0.0, False
             v, omega, done = self._segment_cmd()
             return v, omega, done
         # Stopping oder Lane -> Motor aus
@@ -96,12 +122,6 @@ class ControlIntersectionNode:
     def run(self):
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
-            if self.phase == "Turning" and self._last_phase != "Turning":
-                self._turn_start = rospy.Time.now()
-                self._turn_done_sent = False
-                rospy.loginfo(f"[control_intersection] Starte Sequenz: {self.direction}")
-            self._last_phase = self.phase
-
             if self.enable:
                 v, omega, done = self._compute_cmd()
                 twist = Twist2DStamped()

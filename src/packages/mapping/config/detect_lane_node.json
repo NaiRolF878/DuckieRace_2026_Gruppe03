@@ -52,7 +52,10 @@
                 "vh": {"default": 255, "min": 0, "max": 255}
             },
             "detection": {
-                "thresh": {"default": 500, "min": 0, "max": 10000}
+                "thresh": {"default": 500, "min": 0, "max": 10000},
+                "zone": {"default": 0.70, "min": 0.0, "max": 1.0},
+                "x_start": {"default": 0.3, "min": 0.0, "max": 1.0},
+                "x_end": {"default": 1.0, "min": 0.0, "max": 1.0}
             }
         }
     }
