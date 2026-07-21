@@ -100,6 +100,12 @@ class GraphStateNode:
         # (kein Neustart der Exploration noetig).
         rospy.Subscriber(f'/{self._vehicle_name}/graph/reload_gate_map',
                          Bool, self.cbReloadGateMap, queue_size=1)
+        # Erkundung neu starten (z.B. weil ein Tor uebersehen wurde): nur
+        # visited_edges leeren, damit explore_control_node wieder jede Kante
+        # als unbesucht ansieht - current_node/current_edge (physische
+        # Position) und gate_map (schon gefundene Tore) bleiben erhalten.
+        rospy.Subscriber(f'/{self._vehicle_name}/graph/reset_exploration',
+                         Bool, self.cbResetExploration, queue_size=1)
 
         self.pub_current_node = rospy.Publisher(
             f'/{self._vehicle_name}/graph/current_node', String, queue_size=1)
@@ -223,6 +229,14 @@ class GraphStateNode:
         new_map = self._load_gate_map_from_config()
         rospy.loginfo(f"[graph_state] gate_map neu geladen: {self.gate_map} -> {new_map}")
         self.gate_map = new_map
+
+    def cbResetExploration(self, msg):
+        if not msg.data:
+            return
+        rospy.loginfo(f"[graph_state] Erkundung zurueckgesetzt: "
+                      f"{len(self.visited_edges)} Kante(n) wieder als unbesucht markiert "
+                      f"(Tor-Zuordnung bleibt erhalten)")
+        self.visited_edges = []
 
     def cbPhase(self, msg):
         phase = msg.data

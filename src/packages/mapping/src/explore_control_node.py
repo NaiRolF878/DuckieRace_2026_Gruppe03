@@ -42,6 +42,7 @@ class ExploreControlNode:
 
         self._load_map()
         self._total_edges = self._count_total_edges()
+        self._adjacency   = self._build_adjacency()
 
         self.current_node     = None
         self.visited_edges    = []
@@ -57,6 +58,8 @@ class ExploreControlNode:
                          String, self.cbExitDirections, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/navigation/phase',
                          String, self.cbPhase, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/graph/reset_exploration',
+                         Bool, self.cbResetExploration, queue_size=1)
 
         self.pub_next_direction = rospy.Publisher(
             f'/{self._vehicle_name}/navigation/next_direction', String, queue_size=1)
@@ -113,6 +116,18 @@ class ExploreControlNode:
     def cbCurrentNode(self, msg):
         self.current_node = msg.data
 
+    def cbResetExploration(self, msg):
+        if not msg.data:
+            return
+        # visited_edges hier direkt leeren (nicht nur auf graph_state_node's
+        # naechsten Publish warten) - vermeidet ein kurzes Zeitfenster, in dem
+        # der Abschluss-Check unten faelschlich sofort wieder "fertig" meldet,
+        # weil visited_edges noch den alten (vollen) Stand zeigt.
+        self.visited_edges    = []
+        self.exploration_done = False
+        self.phase             = "exploration"
+        rospy.loginfo("[explore_control] Erkundung neu gestartet")
+
     # ── DFS-Logik ─────────────────────────────────────────────────────────────
 
     def _is_visited(self, node, exit_tag):
@@ -142,21 +157,27 @@ class ExploreControlNode:
             return exit_tag
         return None
 
-    def _visited_adjacency(self):
-        # Gerichtete Schritte (node -> [(exit_tag, neighbor), ...]), aber nur
-        # fuer Kanten die bereits befahren (sicher bekannt) sind.
-        visited_set = {tuple(e) for e in self.visited_edges}
+    def _build_adjacency(self):
+        # Gerichtete Schritte (node -> [(exit_tag, neighbor), ...]) ueber ALLE
+        # Kanten des Graphen - die Topologie steht komplett in
+        # mapping_node.json, wird also nicht erst durchs Abfahren "entdeckt".
+        # Eine Einschraenkung auf nur bereits befahrene Kanten (frueherer
+        # Stand) konnte eine Sackgasse erzeugen: fuehrte der einzige Weg zu
+        # unbesuchtem Gebiet ueber eine noch unbesuchte Kante, fand die Suche
+        # keinen Pfad -> next_direction blieb dauerhaft leer, Bot haengt fuer
+        # immer in STOPPING (siehe fehler.md). Eine noch unbesuchte Kante als
+        # Zwischenschritt zu nutzen ist kein Risiko, sondern zaehlt direkt als
+        # Fortschritt.
         adjacency = {}
         for node, exits in self.graph.items():
             for exit_tag, (neighbor, _neighbor_tag) in exits.items():
-                if self._normalize(node, exit_tag) in visited_set:
-                    adjacency.setdefault(node, []).append((exit_tag, neighbor))
+                adjacency.setdefault(node, []).append((exit_tag, neighbor))
         return adjacency
 
     def _find_backtrack_path(self, start_node):
-        # BFS ueber bereits befahrene Kanten zum naechsten Knoten mit
-        # unbesuchten Ausgaengen.
-        adjacency = self._visited_adjacency()
+        # BFS ueber den vollen Graphen zum naechsten Knoten mit unbesuchten
+        # Ausgaengen.
+        adjacency = self._adjacency
         seen_nodes = {start_node}
         queue = deque([(start_node, [])])
         while queue:

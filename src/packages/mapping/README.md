@@ -291,12 +291,14 @@ Tore. Rechtes Panel zeigt Phase, Position, Fortschritt, gefundene Tore,
 geplante Reihenfolge, ein Eingabefeld für eine **vorgegebene Tor-Reihenfolge**
 (kommagetrennte Gate-IDs, z.B. `5,9,3` – schreibt in `mapping_node.json`
 zurück und publiziert live auf `/navigation/gate_order`), einen Button
-**"Tor-Zuordnung neu laden"** (Notfall-Korrektur, siehe `graph_state_node`)
-und den Start-Button. ROS-Callbacks aktualisieren
-ausschließlich State-Variablen; gezeichnet wird nur im Hauptthread über
-`root.after(200, update_canvas)`.
+**"Tor-Zuordnung neu laden"** (Notfall-Korrektur, siehe `graph_state_node`),
+einen Button **"Erkundung neu starten"** (setzt `visited_edges` zurück,
+`gate_map` bleibt – für den Fall, dass ein Tor übersehen wurde) und den
+Start-Button. ROS-Callbacks aktualisieren ausschließlich State-Variablen;
+gezeichnet wird nur im Hauptthread über `root.after(200, update_canvas)`.
 **Publiziert:** `/navigation/start_delivery` (bei Klick auf den Button),
-`/graph/reload_gate_map` (bei Klick auf "Tor-Zuordnung neu laden")
+`/graph/reload_gate_map` (bei Klick auf "Tor-Zuordnung neu laden"),
+`/graph/reset_exploration` (bei Klick auf "Erkundung neu starten")
 
 ### detect_lane_node / control_lane_node (Neuaufbau)
 Ersetzt die Challenge-2-Implementierung, weil die Spurführung auf dieser
@@ -385,6 +387,7 @@ die eingefrorene Live-Richtung nicht zu `next_direction` passt.
 | `/graph/exit_directions` | String (JSON) | graph_state → explore, path_planner |
 | `/graph/allowed_directions` | String (Worte, kommagetrennt) | graph_state → switch_control (Fallback) |
 | `/graph/reload_gate_map` | Bool | debug (Button) → graph_state (Notfall-Korrektur) |
+| `/graph/reset_exploration` | Bool | debug (Button) → graph_state, explore (Erkundung wiederholen) |
 | `/navigation/next_direction` | String (Wort) | explore / path_planner → switch_control |
 | `/navigation/phase` | String | explore / path_planner → alle |
 | `/navigation/exploration_done` | Bool | explore → debug |
@@ -510,15 +513,16 @@ rosrun mapping debug_graph_node.py
   ausschließlich von `path_planner_node`).
 - Bei mehr als 10 Toren wechselt die Planung automatisch von `"optimal"`
   (Brute-Force, sonst nicht mehr praktikabel) auf `"nearest_neighbor"`.
-- `explore_control_node`s DFS kann sich in einem konstruierten Extremfall
-  theoretisch festfahren: wenn die letzte verbleibende unbesuchte Ausfahrt an
-  einem Knoten zufällig genau der Einmündung entspricht, über die der Bot
-  gerade dort angekommen ist (U-Turn, siehe "Tag-ID ↔ Wort-Übersetzung"), UND
-  gleichzeitig kein anderer Knoten mit unbesuchten Ausgängen über bereits
-  befahrene Kanten erreichbar ist. Das kann nur an einer echten Sackgasse
-  (Knoten mit nur einer einzigen Verbindung) auftreten; in allen getesteten
-  Graphen (inkl. Wendeschleifen, siehe unten) löst es sich automatisch durch
-  Backtracking auf.
+- ~~`explore_control_node`s DFS kann sich festfahren, wenn kein anderer Knoten
+  mit unbesuchten Ausgängen über bereits befahrene Kanten erreichbar ist~~ –
+  **behoben**: `_find_backtrack_path()` sucht jetzt über den **vollen**
+  Graphen (komplett aus `mapping_node.json` bekannt), nicht mehr nur über
+  bereits befahrene Kanten. Die alte Einschränkung war kein rein
+  theoretisches Randproblem, sondern ist beim Testen aufgetreten (Bot blieb
+  dauerhaft in `STOPPING`, `next_direction` leer, siehe `fehler.md`). Für
+  genau diesen Fall gibt es jetzt zusätzlich den Button "Erkundung neu
+  starten" im Dashboard (`/graph/reset_exploration`) – setzt nur
+  `visited_edges` zurück, `gate_map` (gefundene Tore) bleibt erhalten.
 
 **Wendeschleifen / Selbstschleifen (Knoten verbindet sich mit sich selbst,
 z.B. ein Wendehammer-Loop wie auf manchen Strecken):** werden unterstützt.
