@@ -259,11 +259,17 @@ bleiben unberührt (kein Neustart der Exploration nötig).
 
 ### explore_control_node — Phase 1 (DFS)
 Wählt an jeder Kreuzung die erste noch unbesuchte, aktuell wählbare Ausfahrt.
-Sind alle Ausgänge eines Knotens besucht, sucht eine BFS über bereits
-befahrene Kanten den nächsten Knoten mit unbesuchten Ausgängen und fährt nur
-den ersten Schritt dorthin (wird bei der nächsten Ankunft neu berechnet).
-Meldet `exploration_done = True`, sobald alle Kanten besucht sind, und gibt
-danach die Kontrolle über `/navigation/phase` ab.
+Sind alle Ausgänge eines Knotens besucht, sucht eine BFS über den **vollen**
+Graphen (nicht nur bereits befahrene Kanten – das führte zu einem
+Deadlock, siehe "Bekannte Einschränkungen") den nächsten Knoten mit
+unbesuchten Ausgängen und fährt nur den ersten Schritt dorthin (wird bei der
+nächsten Ankunft neu berechnet).
+Meldet `exploration_done = True`, sobald alle Kanten besucht sind, leert
+dabei explizit `next_direction` (verhindert, dass eine veraltete Richtung
+von der letzten Abbiegung zufällig zur nächsten Kreuzung passt und der Bot
+ungewollt weiterfährt) und gibt danach die Kontrolle über `/navigation/phase`
+ab. `debug_graph_node` zeigt in diesem Moment ein Popup ("Erkundung
+abgeschlossen").
 **Publiziert:** `/navigation/next_direction`, `/navigation/exploration_done`,
 `/navigation/phase` (nur solange Phase 1 aktiv ist)
 
@@ -294,8 +300,10 @@ zurück und publiziert live auf `/navigation/gate_order`), einen Button
 **"Tor-Zuordnung neu laden"** (Notfall-Korrektur, siehe `graph_state_node`),
 einen Button **"Erkundung neu starten"** (setzt `visited_edges` zurück,
 `gate_map` bleibt – für den Fall, dass ein Tor übersehen wurde) und den
-Start-Button. ROS-Callbacks aktualisieren ausschließlich State-Variablen;
-gezeichnet wird nur im Hauptthread über `root.after(200, update_canvas)`.
+Start-Button. Zeigt außerdem einmalig ein Popup ("Erkundung abgeschlossen"),
+sobald `exploration_done` auf `True` wechselt. ROS-Callbacks aktualisieren
+ausschließlich State-Variablen; gezeichnet wird nur im Hauptthread über
+`root.after(200, update_canvas)`.
 **Publiziert:** `/navigation/start_delivery` (bei Klick auf den Button),
 `/graph/reload_gate_map` (bei Klick auf "Tor-Zuordnung neu laden"),
 `/graph/reset_exploration` (bei Klick auf "Erkundung neu starten")
@@ -330,6 +338,14 @@ Zusätzlich zur unveränderten Kreuzungs-Tag-Logik (1–4) wird jeder erkannte
 Tag im Bereich 5–13 als Tor-Tag ausgewertet (nur Mindestflächen-Filter, keine
 Positions-/Stabilitäts-Filterung wie bei den Kreuzungs-Tags, da Tore an
 beliebiger Stelle im Bild auftauchen können).
+
+**Hamming-Filter (`tag.hamming == 0`):** akzeptiert nur exakt dekodierte Tags,
+für Kreuzungs- **und** Tor-Tags. Ein Tag, der nur mit Bitfehler-Korrektur
+lesbar war, kann eine ANDERE, ebenfalls gültige ID ergeben (z.B. echte ID 2
+wird als 3 gelesen) – und bleibt dabei über mehrere Frames stabil falsch
+(kein Rauschen, das sich rausmittelt). Genau das führt zu einer falsch
+aufgezeichneten Kante im Graph-Modell (Bot fährt z.B. tatsächlich A2→C,
+`graph_state_node` bucht es aber als A3→C).
 **Zusätzlich publiziert:** `/detect/gate/id` (Int32, -1 wenn keiner sichtbar)
 
 ### control_intersection_node

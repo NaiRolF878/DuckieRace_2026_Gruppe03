@@ -21,6 +21,7 @@ import math
 import os
 import tkinter as tk
 from tkinter import ttk
+from tkinter import messagebox
 import cv2
 import rospy
 from std_msgs.msg import String, Bool
@@ -58,6 +59,7 @@ class DebugGraphNode:
         self.intersection_dir   = ""
 
         self._last_drawn_planned_order = None
+        self._exploration_done_notified = False
 
         rospy.Subscriber(f'/{self._vehicle_name}/graph/current_node',
                          String, self.cbCurrentNode, queue_size=1)
@@ -629,6 +631,20 @@ class DebugGraphNode:
         self._redraw_gates()
         self._redraw_bot()
         self._update_labels()
+
+        # Deutliche, einmalige Meldung beim Uebergang False->True (nicht bei
+        # jedem Tick) - der Bot steht zu diesem Zeitpunkt bereits an der
+        # naechsten Kreuzung (next_direction wurde geleert, siehe
+        # explore_control_node) und wartet auf "Delivery starten".
+        if self.exploration_done and not self._exploration_done_notified:
+            self._exploration_done_notified = True
+            messagebox.showinfo(
+                "Erkundung abgeschlossen",
+                "Alle Kanten wurden abgefahren. Der Bot steht und wartet.\n\n"
+                "Bitte gefundene Tore/Reihenfolge pruefen und anschliessend "
+                "\"Delivery starten\" klicken.")
+        elif not self.exploration_done:
+            self._exploration_done_notified = False
 
         self.root.after(200, self.update_canvas)
 

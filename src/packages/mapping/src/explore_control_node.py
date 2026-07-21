@@ -234,6 +234,13 @@ class ExploreControlNode:
                 self.pub_next_direction.publish(String(data=word))
                 self.pub_phase.publish(String(data=self.phase))
             elif just_finished:
+                # next_direction explizit leeren (nicht nur verstummen) -
+                # sonst bleibt die Richtung der ALLERLETZTEN Abbiegung bei
+                # switch_control_node haengen. Passt sie zufaellig zu den
+                # erlaubten Richtungen an der naechsten Kreuzung, wuerde der
+                # Bot ungewollt weiterfahren, obwohl die Erkundung fertig ist
+                # und noch niemand "Delivery starten" gedrueckt hat.
+                self.pub_next_direction.publish(String(data=""))
                 self.pub_phase.publish(String(data=self.phase))
                 just_finished = False
 

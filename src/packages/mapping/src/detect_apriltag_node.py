@@ -192,6 +192,17 @@ class DetectApriltagNode:
     def _is_valid_tag(self, tag, img_h):
         if tag.tag_id not in self.tag_directions:
             return False
+        # hamming > 0: der Decoder musste Bitfehler korrigieren, um ueberhaupt
+        # eine gueltige Tag-ID zu erhalten - dabei koennen wenige Bit
+        # Unterschied eine ANDERE, ebenfalls gueltige ID ergeben (z.B. echte
+        # ID 2 wird als 3 gelesen). Eine solche Fehl-ID kann ueber mehrere
+        # Frames stabil falsch bleiben (kein Rauschen, das sich rausmittelt) -
+        # nur exakt dekodierte Tags akzeptieren, wie im Vorbild.
+        if tag.hamming > 0:
+            rospy.logwarn_throttle(
+                2.0, f"[apriltag] Tag {tag.tag_id} verworfen (hamming={tag.hamming} "
+                     f"- nur mit Bitfehler-Korrektur dekodiert)")
+            return False
         if self.pos_filter_enabled:
             cy_rel = tag.center[1] / img_h
             if cy_rel > self.pos_y_max:
@@ -234,6 +245,7 @@ class DetectApriltagNode:
         # Einzelframe-Fehlerkennung (Bewegungsunschaerfe, Rauschen) durchrutschen.
         candidates = [t for t in all_tags
                       if self.gate_tag_min <= t.tag_id <= self.gate_tag_max
+                      and t.hamming == 0
                       and self._tag_area(t) >= self.min_tag_area]
         raw_id = max(candidates, key=self._tag_area).tag_id if candidates else -1
 
