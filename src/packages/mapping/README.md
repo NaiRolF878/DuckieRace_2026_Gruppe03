@@ -243,6 +243,15 @@ lesen (`current_entry_tag` bleibt `None`), springt `_effective_entry_tag()`
 auf diese Vorhersage ein – ohne diesen Fallback bliebe `exit_directions`
 leer und `next_direction` dauerhaft `""` (garantierter Deadlock in
 `switch_control_node`, siehe dort).
+
+**Widerspruchsprüfung:** Liest die Kamera einen Tag, der der Vorhersage
+widerspricht, wird der Vorhersage vertraut, nicht der Kamera. Kreuzungs-Tags
+1/3 (bzw. 2/4) liegen sich geometrisch gegenüber – wird z.B. der eigentliche
+Einfahrt-Tag nur mit Bitfehlern gelesen und deshalb verworfen (siehe
+`detect_apriltag_node`), während gleichzeitig der gegenüberliegende Tag
+sauber lesbar ist, würde die Kamera sonst einen technisch "gültigen", aber
+falschen Tag liefern – mit Folgefehler in der Wort-Übersetzung (z.B. "links"
+statt korrekt "rechts").
 **Publiziert:** `/graph/current_node`, `/graph/current_edge`,
 `/graph/visited_edges`, `/graph/gate_map`, `/graph/exit_directions`,
 `/graph/allowed_directions` (Fallback-Quelle für `switch_control_node`)

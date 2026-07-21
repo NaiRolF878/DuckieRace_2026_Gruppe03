@@ -283,6 +283,24 @@ class GraphStateNode:
         # entry_tag), unabhaengig davon ob die Kamera ihn diesmal bestaetigen
         # kann. Ohne diesen Fallback bleibt exit_directions leer -> next_direction
         # bleibt dauerhaft "" -> die FSM haengt fest (siehe Diskussion).
+        #
+        # Widerspricht die Live-Lesung der Vorhersage, wird der Vorhersage
+        # vertraut: Kreuzungs-Tags 1 und 3 liegen sich geometrisch GEGENUEBER
+        # (ebenso 2/4 quer) - liest die Kamera z.B. den gegenueberliegenden
+        # statt den tatsaechlichen Einfahrt-Tag (beide gleichzeitig sichtbar,
+        # der eigentlich richtige evtl. nur mit Bitfehlern lesbar und daher
+        # verworfen, siehe detect_apriltag_node), waere die Live-Lesung falsch,
+        # obwohl sie technisch "gueltig" aussieht. predicted_entry_tag ist
+        # dagegen aus der zuletzt tatsaechlich ausgefuehrten Abbiegung bekannt
+        # und damit deterministisch korrekt.
+        if (self.current_entry_tag is not None and self.predicted_entry_tag is not None
+                and self.current_entry_tag != self.predicted_entry_tag):
+            rospy.logwarn(
+                f"[graph_state] Live-Tag ({self.current_entry_tag}) widerspricht der "
+                f"aus der letzten Abbiegung vorhergesagten Einfahrt "
+                f"({self.predicted_entry_tag}) - vertraue der Vorhersage "
+                f"(z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).")
+            return self.predicted_entry_tag
         return self.current_entry_tag if self.current_entry_tag is not None \
             else self.predicted_entry_tag
 
