@@ -10,24 +10,22 @@
 #   Turning     – abbiegen (Sequenz wird von control_intersection gesteuert)
 #
 # Die Abbiegerichtung kommt deterministisch von explore_control_node/
-# path_planner_node ueber /navigation/next_direction. Ist next_direction nicht
-# in allowed_dirs (den an der aktuellen Kreuzung laut Tag erlaubten Richtungen)
-# enthalten, bleibt der Bot in STOPPING stehen und wartet weiter – kein
-# Zufalls-Fallback. Die Richtungspruefung liegt deshalb in _update_state (nicht
-# in cbStopLine): sie muss bei jedem STOPPING-Tick neu versucht werden, weil
-# next_direction erst NACH dem Anhalten eintreffen kann.
+# path_planner_node ueber /navigation/next_direction - diese hat IMMER
+# Vorrang, sobald sie vorliegt (_update_state wartet in STOPPING nur, bis
+# next_direction nicht mehr leer ist, kein Zufalls-Fallback). Sie basiert auf
+# der Graph-Topologie aus mapping_node.json (von Hand gegen die echte Strecke
+# geprueft) - die tag-basierte allowed_dirs-Liste (Live-Erkennung, siehe
+# cbApriltagDirection/cbStopLine) blockiert next_direction NICHT mehr, sie
+# wird nur noch zur Info mitgeloggt. Grund: tag_directions (welche Richtungen
+# ein Tag laut Konfiguration physisch erlaubt) kann unvollstaendig sein oder
+# die Live-Erkennung kann denselben Tag über laengere Zeit hinweg konsistent
+# falsch lesen (siehe fehler.md) - beides wuerde sonst next_direction
+# faelschlich blockieren, obwohl der Graph die Kante kennt.
 #
-# Graph-Fallback: allowed_dirs stammt normalerweise aus der LIVE Tag-Erkennung
-# (/detect/apriltag/direction). Kann die Kamera den Tag an dieser Kreuzung gar
-# nicht (mehr) lesen, bliebe der Bot sonst fuer immer in STOPPING haengen -
-# graph_state_node kennt die erlaubten Richtungen an dieser Kreuzung aber
-# bereits deterministisch aus der eigenen Kartenverfolgung (/graph/
-# allowed_directions), unabhaengig von der Kamera. Diese Quelle wird daher als
-# Fallback verwendet: sofort, falls beim Eintritt in STOPPING gar keine Live-
-# Richtung vorliegt (cbStopLine), und nach stopping_fallback_timeout Sekunden,
-# falls die eingefrorene Live-Richtung zwar vorliegt aber nicht zu
-# next_direction passt (_update_state) - z.B. weil sie noch ein Rest der
-# vorherigen Kreuzung war ("Speicher hat noch die letzte ID").
+# allowed_dirs wird trotzdem weiter gepflegt (cbStopLine/cbApriltagDirection/
+# cbGraphAllowedDirections) - fuers Dashboard/Debug-Log, und weil cbStopLine
+# beim Eintritt in STOPPING selbst bereits auf /graph/allowed_directions
+# ausweicht, falls die Live-Erkennung dort gerade gar nichts liefert.
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
@@ -58,10 +56,6 @@ class SwitchControlNode:
         # Timing-Defaults
         self.stop_duration            = 2.0
         self.turning_timeout          = 8.0
-        # Deutlich laenger als detect_apriltag_node's tag_memory.seconds (3.0s
-        # Default), damit dem Live-Pfad genug Zeit bleibt, bevor auf den
-        # Graph-Fallback zurueckgegriffen wird.
-        self.stopping_fallback_timeout = 6.0
 
         util.init_parameters(node_name, self.cbUpdateParameters)
 
@@ -107,9 +101,6 @@ class SwitchControlNode:
 
         if "turning_timeout" in timing:
             self.turning_timeout = timing["turning_timeout"].get("default", 8.0)
-
-        if "stopping_fallback_timeout" in timing:
-            self.stopping_fallback_timeout = timing["stopping_fallback_timeout"].get("default", 6.0)
 
     def cbGraphAllowedDirections(self, msg):
         self.graph_allowed_dirs = msg.data.split(",") if msg.data else []
@@ -170,30 +161,24 @@ class SwitchControlNode:
         if self.phase == self.STOPPING:
             if elapsed < self.stop_duration:
                 return
-            if self.next_direction and self.next_direction in self.allowed_dirs:
+            if self.next_direction:
+                # next_direction (von explore_control_node/path_planner_node)
+                # hat Vorrang - basiert auf der Graph-Topologie aus
+                # mapping_node.json (von Hand gegen die echte Strecke
+                # geprueft), waehrend die tag-basierte allowed_dirs-Liste
+                # (Live-Erkennung bzw. Graph-Fallback) nur noch zur Info
+                # mitgeloggt wird, NICHT mehr als Blockade dient - eine
+                # unvollstaendige/falsche tag_directions-Zuordnung (z.B.
+                # "geradeaus" fehlt fuer einen Tag, obwohl der Graph diese
+                # Kante kennt) soll next_direction nicht mehr verhindern
+                # koennen.
                 self.direction = self.next_direction
-                rospy.loginfo(f"[switch] Richtung bestaetigt: {self.direction} "
-                              f"(aus {self.allowed_dirs}) -> TURNING")
-                self._transition_to(self.TURNING)
-            elif (self.next_direction and not self.used_graph_fallback
-                    and elapsed >= self.stopping_fallback_timeout
-                    and self.next_direction in self.graph_allowed_dirs):
-                # Die beim STOPPING-Eintritt eingefrorene Live-Richtung passt
-                # seit stopping_fallback_timeout Sekunden nicht zu next_direction
-                # (z.B. weil sie noch ein Rest der vorherigen Kreuzung war) -
-                # auf den unabhaengigen Graph-Fallback ausweichen, statt fuer
-                # immer haengen zu bleiben (siehe Kopfkommentar).
-                self.used_graph_fallback = True
-                self.direction = self.next_direction
-                rospy.logwarn(f"[switch] Live-Richtung {self.allowed_dirs} passt seit "
-                              f"{elapsed:.1f}s nicht zu next_direction "
-                              f"('{self.next_direction}') -> Graph-Fallback "
-                              f"{self.graph_allowed_dirs} -> TURNING")
+                rospy.loginfo(f"[switch] Richtung: {self.direction} (aus Planung; "
+                              f"Tag erlaubt lt. Erkennung: {self.allowed_dirs}) -> TURNING")
                 self._transition_to(self.TURNING)
             else:
                 rospy.logwarn_throttle(1.0,
-                    f"[switch] Keine gueltige next_direction ('{self.next_direction}') "
-                    f"in erlaubten Richtungen {self.allowed_dirs} - bleibe in STOPPING")
+                    "[switch] Noch keine next_direction von der Planung - bleibe in STOPPING")
 
         elif self.phase == self.TURNING:
             if self.turn_done or elapsed >= self.turning_timeout:

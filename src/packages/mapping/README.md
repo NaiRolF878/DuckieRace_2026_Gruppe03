@@ -455,20 +455,18 @@ möglicherweise veralteten Richtung loszufahren.
 
 ### switch_control_node (Anpassung)
 Einzige fachliche Änderung: `random.choice(allowed_dirs)` wurde durch
-`/navigation/next_direction` ersetzt. Ist die empfangene Richtung nicht (mehr)
-in `allowed_dirs` enthalten, bleibt der Bot in `STOPPING` und wartet weiter –
-**kein Fallback auf Zufall**, da Challenge 4 einen deterministischen Pfad
-verlangt. Alle anderen FSM-Zustände sind unverändert.
-
-**Graph-Fallback gegen permanentes Steckenbleiben:** `allowed_dirs` stammt
-normalerweise aus der Live-Tag-Erkennung. Kann die Kamera den Tag an dieser
-Kreuzung gar nicht (mehr) lesen, würde der Bot sonst für immer in `STOPPING`
-warten (z.B. wenn eine veraltete Richtung "im Speicher" hängen bleibt). Die
-Node weicht daher auf `/graph/allowed_directions` (von `graph_state_node`,
-rein aus der Kartenverfolgung vorhergesagt) aus: sofort, falls beim
-`STOPPING`-Eintritt gar keine Live-Richtung vorliegt, sonst nach
-`stopping_fallback_timeout` Sekunden (Default 6.0, Config `timing`), falls
-die eingefrorene Live-Richtung nicht zu `next_direction` passt.
+`/navigation/next_direction` ersetzt. `next_direction` hat **immer Vorrang**,
+sobald sie vorliegt (kein Fallback auf Zufall, da Challenge 4 einen
+deterministischen Pfad verlangt) – die tag-basierte `allowed_dirs`-Liste
+(aus Live-Tag-Erkennung bzw. `/graph/allowed_directions`-Fallback beim
+`STOPPING`-Eintritt, falls die Kamera dort gar nichts liefert) blockiert
+`next_direction` **nicht mehr**, sondern dient nur noch zur Info im Log.
+Grund: `tag_directions` kann unvollständig sein (z.B. "geradeaus" fehlt für
+einen Tag, obwohl der – gegen die echte Strecke geprüfte – Graph diese Kante
+kennt), und die Live-Erkennung kann denselben Tag über längere Zeit
+konsistent falsch lesen (siehe `fehler.md`) – beides würde sonst
+`next_direction` fälschlich blockieren. Alle anderen FSM-Zustände sind
+unverändert.
 
 ---
 

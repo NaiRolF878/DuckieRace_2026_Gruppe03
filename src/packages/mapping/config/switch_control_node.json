@@ -12,11 +12,6 @@
                     "default": 8.0,
                     "min": 1.0,
                     "max": 20.0
-                },
-                "stopping_fallback_timeout": {
-                    "default": 6.0,
-                    "min": 2.0,
-                    "max": 20.0
                 }
             }
         }
