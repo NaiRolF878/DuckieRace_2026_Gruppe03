@@ -1,12 +1,12 @@
 root@duckie3-ThinkPad-L15-Gen-4:~/DuckieRace# launchers/avoid_ducks.sh 
 WARNING ⚠️ Unable to automatically guess model task, assuming 'task=detect'. Explicitly define task for your model, i.e. 'task=detect', 'segment', 'classify', 'pose', 'obb' or 'semantic'.
-[INFO] [1784741995.505660]: Intrinsics für Duck-Detection erfolgreich geladen.
-[INFO] [1784741995.570617]: Duck Detection Node läuft (Entzerrung aktiv...)
+[INFO] [1784742690.278004]: Intrinsics für Duck-Detection erfolgreich geladen.
+[INFO] [1784742690.347403]: Duck Detection Node läuft (Entzerrung aktiv...)
 Loading /root/DuckieRace/src/packages/avoid_ducks/src/best.onnx for ONNX Runtime inference...
 Using ONNX Runtime 1.16.3 with CPUExecutionProvider
-[INFO] [1784741999.175654]: Intrinsics geladen.
-[INFO] [1784741999.202461]: Homographie geladen.
-[INFO] [1784741999.219492]: HSV Config geladen.
+[INFO] [1784742693.938800]: Intrinsics geladen.
+[INFO] [1784742693.960016]: Homographie geladen.
+[INFO] [1784742693.973502]: HSV Config geladen.
 Traceback (most recent call last):
   File "/root/DuckieRace/src/packages/avoid_ducks/src/duck_avoidance_node.py", line 678, in <module>
     node = DuckAvoidanceNode('duck_avoidance_node')
