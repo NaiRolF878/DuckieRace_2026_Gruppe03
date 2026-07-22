@@ -303,19 +303,21 @@ class PathPlannerNode:
                     heapq.heappush(pq, (nd, neighbor))
         return dist, prev
 
-    def _dijkstra_excluding_start_exit(self, start, forbidden_tag):
+    def _dijkstra_from_neighbors(self, start, excluded_edges):
         # Wie _dijkstra, aber OHNE die triviale Distanz 0 fuer start selbst:
         # normales Dijkstra wuerde bei einem Ziel direkt an start immer 0
         # (bzw. +1 fuer den letzten Schritt) liefern, selbst wenn die EINZIGE
-        # direkte Kante dorthin forbidden_tag waere (eine Wende, fuer die es
-        # kein Wort/keine Ausfuehrung gibt, siehe _gate_distance/
-        # _decide_next_tag). Hier zaehlt nur ein echter Umweg ueber die
-        # UEBRIGEN Ausfahrten von start.
+        # direkte Kante dorthin ausgeschlossen waere (z.B. eine Wende, fuer
+        # die es kein Wort/keine Ausfuehrung gibt, oder die Kante eines noch
+        # nicht faelligen Tors bei vorgegebener Reihenfolge). Hier zaehlt nur
+        # ein echter Umweg ueber die UEBRIGEN Ausfahrten von start.
+        # excluded_edges: Menge von (node, tag)-Paaren, die bei der Suche
+        # nie als Ausfahrt genommen werden duerfen.
         dist = {}
         prev = {}
         pq = []
         for tag, (neighbor, _neighbor_tag) in self.graph.get(start, {}).items():
-            if tag == forbidden_tag:
+            if (start, tag) in excluded_edges:
                 continue
             if 1 < dist.get(neighbor, float('inf')):
                 dist[neighbor] = 1
@@ -328,29 +330,14 @@ class PathPlannerNode:
                 continue
             done.add(node)
             for tag, (neighbor, _neighbor_tag) in self.graph.get(node, {}).items():
+                if (node, tag) in excluded_edges:
+                    continue
                 nd = d + 1
                 if nd < dist.get(neighbor, float('inf')):
                     dist[neighbor] = nd
                     prev[neighbor] = (node, tag)
                     heapq.heappush(pq, (nd, neighbor))
         return dist, prev
-
-    def _shortest_path_tags(self, start, goal):
-        # Liste der Tag-IDs (String) fuer jede Kreuzung von start bis goal.
-        # None wenn goal nicht erreichbar, [] wenn start == goal.
-        if start == goal:
-            return []
-        dist, prev = self._dijkstra(start)
-        if goal not in dist:
-            return None
-        tags = []
-        node = goal
-        while node != start:
-            p_node, tag = prev[node]
-            tags.append(tag)
-            node = p_node
-        tags.reverse()
-        return tags
 
     def _gate_entry_and_exit(self, gate_id):
         entry = self.gate_map[gate_id]
@@ -391,6 +378,24 @@ class PathPlannerNode:
             return next(iter(missing))
         return None
 
+    def _locked_gate_edges(self):
+        # Bei vorgegebener Reihenfolge (fixed_gate_order) darf der Bot die
+        # Kante eines noch nicht faelligen Tors (remaining[1:], also alles
+        # AUSSER dem gerade angesteuerten remaining[0]) nicht befahren - auch
+        # nicht nur als Durchgangsstrecke, ohne es "abzufahren". Liefert alle
+        # betroffenen Kanten (beide Fahrtrichtungen, siehe
+        # _gate_delivery_options) als (node, tag)-Menge.
+        locked = set()
+        if not self.fixed_gate_order:
+            return locked
+        for gate_id in self.remaining[1:]:
+            try:
+                for entry_node, tag in self._gate_delivery_options(gate_id):
+                    locked.add((entry_node, tag))
+            except KeyError:
+                continue
+        return locked
+
     def _route_to_gate_edge(self, from_node, entry_node, tag):
         # Liefert (erster_abzweig_tag, gesamt_distanz) um GENAU dieses
         # (entry_node, tag)-Zustellziel von from_node aus zu erreichen, oder
@@ -404,11 +409,17 @@ class PathPlannerNode:
         # B->C ist 1 Schritt genau ueber den Einfahrt-Tag von B) - das ist
         # ebenso eine nicht ausfuehrbare Wende und muss hier genauso
         # ausgeschlossen werden wie im direkten Sonderfall.
-        forbidden = self._forbidden_first_tag() if from_node == self.current_node else None
-        if from_node == entry_node and tag != forbidden:
+        excluded = self._locked_gate_edges()
+        excluded.discard((entry_node, tag))  # das eigentliche Ziel selbst darf nie gesperrt sein
+        if from_node == self.current_node:
+            forbidden = self._forbidden_first_tag()
+            if forbidden is not None:
+                excluded.add((from_node, forbidden))
+
+        if from_node == entry_node and (from_node, tag) not in excluded:
             return tag, 1
-        if forbidden is not None:
-            dist, prev = self._dijkstra_excluding_start_exit(from_node, forbidden)
+        if excluded:
+            dist, prev = self._dijkstra_from_neighbors(from_node, excluded)
         else:
             dist, prev = self._dijkstra(from_node)
         if entry_node not in dist:

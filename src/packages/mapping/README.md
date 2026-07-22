@@ -351,8 +351,21 @@ genau diese Kante nehmen würde (z.B. kürzester Weg B→C ist 1 Schritt genau
 über den Einfahrt-Tag von B – ebenso unausführbar). `_forbidden_first_tag()`
 bestimmt den gesperrten Tag (der eine Tag, der in `exit_directions` fehlt),
 `_route_to_gate_edge()` schließt ihn bei JEDER Dijkstra-Suche ab der
-aktuellen Position aus (`_dijkstra_excluding_start_exit`), egal ob das Ziel
+aktuellen Position aus (`_dijkstra_from_neighbors`), egal ob das Ziel
 direkt am Knoten liegt oder dahinter.
+
+**Bei vorgegebener Reihenfolge: Kanten noch nicht fälliger Tore sind komplett
+gesperrt, nicht nur als Lieferziel ausgeschlossen.** Es reicht nicht, ein
+noch nicht dran befindliches Tor nur nicht als "abgefahren" zu zählen – der
+Bot darf die Kante gar nicht erst befahren, auch nicht als reine
+Durchgangsstrecke auf dem Weg zu einem früheren Tor (sonst fährt er z.B. bei
+Reihenfolge `7,8,9` unterwegs zu Tor 7 versehentlich zuerst über die
+Kante von Tor 8). `_locked_gate_edges()` sammelt dafür alle Kanten (beide
+Fahrtrichtungen) aller Tore in `remaining[1:]` und `_route_to_gate_edge()`
+schließt sie zusätzlich zum Wende-Verbot aus der Routensuche aus – das
+eigentliche aktuelle Ziel (`remaining[0]`) wird dabei nie mitgesperrt. Gilt
+nur im `gate_order`-Modus; bei selbst optimierter Reihenfolge gibt es keine
+feste Vorgabe, die verletzt werden könnte.
 
 **Tor von beiden Fahrtrichtungen aus zustellbar:** Die Tor-Tags sind von
 beiden Richtungen der Kante aus sichtbar (vor Ort bestätigt), `gate_map`
