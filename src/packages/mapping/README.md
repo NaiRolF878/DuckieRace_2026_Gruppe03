@@ -341,16 +341,36 @@ neu gelesen (nicht nur der beim Node-Start gecachte Stand) – eine
 Bearbeitung von `mapping_node.json`, während der Stack schon läuft, kommt
 so noch an.
 
-**Wende-Sonderfall:** Liegt das jeweils nächste Tor auf der Kante, über die
-gerade eingefahren wurde ("liegt hinter uns auf der Spur"), ist es NICHT in
-einem Schritt erreichbar – dafür gibt es kein Wort/keine Ausführung (reine
-Wende, Offset 0 in `graph_state_node._word_for_exit`). `_gate_distance`
-erkennt das (Abgleich gegen das live `exit_directions` der tatsächlichen
-aktuellen Position) und berechnet stattdessen den echten Umweg über die
-übrigen Ausfahrten des Knotens (`_dijkstra_excluding_start_exit`), damit
-so ein Tor nicht fälschlich als "am nächsten" an die erste Stelle der
-Reihenfolge gesetzt wird. `_decide_next_tag` behandelt denselben Fall auch
-zur Laufzeit, falls es doch einmal dazu kommt.
+**Wende-Verbot gilt für JEDE Route ab der aktuellen Position, nicht nur für
+das direkte Ziel:** Der aktuelle Einfahrt-Tag darf nicht als Ausfahrt
+genommen werden (reine Wende, Offset 0 in `graph_state_node._word_for_exit`
+– kein Wort/keine Ausführung). Das betrifft nicht nur ein Tor, das zufällig
+exakt am aktuellen Knoten liegt ("hinter uns auf der Spur"), sondern auch
+ein ENTFERNTES Ziel, dessen kürzester Weg als allerersten Schritt zufällig
+genau diese Kante nehmen würde (z.B. kürzester Weg B→C ist 1 Schritt genau
+über den Einfahrt-Tag von B – ebenso unausführbar). `_forbidden_first_tag()`
+bestimmt den gesperrten Tag (der eine Tag, der in `exit_directions` fehlt),
+`_route_to_gate_edge()` schließt ihn bei JEDER Dijkstra-Suche ab der
+aktuellen Position aus (`_dijkstra_excluding_start_exit`), egal ob das Ziel
+direkt am Knoten liegt oder dahinter.
+
+**Tor von beiden Fahrtrichtungen aus zustellbar:** Die Tor-Tags sind von
+beiden Richtungen der Kante aus sichtbar (vor Ort bestätigt), `gate_map`
+speichert aber nur die bei der Erkundung zuerst gesehene Richtung. Dank der
+durchgehend symmetrischen Graph-Topologie (`N--T-->M` bedeutet immer auch
+`M--T'-->N`) ist die exakte Gegenrichtung derselben Kante eine ebenso
+gültige, oft näher gelegene Zustellmöglichkeit (`_gate_delivery_options()`)
+– `_gate_distance`/`_decide_next_tag` prüfen beide Optionen und wählen die
+kürzere, `cbGateDetected`/`_check_delivered_fallback` erkennen eine Lieferung
+über beide Richtungen als abgefahren. Ohne das fuhr der Bot unnötige Umwege,
+um immer die ursprünglich erkundete Richtung anzusteuern, obwohl die
+Gegenrichtung direkt vorbeiführte.
+
+Der komplette Haupt-Tick läuft in `_tick()`, von `run()` in einem
+`try/except` aufgerufen – eine unerwartete Exception (z.B. eine
+Datenstruktur, die nicht zur Erwartung passt) beendet den Node dadurch
+nicht mehr lautlos, sondern wird mit vollem Traceback geloggt, und der
+nächste Tick versucht es erneut.
 
 Ist `path_planning.gate_order` (Config oder live per `/navigation/gate_order`
 vom Dashboard) **nicht leer**, wird diese Reihenfolge unverändert übernommen

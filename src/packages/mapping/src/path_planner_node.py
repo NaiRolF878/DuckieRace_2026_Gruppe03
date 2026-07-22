@@ -41,6 +41,7 @@ import heapq
 import itertools
 import json
 import os
+import traceback
 import rospy
 from std_msgs.msg import String, Bool, Int32
 
@@ -178,10 +179,20 @@ class PathPlannerNode:
         target_gate = self.remaining[0]
         if str(gate_id) != str(target_gate):
             return
-        node, tag, _exit_node = self._gate_entry_and_exit(target_gate)
-        if self.current_edge.get("from") == node and self.current_edge.get("tag") == tag:
-            self._gate_confirmed_this_edge = True
-            self._mark_delivered(target_gate, via="Tag erneut bestaetigt")
+        try:
+            # Beide Zustellmoeglichkeiten pruefen (Original + Gegenrichtung,
+            # siehe _gate_delivery_options) - der Bot kann ueber jede von
+            # beiden ankommen.
+            options = self._gate_delivery_options(target_gate)
+        except KeyError:
+            rospy.logerr(f"[path_planner] Tor {target_gate} nicht (mehr) in gate_map "
+                         f"gefunden - ueberspringe Bestaetigung diesen Tick.")
+            return
+        for node, tag in options:
+            if self.current_edge.get("from") == node and self.current_edge.get("tag") == tag:
+                self._gate_confirmed_this_edge = True
+                self._mark_delivered(target_gate, via="Tag erneut bestaetigt")
+                return
 
     def _mark_delivered(self, gate_id, via):
         if gate_id not in self.remaining:
@@ -195,12 +206,19 @@ class PathPlannerNode:
         if self._gate_confirmed_this_edge or not self.remaining:
             return
         target_gate = self.remaining[0]
-        node, tag, _exit_node = self._gate_entry_and_exit(target_gate)
-        if finished_edge.get("from") == node and finished_edge.get("tag") == tag:
-            rospy.logwarn(f"[path_planner] Tor {target_gate} waehrend der Fahrt "
-                          f"nicht per Tag bestaetigt - werte Kante trotzdem als "
-                          f"abgefahren (Fallback).")
-            self._mark_delivered(target_gate, via="Fallback: Kante befahren, Tag nicht gesehen")
+        try:
+            options = self._gate_delivery_options(target_gate)
+        except KeyError:
+            rospy.logerr(f"[path_planner] Tor {target_gate} nicht (mehr) in gate_map "
+                         f"gefunden - ueberspringe Fallback-Pruefung diesen Tick.")
+            return
+        for node, tag in options:
+            if finished_edge.get("from") == node and finished_edge.get("tag") == tag:
+                rospy.logwarn(f"[path_planner] Tor {target_gate} waehrend der Fahrt "
+                              f"nicht per Tag bestaetigt - werte Kante trotzdem als "
+                              f"abgefahren (Fallback).")
+                self._mark_delivered(target_gate, via="Fallback: Kante befahren, Tag nicht gesehen")
+                return
 
     def cbExitDirections(self, msg):
         try:
@@ -330,27 +348,78 @@ class PathPlannerNode:
         exit_node = self.graph[node][tag][0]
         return node, tag, exit_node
 
-    def _gate_distance(self, from_node, gate_id):
-        entry_node, tag, _exit_node = self._gate_entry_and_exit(gate_id)
-        if from_node == entry_node:
-            # Sonderfall: Tor liegt auf der Kante, ueber die der Bot GERADE
-            # EINGEFAHREN ist ("liegt hinter uns auf der Spur") - dafuer
-            # gibt es kein Wort/keine Ausfuehrung (reine Wende, Offset 0 in
-            # graph_state_node._word_for_exit), also NICHT einfach in 1
-            # Schritt erreichbar. Nur fuer die tatsaechliche aktuelle Position
-            # pruefbar (exit_directions ist live und entry-tag-bewusst, aber
-            # nur fuer current_node gueltig, nicht fuer hypothetische
-            # Zwischenpositionen bei der Reihenfolge-Optimierung).
-            if from_node == self.current_node and tag not in self.exit_directions:
-                dist, _ = self._dijkstra_excluding_start_exit(from_node, tag)
-                if entry_node not in dist:
-                    return None
-                return dist[entry_node] + 1
-            return 1
-        dist, _ = self._dijkstra(from_node)
-        if entry_node not in dist:
+    def _gate_delivery_options(self, gate_id):
+        # Der Tor-Tag ist von BEIDEN Fahrtrichtungen der Kante aus sichtbar
+        # (vor Ort bestaetigt, 2026-07-22) - gate_map speichert aber nur die
+        # bei der Erkundung ZUERST gesehene Richtung. Die Graph-Topologie ist
+        # durchgehend symmetrisch (N--T-->M bedeutet immer auch M--T'-->N
+        # fuer ein festes T', siehe mapping_node.json), daher ist die exakte
+        # Gegenrichtung derselben Kante eine ebenso gueltige, oft naehere
+        # Zustellmoeglichkeit fuer dasselbe Tor. Liefert alle bekannten
+        # Zustellmoeglichkeiten als (entry_node, tag)-Paare.
+        node, tag = self.gate_map[gate_id]["node"], self.gate_map[gate_id]["tag"]
+        options = [(node, tag)]
+        exit_node, mirror_tag = self.graph[node][tag]
+        mirror_target = self.graph.get(exit_node, {}).get(mirror_tag)
+        if mirror_target and mirror_target[0] == node and (exit_node, mirror_tag) != (node, tag):
+            options.append((exit_node, mirror_tag))
+        return options
+
+    def _forbidden_first_tag(self):
+        # Der aktuelle Einfahrt-Tag ist als Ausfahrt an current_node verboten
+        # (reine Wende, kein Wort/keine Ausfuehrung, Offset 0 in
+        # graph_state_node._word_for_exit) - erkennbar daran, dass GENAU
+        # dieser eine Tag im ansonsten vollstaendigen exit_directions fehlt.
+        # Nicht eindeutig bestimmbar (0 oder >1 fehlende Tags) -> None,
+        # dann greift keine Einschraenkung (sicherer Fallback statt einer
+        # falschen Annahme).
+        if self.current_node is None:
             return None
-        return dist[entry_node] + 1
+        all_tags = set(self.graph.get(self.current_node, {}).keys())
+        missing = all_tags - set(self.exit_directions.keys())
+        if len(missing) == 1:
+            return next(iter(missing))
+        return None
+
+    def _route_to_gate_edge(self, from_node, entry_node, tag):
+        # Liefert (erster_abzweig_tag, gesamt_distanz) um GENAU dieses
+        # (entry_node, tag)-Zustellziel von from_node aus zu erreichen, oder
+        # (None, None) wenn nicht erreichbar.
+        #
+        # WICHTIG: die "verbotene Wende"-Einschraenkung gilt fuer JEDE Route
+        # ab der tatsaechlichen aktuellen Position, nicht nur wenn das Ziel
+        # zufaellig direkt am current_node liegt - auch bei einem ENTFERNTEN
+        # Ziel kann der kuerzeste Weg als allerersten Schritt genau die Kante
+        # nehmen, ueber die gerade eingefahren wurde (z.B. kuerzester Weg
+        # B->C ist 1 Schritt genau ueber den Einfahrt-Tag von B) - das ist
+        # ebenso eine nicht ausfuehrbare Wende und muss hier genauso
+        # ausgeschlossen werden wie im direkten Sonderfall.
+        forbidden = self._forbidden_first_tag() if from_node == self.current_node else None
+        if from_node == entry_node and tag != forbidden:
+            return tag, 1
+        if forbidden is not None:
+            dist, prev = self._dijkstra_excluding_start_exit(from_node, forbidden)
+        else:
+            dist, prev = self._dijkstra(from_node)
+        if entry_node not in dist:
+            return None, None
+        node, path_tags = entry_node, []
+        for _ in range(dist[entry_node]):
+            p_node, t = prev[node]
+            path_tags.append(t)
+            node = p_node
+        if not path_tags:
+            return None, None
+        path_tags.reverse()
+        return path_tags[0], dist[entry_node] + 1
+
+    def _gate_distance(self, from_node, gate_id):
+        best = None
+        for entry_node, tag in self._gate_delivery_options(gate_id):
+            _first_tag, d = self._route_to_gate_edge(from_node, entry_node, tag)
+            if d is not None and (best is None or d < best):
+                best = d
+        return best
 
     # ── Reihenfolge-Planung ──────────────────────────────────────────────────
 
@@ -426,82 +495,84 @@ class PathPlannerNode:
         if not self.remaining or self.current_node is None:
             return None
         target_gate = self.remaining[0]
-        entry_node, tag, _exit_node = self._gate_entry_and_exit(target_gate)
-        if self.current_node == entry_node:
-            if tag in self.exit_directions:
-                return tag
-            # Tor liegt auf der Kante, ueber die gerade eingefahren wurde
-            # (Wende noetig, siehe _gate_distance) - Umweg ueber die
-            # uebrigen Ausfahrten dieses Knotens. Pfad ueber die BEKANNTE
-            # Distanz zurueckverfolgen (fest zaehlen, NICHT bis "node ==
-            # self.current_node"): entry_node ist hier derselbe Knoten wie
-            # self.current_node (der Umweg fuehrt ja genau dorthin zurueck),
-            # ein Vergleich auf Knotennamen wuerde die Schleife sofort
-            # (fehlerhaft) abbrechen, noch bevor prev ueberhaupt befragt wird.
-            dist, prev = self._dijkstra_excluding_start_exit(self.current_node, tag)
-            if entry_node not in dist:
-                return None
-            node, path_tags = entry_node, []
-            for _ in range(dist[entry_node]):
-                p_node, t = prev[node]
-                path_tags.append(t)
-                node = p_node
-            if not path_tags:
-                return None
-            path_tags.reverse()
-            return path_tags[0]
-        path_tags = self._shortest_path_tags(self.current_node, entry_node)
-        if not path_tags:
-            return None
-        return path_tags[0]
+        best_tag, best_dist = None, None
+        for entry_node, tag in self._gate_delivery_options(target_gate):
+            first_tag, d = self._route_to_gate_edge(self.current_node, entry_node, tag)
+            if first_tag is not None and (best_dist is None or d < best_dist):
+                best_tag, best_dist = first_tag, d
+        return best_tag
 
     # ── Hauptschleife ─────────────────────────────────────────────────────────
 
     def run(self):
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
-            if not self.delivery_active and self.phase != "exploration":
-                # Route wird ERST geplant, nachdem "Bot versetzt" bestaetigt
-                # wurde (siehe cbBotRelocated/graph_state_node.cbBotRelocated):
-                # der Bot wird zwischen Erkundung und Abfahrt von Hand an
-                # delivery_start_node neu hingestellt, ohne dass die Software
-                # das sonst mitbekommt - eine vorher (schon waehrend
-                # phase=="waiting") berechnete Reihenfolge ginge faelschlich
-                # noch von der alten Erkundungs-Endposition aus.
-                if self.bot_relocated_confirmed:
-                    current_keys = frozenset(self.gate_map.keys())
-                    if current_keys and current_keys != self._last_planned_keys:
-                        self.planned_order = self._compute_order(
-                            self.delivery_start_node, list(current_keys))
-                        self.remaining = list(self.planned_order)
-                        self.delivered = []
-                        self._last_planned_keys = current_keys
-                        rospy.loginfo(f"[path_planner] Geplante Reihenfolge: {self.planned_order}")
-
-                    if self.start_delivery_requested and self.planned_order:
-                        self.delivery_active = True
-                        self.phase = "delivery"
-                        rospy.loginfo("[path_planner] Delivery gestartet")
-                elif self.start_delivery_requested:
-                    rospy.logwarn_throttle(5.0,
-                        "[path_planner] 'Delivery starten' gedrueckt, aber 'Bot "
-                        "versetzt' wurde noch nicht bestaetigt - warte darauf, "
-                        "um nicht von der alten Erkundungs-Position aus loszufahren.")
-
-            if self.delivery_active:
-                exit_tag = self._decide_next_tag()
-                word = self.exit_directions.get(exit_tag, "") if exit_tag is not None else ""
-                self.pub_next_direction.publish(String(data=word))
-                self.pub_phase.publish(String(data=self.phase))
-
-            self.pub_delivery_progress.publish(String(data=json.dumps({
-                "done": self.delivered,
-                "remaining": self.remaining,
-                "planned_order": self.planned_order,
-                "missing_gates": self.missing_gates,
-                "bot_relocated_confirmed": self.bot_relocated_confirmed,
-            })))
+            try:
+                self._tick()
+            except Exception:
+                # Niemals den ganzen Node lautlos sterben lassen (z.B. bei
+                # einer unerwarteten KeyError/IndexError in der Planung) -
+                # sonst bleibt naechste_direction fuer immer auf dem letzten
+                # Stand haengen (meist ""), ohne dass irgendwo im Log
+                # ersichtlich wird, WARUM der Bot nicht mehr weiterfaehrt.
+                # Lieber den Fehler laut melden und im naechsten Tick erneut
+                # versuchen.
+                rospy.logerr(f"[path_planner] Unerwarteter Fehler im Haupt-Tick:\n"
+                             f"{traceback.format_exc()}")
             rate.sleep()
+
+    def _tick(self):
+        if not self.delivery_active and self.phase != "exploration":
+            # Route wird ERST geplant, nachdem "Bot versetzt" bestaetigt
+            # wurde (siehe cbBotRelocated/graph_state_node.cbBotRelocated):
+            # der Bot wird zwischen Erkundung und Abfahrt von Hand an
+            # delivery_start_node neu hingestellt, ohne dass die Software
+            # das sonst mitbekommt - eine vorher (schon waehrend
+            # phase=="waiting") berechnete Reihenfolge ginge faelschlich
+            # noch von der alten Erkundungs-Endposition aus.
+            if self.bot_relocated_confirmed:
+                current_keys = frozenset(self.gate_map.keys())
+                if current_keys and current_keys != self._last_planned_keys:
+                    self.planned_order = self._compute_order(
+                        self.delivery_start_node, list(current_keys))
+                    self.remaining = list(self.planned_order)
+                    self.delivered = []
+                    self._last_planned_keys = current_keys
+                    rospy.loginfo(f"[path_planner] Geplante Reihenfolge: {self.planned_order}")
+
+                if self.start_delivery_requested and self.planned_order:
+                    self.delivery_active = True
+                    self.phase = "delivery"
+                    rospy.loginfo("[path_planner] Delivery gestartet")
+            elif self.start_delivery_requested:
+                rospy.logwarn_throttle(5.0,
+                    "[path_planner] 'Delivery starten' gedrueckt, aber 'Bot "
+                    "versetzt' wurde noch nicht bestaetigt - warte darauf, "
+                    "um nicht von der alten Erkundungs-Position aus loszufahren.")
+
+        if self.delivery_active:
+            exit_tag = self._decide_next_tag()
+            word = self.exit_directions.get(exit_tag, "") if exit_tag is not None else ""
+            if not word and self.remaining:
+                # Sichtbar machen, WORAN next_direction gerade haengt, statt
+                # stillschweigend "" zu publizieren (siehe Kopfkommentar zu
+                # run()) - haeufigster Grund: exit_directions noch nicht fuer
+                # den aktuellen current_node aktualisiert (kurze Verzoegerung
+                # nach einer Abbiegung, sollte sich von selbst loesen).
+                rospy.logwarn_throttle(2.0,
+                    f"[path_planner] Keine next_direction berechenbar - Ziel-Tor "
+                    f"{self.remaining[0]}, current_node={self.current_node}, "
+                    f"exit_directions={self.exit_directions}")
+            self.pub_next_direction.publish(String(data=word))
+            self.pub_phase.publish(String(data=self.phase))
+
+        self.pub_delivery_progress.publish(String(data=json.dumps({
+            "done": self.delivered,
+            "remaining": self.remaining,
+            "planned_order": self.planned_order,
+            "missing_gates": self.missing_gates,
+            "bot_relocated_confirmed": self.bot_relocated_confirmed,
+        })))
 
 
 if __name__ == '__main__':
