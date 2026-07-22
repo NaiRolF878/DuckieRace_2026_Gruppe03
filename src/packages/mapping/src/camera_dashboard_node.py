@@ -26,6 +26,14 @@ import cv2
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Int32, Bool, String
 
+# Welche Kacheln angezeigt werden sollen - hier umschalten statt im Code
+# Zeilen auszukommentieren. "Original" laeuft immer mit (Basis-Kachel mit
+# allen Status-Overlays). Nicht angeforderte Kacheln werden auch gar nicht
+# erst abonniert (spart CPU/Bandbreite fuer die jeweilige Bildquelle).
+SHOW_BIRDVIEW    = True
+SHOW_YELLOW_MASK = False
+SHOW_WHITE_MASK  = False
+
 
 class CameraDashboardNode:
     def __init__(self, node_name):
@@ -59,12 +67,15 @@ class CameraDashboardNode:
         # ── Bild-Subscriber ───────────────────────────────────────────────────
         rospy.Subscriber(f'/{self._vehicle_name}/debug/original',
             CompressedImage, self._cb_original, queue_size=1)
-        rospy.Subscriber(f'/{self._vehicle_name}/debug/annotated',
-            CompressedImage, self._cb_annotated, queue_size=1)
-        rospy.Subscriber(f'/{self._vehicle_name}/debug/lane_yellow',
-            CompressedImage, self._cb_yellow, queue_size=1)
-        rospy.Subscriber(f'/{self._vehicle_name}/debug/lane_white',
-            CompressedImage, self._cb_white, queue_size=1)
+        if SHOW_BIRDVIEW:
+            rospy.Subscriber(f'/{self._vehicle_name}/debug/annotated',
+                CompressedImage, self._cb_annotated, queue_size=1)
+        if SHOW_YELLOW_MASK:
+            rospy.Subscriber(f'/{self._vehicle_name}/debug/lane_yellow',
+                CompressedImage, self._cb_yellow, queue_size=1)
+        if SHOW_WHITE_MASK:
+            rospy.Subscriber(f'/{self._vehicle_name}/debug/lane_white',
+                CompressedImage, self._cb_white, queue_size=1)
 
         # ── Detection-Subscriber ──────────────────────────────────────────────
         rospy.Subscriber(f'/{self._vehicle_name}/detect/apriltag',
@@ -229,23 +240,33 @@ class CameraDashboardNode:
                 annotated_orig      = self._annotate_original(self._raw_original)
                 self._img_original  = self._to_tile(annotated_orig, "")
 
-            # 2×2 Grid zusammenbauen
-            top_row    = np.hstack([self._img_original, self._img_annotated])
-            bottom_row = np.hstack([self._img_yellow,   self._img_white])
-            dashboard  = np.vstack([top_row, bottom_row])
+            # Grid aus den ueber SHOW_* aktivierten Kacheln zusammenbauen -
+            # "Original" ist immer dabei. Bei 1-2 Kacheln eine Zeile, bei 3-4
+            # ein 2x2-Raster (bei 3 wird die vierte Position leer gelassen).
+            tiles = [self._img_original]
+            if SHOW_BIRDVIEW:
+                tiles.append(self._img_annotated)
+            if SHOW_YELLOW_MASK:
+                tiles.append(self._img_yellow)
+            if SHOW_WHITE_MASK:
+                tiles.append(self._img_white)
+
+            if len(tiles) <= 2:
+                dashboard = np.hstack(tiles) if len(tiles) == 2 else tiles[0]
+            else:
+                blank = self._blank_tile()
+                top_row    = np.hstack([tiles[0], tiles[1]])
+                bottom_row = np.hstack([tiles[2], tiles[3] if len(tiles) > 3 else blank])
+                dashboard  = np.vstack([top_row, bottom_row])
 
             # Trennlinien
             h, w = dashboard.shape[:2]
-            cv2.line(dashboard, (w // 2, 0), (w // 2, h), (255, 255, 255), 2)
-            cv2.line(dashboard, (0, h // 2), (w, h // 2), (255, 255, 255), 2)
+            if len(tiles) >= 2:
+                cv2.line(dashboard, (w // 2, 0), (w // 2, h), (255, 255, 255), 2)
+            if len(tiles) > 2:
+                cv2.line(dashboard, (0, h // 2), (w, h // 2), (255, 255, 255), 2)
 
             cv2.imshow("Camera Dashboard", dashboard)
-
-            # Einzelfenster: auskommentiert, bei Bedarf aktivieren
-            # cv2.imshow("Original annotiert", self._img_original)
-            # cv2.imshow("Bird's-Eye-View",    self._img_annotated)
-            # cv2.imshow("Gelbe Linie",        self._img_yellow)
-            # cv2.imshow("Weisse Linie",       self._img_white)
 
             # q → schließen
             if cv2.waitKey(1) & 0xFF == ord('q'):

@@ -42,7 +42,7 @@ import itertools
 import json
 import os
 import rospy
-from std_msgs.msg import String, Bool
+from std_msgs.msg import String, Bool, Int32
 
 
 class PathPlannerNode:
@@ -64,6 +64,9 @@ class PathPlannerNode:
         self.gate_map          = {}
         self.current_node      = None
         self.current_edge      = None
+        # Tag-Bestaetigung fuer das aktuell dran befindliche Tor (remaining[0])
+        # auf der aktuell befahrenen Kante - siehe cbGateDetected/_check_delivered.
+        self._gate_confirmed_this_edge = False
         self.exit_directions   = {}
         # Sicherer Default bis die erste echte /navigation/phase-Nachricht eintrifft:
         # "exploration" (wie explore_control_node selbst startet), NICHT "waiting" -
@@ -86,6 +89,10 @@ class PathPlannerNode:
                          String, self.cbCurrentEdge, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/graph/exit_directions',
                          String, self.cbExitDirections, queue_size=1)
+        # Fuer die Abliefer-Bestaetigung: dasselbe Topic, das graph_state_node
+        # fuer den Aufbau der gate_map nutzt (siehe cbGateDetected).
+        rospy.Subscriber(f'/{self._vehicle_name}/detect/gate/id',
+                         Int32, self.cbGateDetected, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/navigation/start_delivery',
                          Bool, self.cbStartDelivery, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/navigation/phase',
@@ -125,11 +132,61 @@ class PathPlannerNode:
 
     def cbCurrentEdge(self, msg):
         try:
-            self.current_edge = json.loads(msg.data) if msg.data else None
+            new_edge = json.loads(msg.data) if msg.data else None
         except (ValueError, json.JSONDecodeError):
-            self.current_edge = None
             return
-        self._check_delivered()
+        if new_edge is None and self.current_edge is not None:
+            # Kante gerade fertig befahren (Bot steht an der naechsten
+            # Kreuzung) - Fallback: falls das aktuelle Ziel-Tor auf genau
+            # dieser Kante lag und sein Tag waehrend der Fahrt NICHT per
+            # cbGateDetected bestaetigt wurde (Erkennung z.B. durch
+            # Lichtverhaeltnisse/Verdeckung fehlgeschlagen), jetzt trotzdem
+            # als abgefahren werten statt dauerhaft auf eine Bestaetigung zu
+            # warten, die nie kommt.
+            self._check_delivered_fallback(self.current_edge)
+        self.current_edge = new_edge
+        self._gate_confirmed_this_edge = False
+
+    def cbGateDetected(self, msg):
+        # Primaerer Bestaetigungsweg: das Ziel-Tor (remaining[0]) wird per
+        # AprilTag WAEHREND der Fahrt ueber seine Kante erneut gesehen - erst
+        # DANN gilt es als abgefahren, nicht schon weil die Kante "irgendwie"
+        # zur Position passt (das war der Bug: _check_delivered pruefte
+        # frueher ALLE verbleibenden Tore gegen current_edge, wodurch auch ein
+        # spaeter in der Reihenfolge faelliges Tor faelschlich sofort
+        # abgehakt wurde, sobald seine Kante nur als Durchgangsstrecke
+        # befahren wurde - das hat u.a. die vorgegebene Reihenfolge
+        # durcheinandergebracht und zwei Tore auf derselben Kante gleichzeitig
+        # "geliefert").
+        gate_id = msg.data
+        if gate_id == -1 or not self.remaining or self.current_edge is None:
+            return
+        target_gate = self.remaining[0]
+        if str(gate_id) != str(target_gate):
+            return
+        node, tag, _exit_node = self._gate_entry_and_exit(target_gate)
+        if self.current_edge.get("from") == node and self.current_edge.get("tag") == tag:
+            self._gate_confirmed_this_edge = True
+            self._mark_delivered(target_gate, via="Tag erneut bestaetigt")
+
+    def _mark_delivered(self, gate_id, via):
+        if gate_id not in self.remaining:
+            return
+        self.remaining.remove(gate_id)
+        self.delivered.append(gate_id)
+        rospy.loginfo(f"[path_planner] Tor {gate_id} abgefahren ({via}) "
+                      f"({len(self.delivered)}/{len(self.planned_order)})")
+
+    def _check_delivered_fallback(self, finished_edge):
+        if self._gate_confirmed_this_edge or not self.remaining:
+            return
+        target_gate = self.remaining[0]
+        node, tag, _exit_node = self._gate_entry_and_exit(target_gate)
+        if finished_edge.get("from") == node and finished_edge.get("tag") == tag:
+            rospy.logwarn(f"[path_planner] Tor {target_gate} waehrend der Fahrt "
+                          f"nicht per Tag bestaetigt - werte Kante trotzdem als "
+                          f"abgefahren (Fallback).")
+            self._mark_delivered(target_gate, via="Fallback: Kante befahren, Tag nicht gesehen")
 
     def cbExitDirections(self, msg):
         try:
@@ -277,17 +334,8 @@ class PathPlannerNode:
         return self._plan_nearest_neighbor(start_node, gate_ids)
 
     # ── Delivery-Ausfuehrung ──────────────────────────────────────────────────
-
-    def _check_delivered(self):
-        if not self.current_edge or not self.remaining:
-            return
-        for g in list(self.remaining):
-            node, tag, _exit_node = self._gate_entry_and_exit(g)
-            if self.current_edge.get("from") == node and self.current_edge.get("tag") == tag:
-                self.remaining.remove(g)
-                self.delivered.append(g)
-                rospy.loginfo(f"[path_planner] Tor {g} abgefahren "
-                              f"({len(self.delivered)}/{len(self.planned_order)})")
+    # (Abhak-Logik: cbGateDetected/_check_delivered_fallback weiter oben bei
+    # den Callbacks, direkt neben cbCurrentEdge mit dem sie zusammenspielen.)
 
     def _decide_next_tag(self):
         if not self.remaining or self.current_node is None:
@@ -308,8 +356,16 @@ class PathPlannerNode:
         while not rospy.is_shutdown():
             if not self.delivery_active and self.phase != "exploration":
                 current_keys = frozenset(self.gate_map.keys())
-                if current_keys and current_keys != self._last_planned_keys:
-                    self.planned_order = self._compute_order(self.delivery_start_node, list(current_keys))
+                # current_node statt des fixen delivery_start_node: nach Ende
+                # der Erkundung (DFS ueber alle Kanten) steht der Bot in der
+                # Regel NICHT mehr am urspruenglichen Start, sondern irgendwo
+                # im Graphen - die Reihenfolge (bei "optimal"/"nearest_
+                # neighbor", siehe _compute_order) muss ab der tatsaechlichen
+                # Position optimiert werden, sonst werden Distanzen ab einem
+                # Knoten berechnet, an dem der Bot gar nicht mehr steht.
+                if (current_keys and current_keys != self._last_planned_keys
+                        and self.current_node is not None):
+                    self.planned_order = self._compute_order(self.current_node, list(current_keys))
                     self.remaining = list(self.planned_order)
                     self.delivered = []
                     self._last_planned_keys = current_keys
