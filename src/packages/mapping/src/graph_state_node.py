@@ -114,6 +114,18 @@ class GraphStateNode:
         # Position) und gate_map (schon gefundene Tore) bleiben erhalten.
         rospy.Subscriber(f'/{self._vehicle_name}/graph/reset_exploration',
                          Bool, self.cbResetExploration, queue_size=1)
+        # Bot wird zwischen Erkundung und Abfahrt bewusst per Hand an
+        # delivery_start_node neu hingestellt (z.B. um einen eulerischen
+        # Kantenzug bei der Erkundung sicherzustellen) - die Software bekommt
+        # diese Neupositionierung sonst NICHT mit: current_node/current_edge/
+        # current_entry_tag/predicted_entry_tag wuerden weiter den Stand vom
+        # ENDE der Erkundung zeigen, obwohl der Bot jetzt physisch woanders
+        # steht (Symptom: Live-Tag an der ersten Kreuzung der Abfahrt
+        # widerspricht der laengst ueberholten Vorhersage). Dieser Trigger
+        # (Dashboard-Button "Bot versetzt") setzt den kompletten
+        # Positions-Zustand explizit auf delivery_start_node zurueck.
+        rospy.Subscriber(f'/{self._vehicle_name}/graph/bot_relocated',
+                         Bool, self.cbBotRelocated, queue_size=1)
 
         self.pub_current_node = rospy.Publisher(
             f'/{self._vehicle_name}/graph/current_node', String, queue_size=1)
@@ -255,6 +267,19 @@ class GraphStateNode:
                       f"{len(self.visited_edges)} Kante(n) wieder als unbesucht markiert "
                       f"(Tor-Zuordnung bleibt erhalten)")
         self.visited_edges = []
+
+    def cbBotRelocated(self, msg):
+        if not msg.data:
+            return
+        rospy.loginfo(f"[graph_state] Bot von Hand an delivery_start_node "
+                      f"neu positioniert: current_node {self.current_node} -> "
+                      f"{self.delivery_start_node} (current_edge/Tag-Zustand geleert)")
+        self.current_node        = self.delivery_start_node
+        self.current_edge        = None
+        self._pending_edge       = None
+        self.current_entry_tag   = None
+        self.predicted_entry_tag = None
+        self._last_direction     = ""
 
     def cbPhase(self, msg):
         # _advance_graph() wird NICHT mehr hier ausgeloest (siehe cbTurnStart) -

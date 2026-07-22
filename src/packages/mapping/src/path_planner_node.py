@@ -80,6 +80,12 @@ class PathPlannerNode:
         self.delivered     = []
         self.delivery_active = False
         self._last_planned_keys = None
+        # Bot wird zwischen Erkundung und Abfahrt von Hand an delivery_start_node
+        # neu hingestellt (Dashboard-Button "Bot versetzt", siehe graph_state_node.
+        # cbBotRelocated) - erst NACH diesem Signal darf geplant/losgefahren
+        # werden, sonst wuerde die Route noch ab der alten Erkundungs-Endposition
+        # berechnet bzw. die Abfahrt sofort mit einer veralteten Position starten.
+        self.bot_relocated_confirmed = False
 
         rospy.Subscriber(f'/{self._vehicle_name}/graph/gate_map',
                          String, self.cbGateMap, queue_size=1)
@@ -99,6 +105,8 @@ class PathPlannerNode:
                          String, self.cbPhase, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/navigation/gate_order',
                          String, self.cbGateOrder, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/graph/bot_relocated',
+                         Bool, self.cbBotRelocated, queue_size=1)
 
         self.pub_next_direction = rospy.Publisher(
             f'/{self._vehicle_name}/navigation/next_direction', String, queue_size=1)
@@ -214,6 +222,18 @@ class PathPlannerNode:
             # Tore seit der letzten Planung nicht geaendert hat.
             self._last_planned_keys = None
             rospy.loginfo(f"[path_planner] Neue vorgegebene Reihenfolge: {new_order}")
+
+    def cbBotRelocated(self, msg):
+        if not msg.data:
+            return
+        self.bot_relocated_confirmed = True
+        # Neuplanung erzwingen: current_node (graph_state_node) ist ab jetzt
+        # per Reset auf delivery_start_node gesetzt, eine vorher (waehrend
+        # phase=="waiting", aber noch VOR der Neupositionierung) berechnete
+        # planned_order koennte von der alten Erkundungs-Endposition ausgehen.
+        self._last_planned_keys = None
+        rospy.loginfo("[path_planner] Bot-Neupositionierung bestaetigt - "
+                      "Route wird ab delivery_start_node (neu) geplant")
 
     # ── Dijkstra (nur heapq/collections/itertools) ──────────────────────────────
 
@@ -355,26 +375,32 @@ class PathPlannerNode:
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
             if not self.delivery_active and self.phase != "exploration":
-                current_keys = frozenset(self.gate_map.keys())
-                # current_node statt des fixen delivery_start_node: nach Ende
-                # der Erkundung (DFS ueber alle Kanten) steht der Bot in der
-                # Regel NICHT mehr am urspruenglichen Start, sondern irgendwo
-                # im Graphen - die Reihenfolge (bei "optimal"/"nearest_
-                # neighbor", siehe _compute_order) muss ab der tatsaechlichen
-                # Position optimiert werden, sonst werden Distanzen ab einem
-                # Knoten berechnet, an dem der Bot gar nicht mehr steht.
-                if (current_keys and current_keys != self._last_planned_keys
-                        and self.current_node is not None):
-                    self.planned_order = self._compute_order(self.current_node, list(current_keys))
-                    self.remaining = list(self.planned_order)
-                    self.delivered = []
-                    self._last_planned_keys = current_keys
-                    rospy.loginfo(f"[path_planner] Geplante Reihenfolge: {self.planned_order}")
+                # Route wird ERST geplant, nachdem "Bot versetzt" bestaetigt
+                # wurde (siehe cbBotRelocated/graph_state_node.cbBotRelocated):
+                # der Bot wird zwischen Erkundung und Abfahrt von Hand an
+                # delivery_start_node neu hingestellt, ohne dass die Software
+                # das sonst mitbekommt - eine vorher (schon waehrend
+                # phase=="waiting") berechnete Reihenfolge ginge faelschlich
+                # noch von der alten Erkundungs-Endposition aus.
+                if self.bot_relocated_confirmed:
+                    current_keys = frozenset(self.gate_map.keys())
+                    if current_keys and current_keys != self._last_planned_keys:
+                        self.planned_order = self._compute_order(
+                            self.delivery_start_node, list(current_keys))
+                        self.remaining = list(self.planned_order)
+                        self.delivered = []
+                        self._last_planned_keys = current_keys
+                        rospy.loginfo(f"[path_planner] Geplante Reihenfolge: {self.planned_order}")
 
-                if self.start_delivery_requested and self.planned_order:
-                    self.delivery_active = True
-                    self.phase = "delivery"
-                    rospy.loginfo("[path_planner] Delivery gestartet")
+                    if self.start_delivery_requested and self.planned_order:
+                        self.delivery_active = True
+                        self.phase = "delivery"
+                        rospy.loginfo("[path_planner] Delivery gestartet")
+                elif self.start_delivery_requested:
+                    rospy.logwarn_throttle(5.0,
+                        "[path_planner] 'Delivery starten' gedrueckt, aber 'Bot "
+                        "versetzt' wurde noch nicht bestaetigt - warte darauf, "
+                        "um nicht von der alten Erkundungs-Position aus loszufahren.")
 
             if self.delivery_active:
                 exit_tag = self._decide_next_tag()
@@ -387,6 +413,7 @@ class PathPlannerNode:
                 "remaining": self.remaining,
                 "planned_order": self.planned_order,
                 "missing_gates": self.missing_gates,
+                "bot_relocated_confirmed": self.bot_relocated_confirmed,
             })))
             rate.sleep()
 

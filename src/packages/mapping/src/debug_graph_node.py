@@ -52,7 +52,8 @@ class DebugGraphNode:
         self.gate_map          = {}
         self.phase              = "exploration"
         self.exploration_done   = False
-        self.delivery_progress  = {"done": [], "remaining": [], "planned_order": []}
+        self.delivery_progress  = {"done": [], "remaining": [], "planned_order": [],
+                                    "bot_relocated_confirmed": False}
         # FSM-Phase (Lane/Stopping/Turning) + gewaehlte Richtung - fuer die
         # Live-Anzeige "biegt gerade wohin ab" beim Bot-Symbol.
         self.intersection_phase = "Lane"
@@ -102,6 +103,13 @@ class DebugGraphNode:
         # zurueck, current_node und gate_map bleiben erhalten.
         self.pub_reset_exploration = rospy.Publisher(
             f'/{self._vehicle_name}/graph/reset_exploration', Bool, queue_size=1)
+        # Bot wird zwischen Erkundung und Abfahrt von Hand an delivery_start_node
+        # neu hingestellt (z.B. um einen eulerischen Kantenzug bei der Erkundung
+        # sicherzustellen) - dieser Button bestaetigt das gegenueber graph_state_
+        # node/path_planner_node, die sonst nichts davon mitbekommen wuerden
+        # (current_node bliebe sonst auf dem Stand vom Ende der Erkundung).
+        self.pub_bot_relocated = rospy.Publisher(
+            f'/{self._vehicle_name}/graph/bot_relocated', Bool, queue_size=1)
 
         self._build_gui()
         rospy.loginfo(f"[{node_name}] Bereit.")
@@ -428,6 +436,16 @@ class DebugGraphNode:
 
         ttk.Separator(self.panel, orient="horizontal").pack(fill="x", padx=10, pady=10)
 
+        tk.Label(self.panel,
+                 text="Bot jetzt von Hand an delivery_start_node hingestellt "
+                      "(erst DANACH klicken - sonst plant/faehrt der Bot noch "
+                      "ab der alten Erkundungs-Position):",
+                 anchor="w", justify="left", wraplength=260).pack(fill="x", padx=10)
+        tk.Button(self.panel, text="Bot versetzt", bg="#DDAA00",
+                  command=self._on_bot_relocated).pack(fill="x", padx=10, pady=(2, 10))
+
+        ttk.Separator(self.panel, orient="horizontal").pack(fill="x", padx=10, pady=10)
+
         self.lbl_ready = tk.Label(self.panel, anchor="w", justify="left", wraplength=260)
         self.lbl_ready.pack(fill="x", padx=10, pady=(0, 4))
 
@@ -466,6 +484,11 @@ class DebugGraphNode:
         self.pub_reset_exploration.publish(Bool(data=True))
         rospy.loginfo("[debug_graph] 'Erkundung neu starten' gedrueckt")
         self._show_action_feedback("Erkundung zurueckgesetzt")
+
+    def _on_bot_relocated(self):
+        self.pub_bot_relocated.publish(Bool(data=True))
+        rospy.loginfo("[debug_graph] 'Bot versetzt' gedrueckt")
+        self._show_action_feedback("Bot-Neupositionierung bestaetigt")
 
     def _on_apply_gate_order(self):
         # Eingabe wie "5, 9, 3" -> ["5","9","3"]; leeres Feld -> [] (keine
@@ -646,9 +669,12 @@ class DebugGraphNode:
         # dort noch ein vorgegebenes Tor (missing_gates), bleibt der Button
         # bewusst deaktiviert statt wirkungslos klickbar zu sein.
         missing = self.delivery_progress.get("missing_gates", [])
-        ready = self.exploration_done and bool(planned)
+        bot_relocated = self.delivery_progress.get("bot_relocated_confirmed", False)
+        ready = self.exploration_done and bot_relocated and bool(planned)
         if not self.exploration_done:
             ready_txt = "Status: Erkunde Karte..."
+        elif not bot_relocated:
+            ready_txt = "Status: Warte auf 'Bot versetzt' (Bot an delivery_start_node stellen, dann klicken)"
         elif missing:
             ready_txt = "Status: Warte auf Tor(e) " + ", ".join(missing)
         elif ready:

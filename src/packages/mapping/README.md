@@ -271,6 +271,19 @@ neu laden" klicken (`/graph/reload_gate_map`) – `gate_map` wird komplett
 durch den neu eingelesenen Stand ersetzt, `current_node`/`visited_edges`
 bleiben unberührt (kein Neustart der Exploration nötig).
 
+**Bot versetzt (`/graph/bot_relocated`):** Zwischen Erkundung und Abfahrt
+wird der Bot bewusst von Hand an `delivery_start_node` neu hingestellt (z.B.
+um einen eulerischen Kantenzug bei der Erkundung sicherzustellen) –
+`mapping_start_node` und `delivery_start_node` können sich deshalb
+unterscheiden (zwei getrennte Config-Felder). Die Software bekommt diese
+Neupositionierung sonst NICHT mit: `current_node`/`current_edge`/
+`current_entry_tag`/`predicted_entry_tag` würden weiter den Stand vom Ende
+der Erkundung zeigen, obwohl der Bot jetzt physisch woanders steht (Symptom:
+Live-Tag an der ersten Kreuzung der Abfahrt widerspricht der längst
+überholten Vorhersage). Der Dashboard-Button "Bot versetzt" setzt
+`current_node` auf `delivery_start_node` und leert `current_edge`/
+`current_entry_tag`/`predicted_entry_tag` explizit.
+
 ### explore_control_node — Phase 1 (DFS)
 Wählt an jeder Kreuzung die erste noch unbesuchte, aktuell wählbare Ausfahrt.
 Sind alle Ausgänge eines Knotens besucht, sucht eine BFS über den **vollen**
@@ -288,18 +301,34 @@ abgeschlossen").
 `/navigation/phase` (nur solange Phase 1 aktiv ist)
 
 ### path_planner_node — Phase 2+3 (Dijkstra + TSP)
-Berechnet fortlaufend (sobald Phase 1 fertig ist) mit einer eigenen
-Dijkstra-Implementierung (nur `heapq`) die Reihenfolge aller gefundenen Tore
-ab `delivery_start_node`. Ist `path_planning.gate_order` (Config oder live
-per `/navigation/gate_order` vom Dashboard) **nicht leer**, wird diese
-Reihenfolge unverändert übernommen (`_plan_fixed_order`) – sonst wird sie
-selbst optimiert: bei `mode: "optimal"` per Brute-Force über alle
-Permutationen (`itertools.permutations`, automatischer Fallback auf
-`nearest_neighbor` bei mehr als 10 Toren), sonst greedy nach kürzester
-Distanz. In beiden Fällen berechnet Dijkstra die kürzesten Wege *zwischen*
-den (vorgegebenen oder optimierten) Stationen. Nach Knopfdruck
-(`start_delivery`) fährt es die Route ab und erkennt abgefahrene Tore daran,
-dass `current_edge` mit einem `gate_map`-Eintrag übereinstimmt.
+Plant die Reihenfolge aller gefundenen Tore ab `delivery_start_node` mit
+einer eigenen Dijkstra-Implementierung (nur `heapq`) – **aber erst, nachdem
+im Dashboard "Bot versetzt" bestätigt wurde** (`/graph/bot_relocated`, siehe
+`graph_state_node`): vorher wäre `delivery_start_node` zwar schon korrekt,
+eine bereits während `phase=="waiting"` (also vor der Neupositionierung)
+berechnete Route würde aber unnötig Verwirrung stiften, wenn sie im
+Dashboard angezeigt wird, bevor der Bot überhaupt am Start-Punkt steht.
+`start_delivery` wird ebenfalls erst wirksam, sobald diese Bestätigung
+vorliegt (sonst nur eine gedrosselte Warnung im Log). Ist
+`path_planning.gate_order` (Config oder live per `/navigation/gate_order`
+vom Dashboard) **nicht leer**, wird diese Reihenfolge unverändert übernommen
+(`_plan_fixed_order`) – sonst wird sie selbst optimiert: bei `mode:
+"optimal"` per Brute-Force über alle Permutationen
+(`itertools.permutations`, automatischer Fallback auf `nearest_neighbor` bei
+mehr als 10 Toren), sonst greedy nach kürzester Distanz. In beiden Fällen
+berechnet Dijkstra die kürzesten Wege *zwischen* den (vorgegebenen oder
+optimierten) Stationen.
+
+Ein Tor gilt erst als abgefahren, wenn sein Tag **während der Fahrt über
+seine Kante erneut erkannt** wird (`cbGateDetected`, primärer Weg) – nur
+wenn die Kante komplett durchfahren wird, ohne den Tag nochmal zu sehen
+(z.B. Verdeckung/Lichtverhältnisse), greift der Kanten-Positions-Fallback
+(`_check_delivered_fallback`). Geprüft wird dabei ausschließlich das gerade
+dran befindliche Tor (`remaining[0]`), nicht alle offenen Tore gleichzeitig
+– sonst würde ein später fälliges Tor fälschlich sofort mitgeliefert,
+sobald seine Kante nur als Durchgangsstrecke befahren wird (relevant u.a.
+wenn zwei Tore auf derselben Kante liegen und in zwei getrennten
+Durchfahrten abgeliefert werden müssen).
 **Publiziert:** `/navigation/next_direction`, `/navigation/phase` (nur
 während Delivery), `/navigation/delivery_progress`
 
@@ -313,14 +342,20 @@ geplante Reihenfolge, ein Eingabefeld für eine **vorgegebene Tor-Reihenfolge**
 zurück und publiziert live auf `/navigation/gate_order`), einen Button
 **"Tor-Zuordnung neu laden"** (Notfall-Korrektur, siehe `graph_state_node`),
 einen Button **"Erkundung neu starten"** (setzt `visited_edges` zurück,
-`gate_map` bleibt – für den Fall, dass ein Tor übersehen wurde) und den
-Start-Button. Zeigt außerdem einmalig ein Popup ("Erkundung abgeschlossen"),
-sobald `exploration_done` auf `True` wechselt. ROS-Callbacks aktualisieren
+`gate_map` bleibt – für den Fall, dass ein Tor übersehen wurde), einen
+Button **"Bot versetzt"** (bestätigt die manuelle Neupositionierung an
+`delivery_start_node`, siehe `graph_state_node`/`path_planner_node` – MUSS
+nach dem Umsetzen und VOR "Delivery starten" gedrückt werden) und den
+Start-Button (bleibt deaktiviert, bis Erkundung fertig UND "Bot versetzt"
+bestätigt UND alle Tore geplant sind). Zeigt außerdem einmalig ein Popup
+("Erkundung abgeschlossen"), sobald `exploration_done` auf `True` wechselt.
+ROS-Callbacks aktualisieren
 ausschließlich State-Variablen; gezeichnet wird nur im Hauptthread über
 `root.after(200, update_canvas)`.
 **Publiziert:** `/navigation/start_delivery` (bei Klick auf den Button),
 `/graph/reload_gate_map` (bei Klick auf "Tor-Zuordnung neu laden"),
-`/graph/reset_exploration` (bei Klick auf "Erkundung neu starten")
+`/graph/reset_exploration` (bei Klick auf "Erkundung neu starten"),
+`/graph/bot_relocated` (bei Klick auf "Bot versetzt")
 
 ### tools/preview_mapping_graph.py — Vorschau ohne ROS
 Standalone-Skript (kein rospy-Import, laeuft mit reinem `python3`), zeichnet
@@ -439,6 +474,7 @@ die eingefrorene Live-Richtung nicht zu `next_direction` passt.
 | `/graph/allowed_directions` | String (Worte, kommagetrennt) | graph_state → switch_control (Fallback) |
 | `/graph/reload_gate_map` | Bool | debug (Button) → graph_state (Notfall-Korrektur) |
 | `/graph/reset_exploration` | Bool | debug (Button) → graph_state, explore (Erkundung wiederholen) |
+| `/graph/bot_relocated` | Bool | debug (Button "Bot versetzt") → graph_state, path_planner (Position-Reset auf delivery_start_node) |
 | `/navigation/next_direction` | String (Wort) | explore / path_planner → switch_control |
 | `/navigation/phase` | String | explore / path_planner → alle |
 | `/navigation/exploration_done` | Bool | explore → debug |
