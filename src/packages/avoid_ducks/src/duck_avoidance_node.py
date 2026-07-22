@@ -6,7 +6,7 @@ import rospy
 import cv2
 import numpy as np
 import math
-from shapely.geometry import Polygon as ShapelyPolygon, box as ShapelyBox
+from shapely.geometry import Polygon as ShapelyPolygon, box as ShapelyBox, Point as ShapelyPoint
 from sensor_msgs.msg import CompressedImage
 from geometry_msgs.msg import Polygon as RosPolygon
 from duckietown_msgs.msg import Twist2DStamped, WheelEncoderStamped
@@ -35,8 +35,10 @@ class DuckAvoidanceNode:
         
         # --- HOMOGRAPHIE & TRAPEZE ---
         self.H = None
+        self.H_inv = None
         self.trapezoids_2d = [] # Pixel-Koordinaten (Numpy für cv2)
         self.trapezoids_shapely = [] # Shapely Polygone für Intersection
+        self.zones_3d_shapely = [] # dieselben Zonen in echten Metern (siehe _load_homography_and_build_zones)
         self._load_homography_and_build_zones()
 
         # --- MASKEN PARAMETER ---
@@ -68,16 +70,14 @@ class DuckAvoidanceNode:
         # nicht mit AttributeError abstuerzt.
         self.escape_direction = 1.0
         self.zones_status = [{"white": False, "yellow": False, "duck": False} for _ in range(3)] # Status für Zone 1, 2, 3
-        self.duck_bboxes = [] # Eingehende Enten [(x1,y1,x2,y2), ...] - aktuell VERWENDETE Werte
-        # Kurzes Positions-Gedaechtnis gegen einzelne verpasste Frames beim
-        # Drehen (siehe cb_ducks/_project_remembered_bboxes) - Default hier,
-        # per JSON ueberschreibbar. _remembered_bboxes haelt die zuletzt
-        # ECHT erkannten Boxen roh fest (nicht mehr veraendert), waehrend
-        # duck_bboxes bei jedem cb_ducks-Aufruf neu um die seitdem gefahrene
-        # Drehung (self.theta) korrigiert wird.
+        self.duck_bboxes = [] # Eingehende Enten [(x1,y1,x2,y2), ...] - nur die zuletzt ECHT erkannten (fuers Debug-Bild)
+        # Kurzes Positions-Gedaechtnis gegen verpasste Frames (siehe cb_ducks/
+        # _to_world_position/_remembered_duck_zone_hits) - Default hier, per
+        # JSON ueberschreibbar. Speichert reale Weltkoordinaten statt
+        # Bildpixeln, damit sowohl Drehung als auch Vorwaertsfahrt seit der
+        # letzten Erkennung korrekt beruecksichtigt werden.
         self._last_duck_seen_time = 0.0
-        self._last_duck_seen_theta = 0.0
-        self._remembered_bboxes = []
+        self._remembered_world_positions = []
         self.duck_memory_seconds = 0.5
         self.display_image = None
         self.buffer_size = 3 #17
@@ -160,6 +160,7 @@ class DuckAvoidanceNode:
             with open(self.path_homography, 'r') as f:
                 data = yaml.safe_load(f)
                 self.H = np.array(data['homography']).reshape((3,3))
+            self.H_inv = np.linalg.inv(self.H)
             rospy.loginfo("Homographie geladen.")
         except Exception as e:
             rospy.logerr(f"Homographie Fehler: {e}")
@@ -173,6 +174,10 @@ class DuckAvoidanceNode:
             [(0.2, -0.073), (0.3, -0.07), (0.3, 0.07), (0.2, 0.073)]       # Zone 2
             #[(0.30, -0.07), (0.42, -0.07), (0.42, 0.07), (0.30, 0.07)]      # Zone 3
         ]
+        # Fuer den Positions-Gedaechtnis-Check (_world_duck_zone_hits): dieselben
+        # Zonen, aber in echten Metern statt Pixeln - vermeidet einen zweiten
+        # Umweg ueber die Homographie beim Rueck-Projizieren gemerkter Enten.
+        self.zones_3d_shapely = [ShapelyPolygon(z) for z in zones_3d]
 
         for z in zones_3d:
             pts_2d = []
@@ -183,7 +188,7 @@ class DuckAvoidanceNode:
                 u = int(proj[0] / proj[2])
                 v = int(proj[1] / proj[2])
                 pts_2d.append([u, v])
-            
+
             pts_2d = np.array(pts_2d, dtype=np.int32)
             self.trapezoids_2d.append(pts_2d)
             self.trapezoids_shapely.append(ShapelyPolygon(pts_2d))
@@ -261,49 +266,76 @@ class DuckAvoidanceNode:
         # Kurzes Positions-Gedaechtnis (wie tag_memory bei detect_apriltag_node):
         # detect_ducks_node publiziert bewusst auch LEERE Nachrichten, sobald
         # das Modell in einem Frame nichts findet - z.B. waehrend der Bot sich
-        # dreht und die Ente kurz aus dem (schmalen) Sichtfeld faellt oder das
-        # Bild verwackelt ist. Ohne Gedaechtnis wuerde self.duck_bboxes dann
-        # SOFORT leer und die Zonen "frei" wirken, obwohl die Ente vermutlich
-        # noch da ist (der Bot hat nur kurz weggedreht, nicht die Ente ist
-        # weggefahren). Erst nach Ablauf von duck_memory_seconds ohne neue
-        # Erkennung gilt sie wirklich als weg.
+        # dreht und die Ente kurz aus dem (schmalen) Sichtfeld faellt, oder
+        # (WICHTIGER Fall) waehrend der Bot GERADEAUS auf die Ente zufaehrt und
+        # sie zu nah/im toten Winkel unterhalb des Kamera-Sichtfelds verschwindet
+        # - genau dann ist sie am gefaehrlichsten, nicht "frei". Ohne
+        # Gedaechtnis wuerde self.duck_bboxes SOFORT leer und die Zonen "frei"
+        # wirken, obwohl die Ente (als stationaeres Hindernis) mit hoher
+        # Wahrscheinlichkeit noch genau da ist oder sogar noch naeher.
         #
-        # Reines Einfrieren der letzten Bildposition waere aber selbst
-        # WAEHREND der Gedaechtniszeit falsch, wenn sich der Bot in der
-        # Zwischenzeit weitergedreht hat (genau der Fall beim Ausweichen) -
-        # deshalb wird die gemerkte Position bei jedem Aufruf per Odometrie
-        # neu projiziert (_project_remembered_bboxes), nicht einfach
-        # unveraendert weiterverwendet.
+        # Reines Einfrieren der letzten BILDPOSITION waere dabei falsch: bei
+        # Drehung verschiebt sich die Ente im Bild, bei Vorwaertsfahrt wird sie
+        # groesser/naeher - ein eingefrorenes Pixel-Rechteck bildet keins von
+        # beidem ab. Stattdessen wird die reale Boden-Position der Ente EINMAL
+        # bei der Erkennung per inverser Homographie + aktueller Bot-Pose in
+        # Weltkoordinaten umgerechnet (_to_world_position) und dort gespeichert
+        # - Weltkoordinaten aendern sich nicht, wenn sich der Bot bewegt. Die
+        # Zonen-Pruefung (cb_image) transformiert diese Weltposition bei jedem
+        # Frame zurueck in die AKTUELLE Bot-Perspektive, das deckt Drehung UND
+        # Vorwaertsfahrt gleichermassen korrekt ab.
         now = time.monotonic()
         if new_bboxes:
-            self._remembered_bboxes = new_bboxes
+            self._remembered_world_positions = [
+                self._to_world_position(x1, x2, y2) for (x1, _y1, x2, y2) in new_bboxes]
+            self._remembered_world_positions = [p for p in self._remembered_world_positions if p is not None]
             self._last_duck_seen_time = now
-            self._last_duck_seen_theta = self.theta
             self.duck_bboxes = new_bboxes
         elif now - self._last_duck_seen_time > self.duck_memory_seconds:
-            self._remembered_bboxes = []
+            self._remembered_world_positions = []
             self.duck_bboxes = []
         else:
-            self.duck_bboxes = self._project_remembered_bboxes()
+            # Bildposition zeigt weiterhin die letzte ECHTE Erkennung (fuers
+            # Debug-Bild/duck_center_x) - die eigentliche Zonen-Gefahrenpruefung
+            # laeuft separat ueber _remembered_world_positions (siehe cb_image).
+            pass
 
-    def _project_remembered_bboxes(self):
-        # Korrigiert die zuletzt ECHT erkannte Enten-Position um die
-        # Bot-eigene Drehung seit der Erkennung (Kleinwinkel-Naeherung des
-        # Lochkamera-Modells: eine Drehung um delta_theta verschiebt ein
-        # Objekt im Bild horizontal um ungefaehr fx * delta_theta Pixel).
-        # Dreht der Bot z.B. nach links (theta steigt), wandert ein
-        # stillstehendes Objekt im Bild nach RECHTS (Pixel-X steigt) - die
-        # eigentliche Distanz/Tiefe der Ente wird dabei nicht neu geschaetzt,
-        # nur die Blickrichtungs-Aenderung ausgeglichen. Reine Naeherung:
-        # ignoriert eigene Vor-/Rueckwaertsbewegung und dass sich die Ente
-        # selbst bewegt haben koennte.
-        if not self._remembered_bboxes or self.K is None:
-            return self._remembered_bboxes
-        delta_theta = self.theta - self._last_duck_seen_theta
-        fx = float(self.K[0][0])
-        shift_px = fx * delta_theta
-        return [(int(x1 + shift_px), y1, int(x2 + shift_px), y2)
-                for (x1, y1, x2, y2) in self._remembered_bboxes]
+    def _to_world_position(self, x1, x2, y2):
+        # Bodenkontaktpunkt der Bounding Box (Mitte unten - dort beruehrt die
+        # Ente vermutlich den Boden) per inverser Homographie von Pixel- in
+        # bot-relative Meter-Koordinaten umrechnen, dann per aktueller Pose
+        # (self.x/self.y/self.theta) in feste Weltkoordinaten - so bleibt die
+        # gemerkte Position unabhaengig davon gueltig, wie der Bot sich seitdem
+        # gedreht oder bewegt hat.
+        if self.H_inv is None:
+            return None
+        u, v = (x1 + x2) / 2.0, float(y2)
+        vec = self.H_inv @ np.array([u, v, 1.0])
+        if abs(vec[2]) < 1e-9:
+            return None
+        local_x, local_y = vec[0] / vec[2], vec[1] / vec[2]
+        cos_t, sin_t = math.cos(self.theta), math.sin(self.theta)
+        world_x = self.x + local_x * cos_t - local_y * sin_t
+        world_y = self.y + local_x * sin_t + local_y * cos_t
+        return (world_x, world_y)
+
+    def _remembered_duck_zone_hits(self):
+        # Liefert die Indizes aller Zonen, in denen laut Gedaechtnis
+        # (Weltkoordinaten, siehe cb_ducks/_to_world_position) aktuell eine
+        # Ente steht - zurueckgerechnet in die AKTUELLE Bot-Perspektive.
+        if not self._remembered_world_positions:
+            return set()
+        cos_t, sin_t = math.cos(self.theta), math.sin(self.theta)
+        hits = set()
+        for world_x, world_y in self._remembered_world_positions:
+            dx, dy = world_x - self.x, world_y - self.y
+            local_x = dx * cos_t + dy * sin_t
+            local_y = -dx * sin_t + dy * cos_t
+            point = ShapelyPoint(local_x, local_y)
+            for i, zone_poly in enumerate(self.zones_3d_shapely):
+                if zone_poly.contains(point):
+                    hits.add(i)
+        return hits
 
     # ==========================================
     # 3. VISION & PERCEPTION LOOP
@@ -341,9 +373,15 @@ class DuckAvoidanceNode:
 
         # 3. Detaillierte Zonen evaluieren
         self.zones_status = [{"white": False, "yellow": False, "duck": False} for _ in range(3)]
-        
+        remembered_hits = self._remembered_duck_zone_hits()
+
         for i, (trap_pts, trap_poly) in enumerate(zip(self.trapezoids_2d, self.trapezoids_shapely)):
-            # A) Enten-Kollision
+            # A) Enten-Kollision: aktuell erkannte Boxen PLUS gemerkte Position
+            # (siehe cb_ducks) - z.B. waehrend der Bot geradeaus auf eine Ente
+            # zufaehrt und sie zu nah/im toten Winkel aus dem Bild verschwindet,
+            # zeigt die aktuelle Erkennung allein faelschlich "frei".
+            if i in remembered_hits:
+                self.zones_status[i]["duck"] = True
             for (x1, y1, x2, y2) in self.duck_bboxes:
                 if trap_poly.intersects(ShapelyBox(x1, y1, x2, y2)):
                     self.zones_status[i]["duck"] = True
