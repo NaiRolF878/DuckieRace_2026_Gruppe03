@@ -62,6 +62,11 @@ class DuckAvoidanceNode:
 
         # --- ZUSTAND & PERCEPTION ---
         self.state = "DRIVING" # DRIVING, PROBING, ROTATING, DRIVE_FORWARD_DISTANCE
+        # Wird erst von Trigger A/B (Linie/Ente erkannt) auf einen echten Wert
+        # gesetzt - Default hier noetig, damit _state_action_text() auch
+        # VOR der allerersten Erkennung (state=="DRIVING", noch nie ausgewichen)
+        # nicht mit AttributeError abstuerzt.
+        self.escape_direction = 1.0
         self.zones_status = [{"white": False, "yellow": False, "duck": False} for _ in range(3)] # Status für Zone 1, 2, 3
         self.duck_bboxes = [] # Eingehende Enten [(x1,y1,x2,y2), ...]
         self.display_image = None
@@ -608,8 +613,6 @@ class DuckAvoidanceNode:
         # die sagten z.B. bei jedem Wackel-Tick "fahren", ohne erkennen zu
         # lassen, OB gerade eine Luecke gesucht, ausgewichen oder normal
         # gefahren wird.
-        direction_txt = "links" if self.escape_direction == 1.0 else "rechts"
-
         if self.state == "PROBING":
             phase_txt = {
                 "left": "teste links",
@@ -621,6 +624,7 @@ class DuckAvoidanceNode:
 
         if self.state == "ROTATING":
             reason_txt = "Ente" if self.rotation_reason == "duck" else "Linie"
+            direction_txt = "links" if self.escape_direction == 1.0 else "rechts"
             return f"Weiche aus wegen {reason_txt} ({direction_txt})"
 
         if self.state == "DRIVE_FORWARD_DISTANCE":
