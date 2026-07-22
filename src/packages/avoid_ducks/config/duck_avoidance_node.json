@@ -8,6 +8,9 @@
     "search": {
       "escape_omega": {"default": 1.5, "min": 0.5, "max": 3.0},
       "inversion_cooldown_seconds": {"default": 1.0, "min": 0.2, "max": 3.0}
+    },
+    "memory": {
+      "duck_seconds": {"default": 0.5, "min": 0.0, "max": 3.0}
     }
   }
 }

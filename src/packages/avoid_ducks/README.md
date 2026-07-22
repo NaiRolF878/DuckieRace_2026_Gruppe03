@@ -55,8 +55,12 @@ Alle Wackel-/Such-Parameter waren vorher fest im Code (`wiggle_power = 0.08` usw
 | `wiggle.interval_seconds` | Wie oft die Wackel-Richtung wechselt |
 | `search.escape_omega` | Dreh-Geschwindigkeit während des Ausweichens |
 | `search.inversion_cooldown_seconds` | Mindestabstand zwischen zwei Richtungs-Korrekturen während des Ausweichens |
+| `memory.duck_seconds` | Positions-Gedächtnis für Enten-Bounding-Boxen (siehe unten) |
 
 ### Debug-Overlay zeigt die tatsächliche FSM-Aktion
 Der Text im Debug-Fenster kam vorher direkt aus den rohen Motorbefehlen ("Ich würde gerne: fahren und links" – bei jedem Wackel-Tick praktisch identisch, unabhängig vom Zustand). Jetzt zeigt `_state_action_text()` die tatsächliche Aktion in Klartext: "Freie Fahrt", "Spurkorrektur", "Weiche aus wegen Ente (rechts)", "Fahre an Ente vorbei".
+
+### Kurzes Positions-Gedächtnis für Enten (`cb_ducks`)
+`detect_ducks_node` publiziert bewusst auch **leere** Nachrichten, sobald das YOLO-Modell in einem Frame nichts findet. Ohne Gedächtnis wurde `self.duck_bboxes` dadurch bei jedem verpassten Frame sofort komplett geleert – z.B. während der Bot sich dreht (`ROTATING`) und die Ente kurz aus dem schmalen Sichtfeld fällt oder das Bild verwackelt: die Zonen wirkten dann "frei", obwohl die Ente sehr wahrscheinlich noch da war (der Bot hat nur kurz weggedreht, nicht die Ente ist weggefahren). Jetzt bleibt die zuletzt bekannte Position noch `memory.duck_seconds` (Standard 0.5s) lang gültig, bevor sie wirklich als "weg" gilt – gleiches Prinzip wie `tag_memory` bei `detect_apriltag_node` im `mapping`-Package.
 
 **Kurzzeitig ausprobiert und wieder verworfen:** Ein Zustand, der vor der Richtungs-Entscheidung erst kurz nach links UND rechts testet (statt sofort per Heuristik zu entscheiden), hat sich in der Praxis nicht bewährt und wurde wieder entfernt – die Ausweichrichtung wird weiterhin direkt aus der Heuristik (Entenposition/Linienfarbe) plus nachträglichem Inversions-Check bestimmt, wie ursprünglich.

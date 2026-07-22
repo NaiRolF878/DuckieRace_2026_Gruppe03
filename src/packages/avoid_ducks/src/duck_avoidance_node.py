@@ -69,6 +69,10 @@ class DuckAvoidanceNode:
         self.escape_direction = 1.0
         self.zones_status = [{"white": False, "yellow": False, "duck": False} for _ in range(3)] # Status für Zone 1, 2, 3
         self.duck_bboxes = [] # Eingehende Enten [(x1,y1,x2,y2), ...]
+        # Kurzes Positions-Gedaechtnis gegen einzelne verpasste Frames beim
+        # Drehen (siehe cb_ducks) - Default hier, per JSON ueberschreibbar.
+        self._last_duck_seen_time = 0.0
+        self.duck_memory_seconds = 0.5
         self.display_image = None
         self.buffer_size = 3 #17
         # Puffer exklusiv für Zone 2
@@ -196,11 +200,14 @@ class DuckAvoidanceNode:
         # (ROTATING-Zustand) und die zugehoerige Dreh-Geschwindigkeit.
         wiggle = parameters.get("wiggle", {})
         search = parameters.get("search", {})
+        memory = parameters.get("memory", {})
         self.wiggle_power = wiggle.get("power", {}).get("default", self.wiggle_power)
         self.wiggle_interval = wiggle.get("interval_seconds", {}).get("default", self.wiggle_interval)
         self.escape_omega = search.get("escape_omega", {}).get("default", self.escape_omega)
         self.inversion_cooldown = search.get("inversion_cooldown_seconds", {}).get(
             "default", self.inversion_cooldown)
+        self.duck_memory_seconds = memory.get("duck_seconds", {}).get(
+            "default", self.duck_memory_seconds)
 
     # ==========================================
     # 2. ODOMETRIE & EINGANGSDATEN
@@ -237,13 +244,30 @@ class DuckAvoidanceNode:
 
     def cb_ducks(self, msg):
         # Extrahiere Boxen aus dem Polygon-Array (erwartet x1,y1,x2,y2 pro Ente)
-        self.duck_bboxes = []
+        new_bboxes = []
         if len(msg.points) >= 4:
             for i in range(0, len(msg.points), 4):
                 # Min/Max bestimmen für sauberes Rect
                 xs = [msg.points[i+j].x for j in range(4)]
                 ys = [msg.points[i+j].y for j in range(4)]
-                self.duck_bboxes.append((int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))))
+                new_bboxes.append((int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))))
+
+        # Kurzes Positions-Gedaechtnis (wie tag_memory bei detect_apriltag_node):
+        # detect_ducks_node publiziert bewusst auch LEERE Nachrichten, sobald
+        # das Modell in einem Frame nichts findet - z.B. waehrend der Bot sich
+        # dreht und die Ente kurz aus dem (schmalen) Sichtfeld faellt oder das
+        # Bild verwackelt ist. Ohne Gedaechtnis wuerde self.duck_bboxes dann
+        # SOFORT leer und die Zonen "frei" wirken, obwohl die Ente vermutlich
+        # noch da ist (der Bot hat nur kurz weggedreht, nicht die Ente ist
+        # weggefahren). Erst nach Ablauf von duck_memory_seconds ohne neue
+        # Erkennung gilt sie wirklich als weg.
+        now = time.monotonic()
+        if new_bboxes:
+            self.duck_bboxes = new_bboxes
+            self._last_duck_seen_time = now
+        elif now - self._last_duck_seen_time > self.duck_memory_seconds:
+            self.duck_bboxes = []
+        # sonst: self.duck_bboxes (letzte bekannte Position) unveraendert lassen
 
     # ==========================================
     # 3. VISION & PERCEPTION LOOP
