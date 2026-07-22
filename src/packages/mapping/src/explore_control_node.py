@@ -49,6 +49,13 @@ class ExploreControlNode:
         self.exit_directions  = {}
         self.phase            = "exploration"
         self.exploration_done = False
+        # FSM-Phase des Bots (Lane/Stopping/Turning) - noetig, um "Erkundung
+        # fertig" erst zu melden, wenn der Bot die letzte Kante WIRKLICH
+        # fertig gefahren hat und steht, nicht schon wenn visited_edges die
+        # Gesamtzahl erreicht (das passiert bereits beim START der letzten
+        # Abbiegung, siehe graph_state_node._advance_graph/_mark_visited -
+        # der Bot faehrt zu diesem Zeitpunkt noch).
+        self.intersection_phase = ""
 
         rospy.Subscriber(f'/{self._vehicle_name}/graph/current_node',
                          String, self.cbCurrentNode, queue_size=1)
@@ -58,6 +65,8 @@ class ExploreControlNode:
                          String, self.cbExitDirections, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/navigation/phase',
                          String, self.cbPhase, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/intersection/phase',
+                         String, self.cbIntersectionPhase, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/graph/reset_exploration',
                          Bool, self.cbResetExploration, queue_size=1)
 
@@ -112,6 +121,9 @@ class ExploreControlNode:
 
     def cbPhase(self, msg):
         self.phase = msg.data
+
+    def cbIntersectionPhase(self, msg):
+        self.intersection_phase = msg.data
 
     def cbCurrentNode(self, msg):
         self.current_node = msg.data
@@ -221,12 +233,20 @@ class ExploreControlNode:
         rate = rospy.Rate(10)
         just_finished = False
         while not rospy.is_shutdown():
+            # intersection_phase == "Stopping" zusaetzlich zur Kantenanzahl:
+            # visited_edges erreicht die Gesamtzahl bereits beim START der
+            # letzten Abbiegung (graph_state_node._advance_graph markiert
+            # sofort bei turn_start, nicht erst nach der Fahrt) - ohne diese
+            # Bedingung wuerde "Erkundung abgeschlossen" (Popup, exploration_done)
+            # schon melden, waehrend der Bot die letzte Kante noch faehrt/
+            # abbiegt, nicht wenn er wirklich an der naechsten Kreuzung steht.
             if not self.exploration_done and len(self.visited_edges) >= self._total_edges \
-                    and self.current_node is not None:
+                    and self.current_node is not None \
+                    and self.intersection_phase == "Stopping":
                 self.exploration_done = True
                 self.phase = "waiting"
                 just_finished = True
-                rospy.loginfo("[explore_control] Exploration abgeschlossen - alle Kanten besucht")
+                rospy.loginfo("[explore_control] Exploration abgeschlossen - alle Kanten besucht, Bot steht")
 
             if not self.exploration_done:
                 exit_tag = self._decide_next_exit()

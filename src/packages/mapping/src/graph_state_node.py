@@ -160,10 +160,15 @@ class GraphStateNode:
     # ── Config laden ─────────────────────────────────────────────────────────
 
     def _mapping_config_path(self):
-        return os.path.join(os.path.dirname(__file__), "../config/mapping_node.json")
+        return os.path.abspath(os.path.join(os.path.dirname(__file__), "../config/mapping_node.json"))
 
     def _load_map(self):
         path = self._mapping_config_path()
+        # Absoluten Pfad mitloggen: bei Catkin-Installs/Devel-Space kann die
+        # tatsaechlich geladene Datei von der abweichen, die von Hand editiert
+        # wird - dann wuerde eine Aenderung an delivery_start_node etc. nie
+        # ankommen, obwohl die editierte Datei korrekt aussieht.
+        rospy.loginfo(f"[graph_state] Lade mapping_node.json von: {path}")
         try:
             with open(path, 'r') as f:
                 config = json.load(f)
@@ -301,9 +306,29 @@ class GraphStateNode:
                       f"(Tor-Zuordnung bleibt erhalten)")
         self.visited_edges = []
 
+    def _reload_delivery_start(self):
+        # delivery_start_node/-_entry_tag werden sonst nur EINMAL beim
+        # Node-Start aus mapping_node.json gelesen (_load_map) - eine
+        # Bearbeitung der Datei waehrend der Stack schon laeuft (z.B. weil
+        # der Bot diesmal an einem anderen Knoten hingestellt wird) kaeme
+        # sonst nie an. "Bot versetzt" ist der richtige Zeitpunkt, das frisch
+        # von der Platte zu holen, bevor current_node darauf zurueckgesetzt
+        # wird.
+        try:
+            with open(self._mapping_config_path(), 'r') as f:
+                config = json.load(f)
+        except Exception as e:
+            rospy.logwarn(f"[graph_state] delivery_start_node konnte nicht neu "
+                          f"geladen werden, nutze zuletzt bekannten Stand: {e}")
+            return
+        self.delivery_start_node = config.get("delivery_start_node", self.mapping_start_node)
+        self.delivery_start_entry_tag = self._parse_start_entry_tag(
+            config.get("delivery_start_entry_tag"))
+
     def cbBotRelocated(self, msg):
         if not msg.data:
             return
+        self._reload_delivery_start()
         rospy.loginfo(f"[graph_state] Bot von Hand an delivery_start_node "
                       f"neu positioniert: current_node {self.current_node} -> "
                       f"{self.delivery_start_node} (current_edge/Tag-Zustand geleert)")

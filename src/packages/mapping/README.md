@@ -308,11 +308,20 @@ Graphen (nicht nur bereits befahrene Kanten – das führte zu einem
 Deadlock, siehe "Bekannte Einschränkungen") den nächsten Knoten mit
 unbesuchten Ausgängen und fährt nur den ersten Schritt dorthin (wird bei der
 nächsten Ankunft neu berechnet).
-Meldet `exploration_done = True`, sobald alle Kanten besucht sind, leert
-dabei explizit `next_direction` (verhindert, dass eine veraltete Richtung
-von der letzten Abbiegung zufällig zur nächsten Kreuzung passt und der Bot
-ungewollt weiterfährt) und gibt danach die Kontrolle über `/navigation/phase`
-ab. `debug_graph_node` zeigt in diesem Moment ein Popup ("Erkundung
+Meldet `exploration_done = True`, sobald alle Kanten besucht sind **und**
+der Bot laut `/intersection/phase` gerade in `"Stopping"` steht – nur die
+Kantenanzahl allein reicht nicht: `visited_edges` erreicht die Gesamtzahl
+bereits beim **Start** der letzten Abbiegung (`graph_state_node.
+_advance_graph` markiert sofort bei `turn_start`, nicht erst nach der
+Fahrt), der Bot faehrt zu dem Zeitpunkt also noch. Ohne die zusaetzliche
+Stopping-Bedingung waere "Erkundung abgeschlossen" (Popup, `exploration_done`)
+zu frueh gekommen – und ein Tor auf genau dieser letzten Kante waere zu
+diesem Zeitpunkt eventuell noch gar nicht erkannt gewesen (kein Zusammenhang
+mit irgendeinem Knopfdruck, reine Zeitfrage). Leert dabei explizit
+`next_direction` (verhindert, dass eine veraltete Richtung von der letzten
+Abbiegung zufällig zur nächsten Kreuzung passt und der Bot ungewollt
+weiterfährt) und gibt danach die Kontrolle über `/navigation/phase` ab.
+`debug_graph_node` zeigt in diesem Moment ein Popup ("Erkundung
 abgeschlossen").
 **Publiziert:** `/navigation/next_direction`, `/navigation/exploration_done`,
 `/navigation/phase` (nur solange Phase 1 aktiv ist)
@@ -326,8 +335,24 @@ eine bereits während `phase=="waiting"` (also vor der Neupositionierung)
 berechnete Route würde aber unnötig Verwirrung stiften, wenn sie im
 Dashboard angezeigt wird, bevor der Bot überhaupt am Start-Punkt steht.
 `start_delivery` wird ebenfalls erst wirksam, sobald diese Bestätigung
-vorliegt (sonst nur eine gedrosselte Warnung im Log). Ist
-`path_planning.gate_order` (Config oder live per `/navigation/gate_order`
+vorliegt (sonst nur eine gedrosselte Warnung im Log). `delivery_start_node`/
+`delivery_start_entry_tag` werden bei "Bot versetzt" frisch von der Platte
+neu gelesen (nicht nur der beim Node-Start gecachte Stand) – eine
+Bearbeitung von `mapping_node.json`, während der Stack schon läuft, kommt
+so noch an.
+
+**Wende-Sonderfall:** Liegt das jeweils nächste Tor auf der Kante, über die
+gerade eingefahren wurde ("liegt hinter uns auf der Spur"), ist es NICHT in
+einem Schritt erreichbar – dafür gibt es kein Wort/keine Ausführung (reine
+Wende, Offset 0 in `graph_state_node._word_for_exit`). `_gate_distance`
+erkennt das (Abgleich gegen das live `exit_directions` der tatsächlichen
+aktuellen Position) und berechnet stattdessen den echten Umweg über die
+übrigen Ausfahrten des Knotens (`_dijkstra_excluding_start_exit`), damit
+so ein Tor nicht fälschlich als "am nächsten" an die erste Stelle der
+Reihenfolge gesetzt wird. `_decide_next_tag` behandelt denselben Fall auch
+zur Laufzeit, falls es doch einmal dazu kommt.
+
+Ist `path_planning.gate_order` (Config oder live per `/navigation/gate_order`
 vom Dashboard) **nicht leer**, wird diese Reihenfolge unverändert übernommen
 (`_plan_fixed_order`) – sonst wird sie selbst optimiert: bei `mode:
 "optimal"` per Brute-Force über alle Permutationen

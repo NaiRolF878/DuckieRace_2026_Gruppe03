@@ -120,7 +120,13 @@ class PathPlannerNode:
     # ── Config laden ─────────────────────────────────────────────────────────
 
     def _load_map(self):
-        path = os.path.join(os.path.dirname(__file__), "../config/mapping_node.json")
+        path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../config/mapping_node.json"))
+        # Absoluten Pfad mitloggen: bei Catkin-Installs/Devel-Space kann die
+        # tatsaechlich geladene Datei von der abweichen, die von Hand editiert
+        # wird (z.B. eine installierte Kopie statt der Quelle) - dann wuerde
+        # eine Aenderung an delivery_start_node nie ankommen, obwohl die
+        # editierte Datei korrekt aussieht.
+        rospy.loginfo(f"[path_planner] Lade mapping_node.json von: {path}")
         with open(path, 'r') as f:
             config = json.load(f)
         self.graph               = config["graph"]
@@ -226,14 +232,28 @@ class PathPlannerNode:
     def cbBotRelocated(self, msg):
         if not msg.data:
             return
+        # delivery_start_node wurde sonst nur EINMAL beim Node-Start aus
+        # mapping_node.json gelesen (_load_map) - eine nachtraegliche
+        # Bearbeitung der Datei (z.B. Bot wird diesmal an einem anderen
+        # Knoten hingestellt) kaeme sonst nie an, obwohl "Bot versetzt"
+        # genau dafuer der richtige Zeitpunkt waere.
+        try:
+            with open(os.path.join(os.path.dirname(__file__),
+                                    "../config/mapping_node.json"), 'r') as f:
+                config = json.load(f)
+            self.delivery_start_node = config.get(
+                "delivery_start_node", config["mapping_start_node"])
+        except Exception as e:
+            rospy.logwarn(f"[path_planner] delivery_start_node konnte nicht neu "
+                          f"geladen werden, nutze zuletzt bekannten Stand: {e}")
         self.bot_relocated_confirmed = True
         # Neuplanung erzwingen: current_node (graph_state_node) ist ab jetzt
         # per Reset auf delivery_start_node gesetzt, eine vorher (waehrend
         # phase=="waiting", aber noch VOR der Neupositionierung) berechnete
         # planned_order koennte von der alten Erkundungs-Endposition ausgehen.
         self._last_planned_keys = None
-        rospy.loginfo("[path_planner] Bot-Neupositionierung bestaetigt - "
-                      "Route wird ab delivery_start_node (neu) geplant")
+        rospy.loginfo(f"[path_planner] Bot-Neupositionierung bestaetigt - Route "
+                      f"wird ab delivery_start_node={self.delivery_start_node} (neu) geplant")
 
     # ── Dijkstra (nur heapq/collections/itertools) ──────────────────────────────
 
@@ -241,6 +261,38 @@ class PathPlannerNode:
         dist = {start: 0}
         prev = {}
         pq = [(0, start)]
+        done = set()
+        while pq:
+            d, node = heapq.heappop(pq)
+            if node in done:
+                continue
+            done.add(node)
+            for tag, (neighbor, _neighbor_tag) in self.graph.get(node, {}).items():
+                nd = d + 1
+                if nd < dist.get(neighbor, float('inf')):
+                    dist[neighbor] = nd
+                    prev[neighbor] = (node, tag)
+                    heapq.heappush(pq, (nd, neighbor))
+        return dist, prev
+
+    def _dijkstra_excluding_start_exit(self, start, forbidden_tag):
+        # Wie _dijkstra, aber OHNE die triviale Distanz 0 fuer start selbst:
+        # normales Dijkstra wuerde bei einem Ziel direkt an start immer 0
+        # (bzw. +1 fuer den letzten Schritt) liefern, selbst wenn die EINZIGE
+        # direkte Kante dorthin forbidden_tag waere (eine Wende, fuer die es
+        # kein Wort/keine Ausfuehrung gibt, siehe _gate_distance/
+        # _decide_next_tag). Hier zaehlt nur ein echter Umweg ueber die
+        # UEBRIGEN Ausfahrten von start.
+        dist = {}
+        prev = {}
+        pq = []
+        for tag, (neighbor, _neighbor_tag) in self.graph.get(start, {}).items():
+            if tag == forbidden_tag:
+                continue
+            if 1 < dist.get(neighbor, float('inf')):
+                dist[neighbor] = 1
+                prev[neighbor] = (start, tag)
+                heapq.heappush(pq, (1, neighbor))
         done = set()
         while pq:
             d, node = heapq.heappop(pq)
@@ -279,8 +331,21 @@ class PathPlannerNode:
         return node, tag, exit_node
 
     def _gate_distance(self, from_node, gate_id):
-        entry_node, _tag, _exit_node = self._gate_entry_and_exit(gate_id)
+        entry_node, tag, _exit_node = self._gate_entry_and_exit(gate_id)
         if from_node == entry_node:
+            # Sonderfall: Tor liegt auf der Kante, ueber die der Bot GERADE
+            # EINGEFAHREN ist ("liegt hinter uns auf der Spur") - dafuer
+            # gibt es kein Wort/keine Ausfuehrung (reine Wende, Offset 0 in
+            # graph_state_node._word_for_exit), also NICHT einfach in 1
+            # Schritt erreichbar. Nur fuer die tatsaechliche aktuelle Position
+            # pruefbar (exit_directions ist live und entry-tag-bewusst, aber
+            # nur fuer current_node gueltig, nicht fuer hypothetische
+            # Zwischenpositionen bei der Reihenfolge-Optimierung).
+            if from_node == self.current_node and tag not in self.exit_directions:
+                dist, _ = self._dijkstra_excluding_start_exit(from_node, tag)
+                if entry_node not in dist:
+                    return None
+                return dist[entry_node] + 1
             return 1
         dist, _ = self._dijkstra(from_node)
         if entry_node not in dist:
@@ -363,7 +428,28 @@ class PathPlannerNode:
         target_gate = self.remaining[0]
         entry_node, tag, _exit_node = self._gate_entry_and_exit(target_gate)
         if self.current_node == entry_node:
-            return tag
+            if tag in self.exit_directions:
+                return tag
+            # Tor liegt auf der Kante, ueber die gerade eingefahren wurde
+            # (Wende noetig, siehe _gate_distance) - Umweg ueber die
+            # uebrigen Ausfahrten dieses Knotens. Pfad ueber die BEKANNTE
+            # Distanz zurueckverfolgen (fest zaehlen, NICHT bis "node ==
+            # self.current_node"): entry_node ist hier derselbe Knoten wie
+            # self.current_node (der Umweg fuehrt ja genau dorthin zurueck),
+            # ein Vergleich auf Knotennamen wuerde die Schleife sofort
+            # (fehlerhaft) abbrechen, noch bevor prev ueberhaupt befragt wird.
+            dist, prev = self._dijkstra_excluding_start_exit(self.current_node, tag)
+            if entry_node not in dist:
+                return None
+            node, path_tags = entry_node, []
+            for _ in range(dist[entry_node]):
+                p_node, t = prev[node]
+                path_tags.append(t)
+                node = p_node
+            if not path_tags:
+                return None
+            path_tags.reverse()
+            return path_tags[0]
         path_tags = self._shortest_path_tags(self.current_node, entry_node)
         if not path_tags:
             return None
