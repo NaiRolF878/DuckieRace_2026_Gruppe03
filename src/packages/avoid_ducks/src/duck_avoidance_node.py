@@ -68,10 +68,16 @@ class DuckAvoidanceNode:
         # nicht mit AttributeError abstuerzt.
         self.escape_direction = 1.0
         self.zones_status = [{"white": False, "yellow": False, "duck": False} for _ in range(3)] # Status für Zone 1, 2, 3
-        self.duck_bboxes = [] # Eingehende Enten [(x1,y1,x2,y2), ...]
+        self.duck_bboxes = [] # Eingehende Enten [(x1,y1,x2,y2), ...] - aktuell VERWENDETE Werte
         # Kurzes Positions-Gedaechtnis gegen einzelne verpasste Frames beim
-        # Drehen (siehe cb_ducks) - Default hier, per JSON ueberschreibbar.
+        # Drehen (siehe cb_ducks/_project_remembered_bboxes) - Default hier,
+        # per JSON ueberschreibbar. _remembered_bboxes haelt die zuletzt
+        # ECHT erkannten Boxen roh fest (nicht mehr veraendert), waehrend
+        # duck_bboxes bei jedem cb_ducks-Aufruf neu um die seitdem gefahrene
+        # Drehung (self.theta) korrigiert wird.
         self._last_duck_seen_time = 0.0
+        self._last_duck_seen_theta = 0.0
+        self._remembered_bboxes = []
         self.duck_memory_seconds = 0.5
         self.display_image = None
         self.buffer_size = 3 #17
@@ -261,13 +267,43 @@ class DuckAvoidanceNode:
         # noch da ist (der Bot hat nur kurz weggedreht, nicht die Ente ist
         # weggefahren). Erst nach Ablauf von duck_memory_seconds ohne neue
         # Erkennung gilt sie wirklich als weg.
+        #
+        # Reines Einfrieren der letzten Bildposition waere aber selbst
+        # WAEHREND der Gedaechtniszeit falsch, wenn sich der Bot in der
+        # Zwischenzeit weitergedreht hat (genau der Fall beim Ausweichen) -
+        # deshalb wird die gemerkte Position bei jedem Aufruf per Odometrie
+        # neu projiziert (_project_remembered_bboxes), nicht einfach
+        # unveraendert weiterverwendet.
         now = time.monotonic()
         if new_bboxes:
-            self.duck_bboxes = new_bboxes
+            self._remembered_bboxes = new_bboxes
             self._last_duck_seen_time = now
+            self._last_duck_seen_theta = self.theta
+            self.duck_bboxes = new_bboxes
         elif now - self._last_duck_seen_time > self.duck_memory_seconds:
+            self._remembered_bboxes = []
             self.duck_bboxes = []
-        # sonst: self.duck_bboxes (letzte bekannte Position) unveraendert lassen
+        else:
+            self.duck_bboxes = self._project_remembered_bboxes()
+
+    def _project_remembered_bboxes(self):
+        # Korrigiert die zuletzt ECHT erkannte Enten-Position um die
+        # Bot-eigene Drehung seit der Erkennung (Kleinwinkel-Naeherung des
+        # Lochkamera-Modells: eine Drehung um delta_theta verschiebt ein
+        # Objekt im Bild horizontal um ungefaehr fx * delta_theta Pixel).
+        # Dreht der Bot z.B. nach links (theta steigt), wandert ein
+        # stillstehendes Objekt im Bild nach RECHTS (Pixel-X steigt) - die
+        # eigentliche Distanz/Tiefe der Ente wird dabei nicht neu geschaetzt,
+        # nur die Blickrichtungs-Aenderung ausgeglichen. Reine Naeherung:
+        # ignoriert eigene Vor-/Rueckwaertsbewegung und dass sich die Ente
+        # selbst bewegt haben koennte.
+        if not self._remembered_bboxes or self.K is None:
+            return self._remembered_bboxes
+        delta_theta = self.theta - self._last_duck_seen_theta
+        fx = float(self.K[0][0])
+        shift_px = fx * delta_theta
+        return [(int(x1 + shift_px), y1, int(x2 + shift_px), y2)
+                for (x1, y1, x2, y2) in self._remembered_bboxes]
 
     # ==========================================
     # 3. VISION & PERCEPTION LOOP
