@@ -351,35 +351,24 @@ class GraphStateNode:
         return self._DIR_FOR_OFFSET.get(offset)
 
     def _effective_entry_tag(self):
-        # Live-Lesung bevorzugen (echte Kamera-Bestaetigung), aber NIE
-        # komplett blockieren, wenn sie diesmal ausbleibt: current_node wird
-        # ohnehin ausschliesslich aus der eigenen Kartenverfolgung bestimmt
-        # (kein Tag identifiziert je einen Knoten, siehe Kopfkommentar) - der
-        # Eingangs-Tag fuer den aktuellen Knoten ist daher bereits durch die
-        # VORHERIGE Abbiegeentscheidung deterministisch bekannt (predicted_
-        # entry_tag), unabhaengig davon ob die Kamera ihn diesmal bestaetigen
-        # kann. Ohne diesen Fallback bleibt exit_directions leer -> next_direction
-        # bleibt dauerhaft "" -> die FSM haengt fest (siehe Diskussion).
-        #
-        # Widerspricht die Live-Lesung der Vorhersage, wird der Vorhersage
-        # vertraut: Kreuzungs-Tags 1 und 3 liegen sich geometrisch GEGENUEBER
-        # (ebenso 2/4 quer) - liest die Kamera z.B. den gegenueberliegenden
-        # statt den tatsaechlichen Einfahrt-Tag (beide gleichzeitig sichtbar,
-        # der eigentlich richtige evtl. nur mit Bitfehlern lesbar und daher
-        # verworfen, siehe detect_apriltag_node), waere die Live-Lesung falsch,
-        # obwohl sie technisch "gueltig" aussieht. predicted_entry_tag ist
-        # dagegen aus der zuletzt tatsaechlich ausgefuehrten Abbiegung bekannt
-        # und damit deterministisch korrekt.
-        if (self.current_entry_tag is not None and self.predicted_entry_tag is not None
-                and self.current_entry_tag != self.predicted_entry_tag):
-            rospy.logwarn(
-                f"[graph_state] Live-Tag ({self.current_entry_tag}) widerspricht der "
-                f"aus der letzten Abbiegung vorhergesagten Einfahrt "
-                f"({self.predicted_entry_tag}) - vertraue der Vorhersage "
-                f"(z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).")
+        # predicted_entry_tag ist die alleinige Quelle, sobald sie bekannt ist:
+        # current_node/visited_edges werden ausschliesslich aus der eigenen
+        # Kartenverfolgung bestimmt (kein Tag identifiziert je einen Knoten,
+        # siehe Kopfkommentar), und die Graph-Topologie in mapping_node.json
+        # ist gegen die echte Strecke geprueft (siehe fehler.md-Analyse vom
+        # 2026-07-22) - der Eingangs-Tag fuer current_node ist damit bereits
+        # durch die VORHERIGE Abbiegeentscheidung deterministisch korrekt,
+        # eine zusaetzliche Live-Bestaetigung durch die Kamera liefert hier
+        # keinen Mehrwert mehr, nur ein zusaetzliches Fehlerrisiko (z.B.
+        # gegenueberliegender statt tatsaechlicher Tag gelesen, oder ein
+        # einzelner Fehllese-Ausreisser, der sich sonst dauerhaft in
+        # current_node festsetzen wuerde). current_entry_tag (Live) dient nur
+        # noch als Fallback fuer die allererste Kreuzung ueberhaupt, falls
+        # mapping_start_entry_tag/delivery_start_entry_tag mal nicht gesetzt
+        # waeren.
+        if self.predicted_entry_tag is not None:
             return self.predicted_entry_tag
-        return self.current_entry_tag if self.current_entry_tag is not None \
-            else self.predicted_entry_tag
+        return self.current_entry_tag
 
     def _compute_exit_directions(self):
         # Fuer jede moegliche Ausfahrt am current_node: passendes Wort, damit

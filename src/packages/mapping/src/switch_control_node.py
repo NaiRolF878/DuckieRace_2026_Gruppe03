@@ -14,18 +14,23 @@
 # Vorrang, sobald sie vorliegt (_update_state wartet in STOPPING nur, bis
 # next_direction nicht mehr leer ist, kein Zufalls-Fallback). Sie basiert auf
 # der Graph-Topologie aus mapping_node.json (von Hand gegen die echte Strecke
-# geprueft) - die tag-basierte allowed_dirs-Liste (Live-Erkennung, siehe
-# cbApriltagDirection/cbStopLine) blockiert next_direction NICHT mehr, sie
-# wird nur noch zur Info mitgeloggt. Grund: tag_directions (welche Richtungen
-# ein Tag laut Konfiguration physisch erlaubt) kann unvollstaendig sein oder
-# die Live-Erkennung kann denselben Tag über laengere Zeit hinweg konsistent
-# falsch lesen (siehe fehler.md) - beides wuerde sonst next_direction
-# faelschlich blockieren, obwohl der Graph die Kante kennt.
+# geprueft).
 #
-# allowed_dirs wird trotzdem weiter gepflegt (cbStopLine/cbApriltagDirection/
-# cbGraphAllowedDirections) - fuers Dashboard/Debug-Log, und weil cbStopLine
-# beim Eintritt in STOPPING selbst bereits auf /graph/allowed_directions
-# ausweicht, falls die Live-Erkennung dort gerade gar nichts liefert.
+# Kreuzungs-Erkennung (cbStopLine) und die geloggten "erlaubten Richtungen"
+# kommen bewusst NUR NOCH aus /graph/allowed_directions (graph_state_node,
+# rein aus der Kartenverfolgung + predicted_entry_tag). Eine fruehere, davon
+# unabhaengige LIVE-Tag-Erkennung (/detect/apriltag/direction) wurde entfernt:
+# sie sollte urspruenglich als zweite, kamera-only Quelle absichern, hat aber
+# in der Praxis selbst Fehler eingebracht (z.B. denselben Tag ueber laengere
+# Zeit hinweg konsistent falsch gelesen, oder tag_directions unvollstaendig
+# konfiguriert - siehe fehler.md-Analyse vom 2026-07-22). Ist die Graph-
+# Topologie korrekt und current_node/predicted_entry_tag sauber mitgefuehrt
+# (turn_start-Atomaritaet, "Bot versetzt"-Reset, siehe graph_state_node),
+# liefert die Karte die zuverlaessigere Antwort als die Kamera - daher genau
+# EINE Quelle statt zwei potenziell widerspruechlichen. Voraussetzung:
+# mapping_start_entry_tag/delivery_start_entry_tag muessen in
+# mapping_node.json gesetzt sein, sonst bleibt predicted_entry_tag an der
+# allerersten Kreuzung jeder Phase leer und die Kreuzung wird nicht erkannt.
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
@@ -45,9 +50,7 @@ class SwitchControlNode:
 
         self.phase            = self.LANE
         self.phase_start_time = rospy.Time.now()
-        self.allowed_dirs     = []
-        self.graph_allowed_dirs = []   # Fallback aus /graph/allowed_directions
-        self.used_graph_fallback = False   # nur fuers Debug-Dashboard
+        self.allowed_dirs     = []   # aus /graph/allowed_directions, nur Info/Dashboard
         self.direction        = "straight"
         self.next_direction   = ""     # von explore_control_node/path_planner_node
         self.stop_line        = False
@@ -83,8 +86,6 @@ class SwitchControlNode:
                          String, self.cbGraphAllowedDirections, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/detect/stop_line',
                          Bool, self.cbStopLine, queue_size=1)
-        rospy.Subscriber(f'/{self._vehicle_name}/detect/apriltag/direction',
-                         String, self.cbApriltagDirection, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/intersection/turn_done',
                          Bool, self.cbTurnDone, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/navigation/next_direction',
@@ -103,7 +104,7 @@ class SwitchControlNode:
             self.turning_timeout = timing["turning_timeout"].get("default", 8.0)
 
     def cbGraphAllowedDirections(self, msg):
-        self.graph_allowed_dirs = msg.data.split(",") if msg.data else []
+        self.allowed_dirs = msg.data.split(",") if msg.data else []
 
     def cbStopLine(self, msg):
         self.stop_line = msg.data
@@ -111,31 +112,21 @@ class SwitchControlNode:
         if not (msg.data and self.phase == self.LANE):
             return
 
-        dirs = self.allowed_dirs
-        self.used_graph_fallback = False
-        if not dirs or dirs == ["unknown"]:
-            # Live-Erkennung liefert gerade nichts Brauchbares - sofort auf
-            # den Graph-Fallback ausweichen statt erst noch stopping_fallback_
-            # timeout in STOPPING zu verlieren (hier gibt es ja gar keinen
-            # Live-Wert, den es abzuwarten lohnt).
-            dirs = self.graph_allowed_dirs
-            self.used_graph_fallback = bool(dirs)
-
-        if not dirs or dirs == ["unknown"]:
+        if not self.allowed_dirs:
+            # predicted_entry_tag (graph_state_node) noch nicht bekannt - kann
+            # an der allerersten Kreuzung jeder Phase passieren, wenn
+            # mapping_start_entry_tag/delivery_start_entry_tag nicht gesetzt
+            # sind (siehe Kopfkommentar). Ohne erlaubte Richtungen keine
+            # sinnvolle Kreuzungs-Erkennung - weiterfahren statt falsch stehen
+            # zu bleiben.
             rospy.loginfo_throttle(2.0,
-                "[switch] Rote Linie ohne Tag-Richtung (auch kein Graph-Fallback) "
-                "-> keine Kreuzung, fahre weiter")
+                "[switch] Rote Linie, aber noch keine erlaubten Richtungen vom "
+                "Graph (predicted_entry_tag unbekannt) -> keine Kreuzung, fahre weiter")
             return
 
-        self.allowed_dirs = dirs
-        source = "Graph-Fallback" if self.used_graph_fallback else "Live-Tag"
-        rospy.loginfo(f"[switch] Kreuzung (Linie+Tag) -> STOPPING | "
-                      f"erlaubte Richtungen ({source}): {self.allowed_dirs}")
+        rospy.loginfo(f"[switch] Kreuzung (Linie+Graph) -> STOPPING | "
+                      f"erlaubte Richtungen: {self.allowed_dirs}")
         self._transition_to(self.STOPPING)
-
-    def cbApriltagDirection(self, msg):
-        if self.phase == self.LANE and msg.data and msg.data != "unknown":
-            self.allowed_dirs = msg.data.split(",")
 
     def cbTurnDone(self, msg):
         if msg.data:
@@ -163,18 +154,12 @@ class SwitchControlNode:
                 return
             if self.next_direction:
                 # next_direction (von explore_control_node/path_planner_node)
-                # hat Vorrang - basiert auf der Graph-Topologie aus
-                # mapping_node.json (von Hand gegen die echte Strecke
-                # geprueft), waehrend die tag-basierte allowed_dirs-Liste
-                # (Live-Erkennung bzw. Graph-Fallback) nur noch zur Info
-                # mitgeloggt wird, NICHT mehr als Blockade dient - eine
-                # unvollstaendige/falsche tag_directions-Zuordnung (z.B.
-                # "geradeaus" fehlt fuer einen Tag, obwohl der Graph diese
-                # Kante kennt) soll next_direction nicht mehr verhindern
-                # koennen.
+                # hat Vorrang - kein Abgleich gegen allowed_dirs mehr noetig
+                # (siehe Kopfkommentar: beide stammen jetzt ohnehin aus
+                # derselben Quelle, graph_state_node).
                 self.direction = self.next_direction
-                rospy.loginfo(f"[switch] Richtung: {self.direction} (aus Planung; "
-                              f"Tag erlaubt lt. Erkennung: {self.allowed_dirs}) -> TURNING")
+                rospy.loginfo(f"[switch] Richtung: {self.direction} "
+                              f"(aus Planung; Graph erlaubt: {self.allowed_dirs}) -> TURNING")
                 self._transition_to(self.TURNING)
             else:
                 rospy.logwarn_throttle(1.0,

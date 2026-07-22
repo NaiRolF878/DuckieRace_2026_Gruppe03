@@ -243,23 +243,25 @@ Nachricht, wie bei `control_intersection_node`.
 Verfolgt zusätzlich `predicted_entry_tag`: den Eingangs-Tag der Kreuzung, an
 der der Bot gerade steht, rein aus der eigenen Kartenverfolgung berechnet
 (bereits bei der vorherigen Abbiegeentscheidung bekannt, lange bevor die
-Kamera überhaupt etwas sehen muss). Kann die Kamera den Tag diesmal nicht
-lesen (`current_entry_tag` bleibt `None`), springt `_effective_entry_tag()`
-auf diese Vorhersage ein – ohne diesen Fallback bliebe `exit_directions`
-leer und `next_direction` dauerhaft `""` (garantierter Deadlock in
-`switch_control_node`, siehe dort).
+Kamera überhaupt etwas sehen muss).
 
-**Widerspruchsprüfung:** Liest die Kamera einen Tag, der der Vorhersage
-widerspricht, wird der Vorhersage vertraut, nicht der Kamera. Kreuzungs-Tags
-1/3 (bzw. 2/4) liegen sich geometrisch gegenüber – wird z.B. der eigentliche
-Einfahrt-Tag nur mit Bitfehlern gelesen und deshalb verworfen (siehe
-`detect_apriltag_node`), während gleichzeitig der gegenüberliegende Tag
-sauber lesbar ist, würde die Kamera sonst einen technisch "gültigen", aber
-falschen Tag liefern – mit Folgefehler in der Wort-Übersetzung (z.B. "links"
-statt korrekt "rechts").
+**`_effective_entry_tag()` ist seit 2026-07-22 ausschließlich `predicted_entry_tag`**,
+sobald dieser bekannt ist – `current_entry_tag` (Live-Kamera) dient nur noch
+als Fallback für die allererste Kreuzung überhaupt, falls
+`mapping_start_entry_tag`/`delivery_start_entry_tag` mal nicht gesetzt wären.
+Vorher wurde bei einem Widerspruch zwar der Vorhersage vertraut, aber die
+Live-Ablesung noch zum Vergleich herangezogen und bei Abweichung lautstark
+gewarnt; eine `fehler.md`-Analyse zeigte aber, dass die Kamera an praktisch
+jeder Kreuzung widersprach, obwohl die (von Hand gegen die echte Strecke
+geprüfte) Graph-Topologie korrekt war – die Live-Ablesung war also nicht die
+verlässlichere Quelle, sondern nur zusätzliches Risiko. Ist die Karte korrekt
+und `current_node` sauber mitgeführt (turn_start-Atomarität, "Bot versetzt"-
+Reset), kennt die Software den Eingangs-Tag ohnehin schon deterministisch,
+ganz ohne Kamera-Bestätigung.
 **Publiziert:** `/graph/current_node`, `/graph/current_edge`,
 `/graph/visited_edges`, `/graph/gate_map`, `/graph/exit_directions`,
-`/graph/allowed_directions` (Fallback-Quelle für `switch_control_node`)
+`/graph/allowed_directions` (einzige Quelle für `switch_control_node`s
+Kreuzungs-Erkennung, siehe dort)
 
 **Notfall-Korrektur der Tor-Zuordnung:** `gate_map` wird bei jedem neu
 entdeckten Tor automatisch nach `mapping_node.json` (Feld `"gate_map"`)
@@ -433,6 +435,14 @@ entschlackt – die Tag-Gedächtnis-Interna (Alter, Quelle) werden nicht mehr
 eingeblendet, nur noch Tag-ID, erlaubte Richtungen und gewählte Fahrtrichtung.
 **Zusätzlich publiziert:** `/detect/gate/id` (Int32, -1 wenn keiner sichtbar)
 
+**Kein `/detect/apriltag/direction` mehr (seit 2026-07-22):** die erlaubten
+Richtungen wurden hier zusätzlich zur Karten-Auswertung in `graph_state_node`
+ein zweites Mal aus dem rohen Live-Tag berechnet und separat an
+`switch_control_node` publiziert – zwei unabhängige Quellen, die sich
+widersprechen konnten (siehe `switch_control_node`-Abschnitt). Die
+Berechnung existiert nur noch lokal für die Debug-Legende, wird aber nicht
+mehr publiziert.
+
 ### control_intersection_node
 Segment-Logik 1:1 wie in `intersection_handling`: jedes Segment gibt
 `{v, omega, duration}` vor, Segment-Ende wird über die **kumulierte**
@@ -457,16 +467,20 @@ möglicherweise veralteten Richtung loszufahren.
 Einzige fachliche Änderung: `random.choice(allowed_dirs)` wurde durch
 `/navigation/next_direction` ersetzt. `next_direction` hat **immer Vorrang**,
 sobald sie vorliegt (kein Fallback auf Zufall, da Challenge 4 einen
-deterministischen Pfad verlangt) – die tag-basierte `allowed_dirs`-Liste
-(aus Live-Tag-Erkennung bzw. `/graph/allowed_directions`-Fallback beim
-`STOPPING`-Eintritt, falls die Kamera dort gar nichts liefert) blockiert
-`next_direction` **nicht mehr**, sondern dient nur noch zur Info im Log.
-Grund: `tag_directions` kann unvollständig sein (z.B. "geradeaus" fehlt für
-einen Tag, obwohl der – gegen die echte Strecke geprüfte – Graph diese Kante
-kennt), und die Live-Erkennung kann denselben Tag über längere Zeit
-konsistent falsch lesen (siehe `fehler.md`) – beides würde sonst
-`next_direction` fälschlich blockieren. Alle anderen FSM-Zustände sind
-unverändert.
+deterministischen Pfad verlangt). Alle anderen FSM-Zustände sind unverändert.
+
+**Nur noch eine Quelle für "erlaubte Richtungen" (seit 2026-07-22):**
+`allowed_dirs` (Kreuzungs-Erkennung in `cbStopLine` + Info-Log) kommt jetzt
+ausschließlich aus `/graph/allowed_directions` (`graph_state_node`, rein aus
+der Kartenverfolgung). Die frühere, unabhängige Live-Tag-Quelle
+(`detect_apriltag_node`'s `/detect/apriltag/direction`) wurde entfernt –
+zwei getrennt berechnete Quellen konnten sich widersprechen, und laut
+`fehler.md`-Analyse lag dabei nicht die Karte, sondern die Live-Erkennung
+falsch. **Voraussetzung:** `mapping_start_entry_tag`/`delivery_start_entry_tag`
+in `mapping_node.json` müssen gesetzt sein – sonst ist `predicted_entry_tag`
+an der allerersten Kreuzung jeder Phase `None`, `allowed_dirs` bleibt leer,
+und `cbStopLine` erkennt diese Kreuzung gar nicht erst (fährt einfach
+weiter, statt anzuhalten).
 
 ---
 
@@ -476,7 +490,6 @@ unverändert.
 |---|---|---|
 | `/detect/lane` | Float64 | detect_lane → control_lane |
 | `/detect/stop_line` | Bool | detect_lane → switch_control |
-| `/detect/apriltag/direction` | String | detect_apriltag → switch_control |
 | `/detect/apriltag/id` | Int32 | detect_apriltag → graph_state |
 | `/detect/gate/id` | Int32 | detect_apriltag → graph_state |
 | `/graph/current_node` | String | graph_state → explore, path_planner, debug |
@@ -484,7 +497,7 @@ unverändert.
 | `/graph/visited_edges` | String (JSON) | graph_state → explore, debug |
 | `/graph/gate_map` | String (JSON) | graph_state → path_planner, debug |
 | `/graph/exit_directions` | String (JSON) | graph_state → explore, path_planner |
-| `/graph/allowed_directions` | String (Worte, kommagetrennt) | graph_state → switch_control (Fallback) |
+| `/graph/allowed_directions` | String (Worte, kommagetrennt) | graph_state → switch_control (einzige Quelle für Kreuzungs-Erkennung) |
 | `/graph/reload_gate_map` | Bool | debug (Button) → graph_state (Notfall-Korrektur) |
 | `/graph/reset_exploration` | Bool | debug (Button) → graph_state, explore (Erkundung wiederholen) |
 | `/graph/bot_relocated` | Bool | debug (Button "Bot versetzt") → graph_state, path_planner (Position-Reset auf delivery_start_node) |

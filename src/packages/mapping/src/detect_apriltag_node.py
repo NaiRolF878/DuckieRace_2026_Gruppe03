@@ -7,8 +7,6 @@
 # erlaubt) und welcher Tor-Tag (5-13, Zielorte auf den Kanten).
 #
 # Publiziert:
-#   /{vehicle}/detect/apriltag/direction (String) – erlaubte Richtungen, kommagetrennt
-#                                                    z.B. "left,straight" – "unknown" wenn keiner
 #   /{vehicle}/detect/apriltag/id        (Int32)  – Kreuzungs-Tag-ID 1-4 (-1 = keiner)
 #   /{vehicle}/detect/gate/id            (Int32)  – Tor-Tag-ID 5-13 (-1 = keiner)
 #   /{vehicle}/debug/apriltag            (CompressedImage)
@@ -115,8 +113,13 @@ class DetectApriltagNode:
             self.cbIntersectionPhase, queue_size=1)
 
         # ── Publisher ─────────────────────────────────────────────────────────
-        self.pub_direction = rospy.Publisher(
-            f'/{self._vehicle_name}/detect/apriltag/direction', String, queue_size=1)
+        # KEIN eigener Publisher fuer die erlaubten Richtungen mehr (frueher
+        # /detect/apriltag/direction): switch_control_node liest sie jetzt
+        # ausschliesslich aus /graph/allowed_directions (graph_state_node,
+        # rein aus der Kartenverfolgung) - eine zweite, unabhaengige
+        # Live-Kamera-Quelle hat in der Praxis selbst Fehler eingebracht
+        # (siehe switch_control_node-Kopfkommentar). "direction"/out_dir wird
+        # unten trotzdem lokal berechnet, nur noch fuer die Debug-Legende.
         self.pub_tag_id = rospy.Publisher(
             f'/{self._vehicle_name}/detect/apriltag/id', Int32, queue_size=1)
         # Tor-Tags (5-13): ID wenn erkannt, sonst -1. Fuer graph_state_node (Challenge 4).
@@ -355,7 +358,6 @@ class DetectApriltagNode:
             else:
                 out_id, out_dir = -1, "unknown"
 
-            self.pub_direction.publish(String(data=out_dir))
             self.pub_tag_id.publish(Int32(data=out_id))
             self.pub_tag_dash.publish(Int32(data=out_id))
             self.pub_gate_id.publish(Int32(data=gate_id))
