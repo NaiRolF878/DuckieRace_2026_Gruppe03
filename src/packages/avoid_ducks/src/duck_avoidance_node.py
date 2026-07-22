@@ -38,6 +38,7 @@ class DuckAvoidanceNode:
         self.H_inv = None
         self.trapezoids_2d = [] # Pixel-Koordinaten (Numpy für cv2)
         self.trapezoids_shapely = [] # Shapely Polygone für Intersection
+        self.zones_3d_raw = [] # dieselben Zonen als rohe Punktlisten (fuer Toter-Winkel-Grenzen)
         self.zones_3d_shapely = [] # dieselben Zonen in echten Metern (siehe _load_homography_and_build_zones)
         self._load_homography_and_build_zones()
 
@@ -174,9 +175,12 @@ class DuckAvoidanceNode:
             [(0.2, -0.073), (0.3, -0.07), (0.3, 0.07), (0.2, 0.073)]       # Zone 2
             #[(0.30, -0.07), (0.42, -0.07), (0.42, 0.07), (0.30, 0.07)]      # Zone 3
         ]
-        # Fuer den Positions-Gedaechtnis-Check (_world_duck_zone_hits): dieselben
-        # Zonen, aber in echten Metern statt Pixeln - vermeidet einen zweiten
-        # Umweg ueber die Homographie beim Rueck-Projizieren gemerkter Enten.
+        # Fuer den Positions-Gedaechtnis-Check (_remembered_duck_zone_hits):
+        # dieselben Zonen, aber in echten Metern statt Pixeln - vermeidet
+        # einen zweiten Umweg ueber die Homographie beim Rueck-Projizieren
+        # gemerkter Enten. self.zones_3d_raw zusaetzlich fuer die Grenzen des
+        # toten Winkels (naeher als Zone 0, siehe _remembered_duck_zone_hits).
+        self.zones_3d_raw = zones_3d
         self.zones_3d_shapely = [ShapelyPolygon(z) for z in zones_3d]
 
         for z in zones_3d:
@@ -326,11 +330,23 @@ class DuckAvoidanceNode:
         if not self._remembered_world_positions:
             return set()
         cos_t, sin_t = math.cos(self.theta), math.sin(self.theta)
+        # Zone 0 beginnt erst bei X=0.1m - NAEHER als das existiert gar keine
+        # Zone, weil die Kamera dort prinzipbedingt nichts mehr sieht (toter
+        # Winkel). Eine Ente, die sich (laut Gedaechtnis) bis dorthin
+        # angenaehert hat, ist die gefaehrlichste Position ueberhaupt, nicht
+        # "keine Zone trifft zu -> frei" - wird deshalb explizit als Zone 0
+        # gewertet, wenn sie noch ungefaehr im Fahrschlauch liegt (gleiche
+        # Y-Breite wie die Nahkante von Zone 0).
+        near_x = min(pt[0] for pt in self.zones_3d_raw[0]) if self.zones_3d_raw else None
+        near_ys = [pt[1] for pt in self.zones_3d_raw[0]] if self.zones_3d_raw else []
         hits = set()
         for world_x, world_y in self._remembered_world_positions:
             dx, dy = world_x - self.x, world_y - self.y
             local_x = dx * cos_t + dy * sin_t
             local_y = -dx * sin_t + dy * cos_t
+            if near_x is not None and 0.0 < local_x < near_x and min(near_ys) <= local_y <= max(near_ys):
+                hits.add(0)
+                continue
             point = ShapelyPoint(local_x, local_y)
             for i, zone_poly in enumerate(self.zones_3d_shapely):
                 if zone_poly.contains(point):
