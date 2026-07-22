@@ -77,7 +77,11 @@ class DebugGraphNode:
                          String, self.cbDeliveryProgress, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/intersection/phase',
                          String, self.cbIntersectionPhase, queue_size=1)
-        rospy.Subscriber(f'/{self._vehicle_name}/intersection/direction',
+        # turn_start statt des race-anfaelligen /intersection/direction (siehe
+        # graph_state_node/control_intersection_node) - liefert die Richtung
+        # atomar mit dem Sequenzstart, damit "biegt: X" nie eine veraltete
+        # Richtung der vorherigen Abbiegung anzeigt.
+        rospy.Subscriber(f'/{self._vehicle_name}/intersection/turn_start',
                          String, self.cbIntersectionDirection, queue_size=1)
 
         self.pub_start_delivery = rospy.Publisher(

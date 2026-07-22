@@ -231,9 +231,14 @@ DFS bewusst übersprungen (siehe `_first_actionable_exit` in
 ### graph_state_node — das Graph-Gedächtnis
 Lädt `mapping_node.json` **direkt** (nicht über `util.init_parameters`, da
 andere JSON-Struktur ohne `parameters`-Block). Verwaltet `current_node`,
-`current_edge`, `visited_edges` und `gate_map`. Der Graph-Übergang wird genau
-beim Wechsel von `/intersection/phase` nach `"Turning"` ausgelöst (garantiert
-frische Richtung, siehe Kommentar im Code).
+`current_edge`, `visited_edges` und `gate_map`. Der Graph-Übergang wird durch
+`/intersection/turn_start` ausgelöst (nicht mehr durch den Wechsel von
+`/intersection/phase` nach `"Turning"` – das frühere Vertrauen auf "phase
+wird kurz vor direction publiziert" hat in der Praxis trotzdem eine
+veraltete Richtung der vorherigen Abbiegung durchrutschen lassen, siehe
+`fehler.md`: physische Fahrt korrekt, im Graph gebuchte Kante nicht).
+`turn_start` liefert Start-Signal + bestätigte Richtung atomar in einer
+Nachricht, wie bei `control_intersection_node`.
 
 Verfolgt zusätzlich `predicted_entry_tag`: den Eingangs-Tag der Kreuzung, an
 der der Bot gerade steht, rein aus der eigenen Kartenverfolgung berechnet
@@ -341,6 +346,9 @@ ebenfalls.
   `speed_curve_factor`/`min_speed_factor` – die Geschwindigkeit sinkt jetzt
   gezielt mit dem Betrag des Spurfehlers (Kurven-Drosselung) statt nur linear
   über `min_vel` begrenzt zu werden.
+  `/debug/lane_croped` zeigt zusätzlich eine Bounding-Box der
+  Haltelinien-Erkennungszone (rot/dick wenn erkannt, sonst dünner Umriss zur
+  Kalibrierung).
 
 ### detect_apriltag_node (Erweiterung)
 Zusätzlich zur unveränderten Kreuzungs-Tag-Logik (1–4) wird jeder erkannte
@@ -355,6 +363,11 @@ wird als 3 gelesen) – und bleibt dabei über mehrere Frames stabil falsch
 (kein Rauschen, das sich rausmittelt). Genau das führt zu einer falsch
 aufgezeichneten Kante im Graph-Modell (Bot fährt z.B. tatsächlich A2→C,
 `graph_state_node` bucht es aber als A3→C).
+
+`/debug/apriltag` zeigt jetzt auch für erkannte Tor-Tags eine Bounding-Box
+(pink, direkt am Tag statt nur als Text an fester Position) und wurde
+entschlackt – die Tag-Gedächtnis-Interna (Alter, Quelle) werden nicht mehr
+eingeblendet, nur noch Tag-ID, erlaubte Richtungen und gewählte Fahrtrichtung.
 **Zusätzlich publiziert:** `/detect/gate/id` (Int32, -1 wenn keiner sichtbar)
 
 ### control_intersection_node
@@ -419,8 +432,8 @@ die eingefrorene Live-Richtung nicht zu `next_direction` passt.
 | `/navigation/start_delivery` | Bool | debug (Button) → path_planner |
 | `/navigation/delivery_progress` | String (JSON) | path_planner → debug |
 | `/intersection/phase` | String | switch_control → control_intersection, graph_state |
-| `/intersection/direction` | String | switch_control → graph_state, debug (Anzeige) |
-| `/intersection/turn_start` | String (Wort) | switch_control → control_intersection (einmalig pro Abbiegung) |
+| `/intersection/direction` | String | switch_control → (nur historisch, kein Abonnent mehr) |
+| `/intersection/turn_start` | String (Wort) | switch_control → control_intersection, graph_state, debug (einmalig pro Abbiegung) |
 | `/intersection/turn_done` | Bool | control_intersection → switch_control |
 | `/enable/lane`, `/enable/intersection` | Bool | switch_control → control_lane / control_intersection |
 | `/car_cmd_switch_node/cmd` | Twist2DStamped | control_lane / control_intersection → Motoren |

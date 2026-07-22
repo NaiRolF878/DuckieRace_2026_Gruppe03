@@ -247,20 +247,21 @@ class DetectApriltagNode:
                       if self.gate_tag_min <= t.tag_id <= self.gate_tag_max
                       and t.hamming == 0
                       and self._tag_area(t) >= self.min_tag_area]
-        raw_id = max(candidates, key=self._tag_area).tag_id if candidates else -1
+        best = max(candidates, key=self._tag_area) if candidates else None
+        raw_id = best.tag_id if best is not None else -1
 
         if raw_id == -1:
             self._gate_candidate_id    = -1
             self._gate_candidate_count = 0
-            return -1
+            return -1, None
         if raw_id == self._gate_candidate_id:
             self._gate_candidate_count += 1
         else:
             self._gate_candidate_id    = raw_id
             self._gate_candidate_count = 1
         if self._gate_candidate_count >= self.stability_required:
-            return raw_id
-        return -1
+            return raw_id, best
+        return -1, None
 
     def _detect_tags(self, img_bgr):
         debug_img = img_bgr.copy()
@@ -292,7 +293,14 @@ class DetectApriltagNode:
             for i in range(4):
                 cv2.line(debug_img, tuple(corners[i]), tuple(corners[(i+1) % 4]), (128, 128, 128), 1)
 
-        gate_id = self._detect_gate_id(all_tags)
+        gate_id, gate_tag = self._detect_gate_id(all_tags)
+        if gate_tag is not None:
+            corners = gate_tag.corners.astype(int)
+            for i in range(4):
+                cv2.line(debug_img, tuple(corners[i]), tuple(corners[(i+1) % 4]), (255, 0, 255), 2)
+            gx, gy = int(gate_tag.center[0]), int(gate_tag.center[1])
+            cv2.putText(debug_img, f"TOR:{gate_id}", (gx - 20, gy - 12),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
 
         valid = [t for t in all_tags if self._is_valid_tag(t, img_h)]
         best_area = 0.0
@@ -352,27 +360,20 @@ class DetectApriltagNode:
             self.pub_tag_dash.publish(Int32(data=out_id))
             self.pub_gate_id.publish(Int32(data=gate_id))
 
-            # ── Debug-Legende ─────────────────────────────────────────────────
-            cv2.rectangle(debug_img, (0, 0), (470, 160), (0, 0, 0), -1)
+            # ── Debug-Legende (aufgeraeumt: nur Tag-ID/erlaubte Richtungen/
+            # gewaehlte Fahrtrichtung - Gedaechtnis-Interna nicht mehr
+            # eingeblendet, Tor-Info sitzt jetzt direkt am erkannten Tor-Tag) ──
+            cv2.rectangle(debug_img, (0, 0), (470, 100), (0, 0, 0), -1)
             cv2.putText(debug_img, f"Tag ID: {out_id if out_id != -1 else 'None'}",
                         (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             cv2.putText(debug_img, f"Erlaubt: {out_dir.replace(',', ', ') if out_id != -1 else '-'}",
                         (10, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-            mem_txt = (f"Gedaechtnis: ID {self._mem_tag_id}, Alter {mem_age:.1f}s"
-                       if self._mem_tag_id != -1 else "Gedaechtnis: leer")
-            cv2.putText(debug_img, mem_txt, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                        (0, 255, 0) if mem_valid else (120, 120, 120), 1)
-            cv2.putText(debug_img, f"Quelle: {'live' if detected else ('Gedaechtnis' if mem_valid else '-')}",
-                        (10, 116), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
             # Gewuerfelte Abbiegerichtung – gruen wenn sie zu den erlaubten passt
             allowed_list = out_dir.split(",") if out_id != -1 else []
             chosen_ok = self._chosen_direction in allowed_list
             chosen_col = (0, 255, 0) if chosen_ok else (0, 165, 255)
             cv2.putText(debug_img, f"FAHRE: {self._chosen_direction.upper()}",
-                        (10, 146), cv2.FONT_HERSHEY_SIMPLEX, 0.6, chosen_col, 2)
-            if gate_id != -1:
-                cv2.putText(debug_img, f"TOR: {gate_id}", (350, 146),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+                        (10, 88), cv2.FONT_HERSHEY_SIMPLEX, 0.6, chosen_col, 2)
             self.debug_img = debug_img
 
             # Lokale Debug-Ansicht – zum Abschalten die 2 Zeilen auskommentieren:

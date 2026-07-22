@@ -24,12 +24,15 @@
 #   erwarten (left/right/straight).
 #
 # Der Graph-Uebergang (current_node -> naechster Knoten, visited_edges) wird
-# ausgeloest, sobald /intersection/phase auf "Turning" wechselt - das ist der
-# Moment, in dem die Richtung fuer DIESE Kreuzung garantiert frisch gewaehlt
-# wurde (cbStopLine setzt die Richtung unmittelbar vor Stopping, Stopping geht
-# danach in Turning ueber). So wird verhindert, dass eine noch alte
-# /intersection/direction-Nachricht aus der letzten Kreuzung faelschlich
-# fuer die naechste Kreuzung verwendet wird.
+# durch /intersection/turn_start ausgeloest, NICHT durch den Wechsel von
+# /intersection/phase auf "Turning": phase und die frueher genutzte
+# /intersection/direction sind zwei unabhaengige, pro Tick neu publizierte
+# Topics OHNE garantierte Verarbeitungsreihenfolge. Ein frueherer Versuch,
+# ueber "phase wird kurz VOR direction publiziert" auf Ordnung zu vertrauen,
+# hat in der Praxis trotzdem eine veraltete Richtung der VORHERIGEN Abbiegung
+# durchrutschen lassen (siehe fehler.md: physische Fahrt korrekt, im Graph
+# gebuchte Kante nicht). turn_start liefert Start-Signal + bestaetigte
+# Richtung jetzt atomar in EINER Nachricht (wie bei control_intersection_node).
 #
 # current_edge (fuer die Tor-Zuordnung in cbGateId) folgt dagegen dem
 # tatsaechlichen physischen Befahren, nicht der logischen Graph-Entscheidung:
@@ -88,8 +91,13 @@ class GraphStateNode:
 
         rospy.Subscriber(f'/{self._vehicle_name}/detect/apriltag/id',
                          Int32, self.cbAprilTagId, queue_size=1)
-        rospy.Subscriber(f'/{self._vehicle_name}/intersection/direction',
-                         String, self.cbDirection, queue_size=1)
+        # NICHT /intersection/direction (wird pro Tick neu publiziert, keine
+        # garantierte Reihenfolge relativ zu /intersection/phase - siehe
+        # cbTurnStart): /intersection/turn_start liefert Start-Signal +
+        # frische Richtung atomar in EINER Nachricht, genau einmal pro
+        # Abbiegung (wie bei control_intersection_node).
+        rospy.Subscriber(f'/{self._vehicle_name}/intersection/turn_start',
+                         String, self.cbTurnStart, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/intersection/phase',
                          String, self.cbPhase, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/detect/gate/id',
@@ -202,8 +210,18 @@ class GraphStateNode:
         if self.phase == "Lane" and msg.data != -1 and 1 <= msg.data <= 4:
             self.current_entry_tag = msg.data
 
-    def cbDirection(self, msg):
+    def cbTurnStart(self, msg):
+        # Einzige Ausloese-Quelle fuer _advance_graph(): turn_start liefert
+        # Start-Signal + die tatsaechlich bestaetigte Richtung atomar in
+        # EINER Nachricht, genau einmal pro Abbiegung - anders als vorher
+        # (Trigger ueber /intersection/phase=="Turning", Richtung separat
+        # ueber /intersection/direction) kann hier keine veraltete Richtung
+        # der VORHERIGEN Abbiegung verwendet werden (siehe Kopfkommentar und
+        # fehler.md: physische Fahrt war korrekt, die im Graph gebuchte Kante
+        # nicht - "graph_state" loggte z.B. "(right)" obwohl "straight"
+        # bestaetigt und gefahren wurde).
         self._last_direction = msg.data
+        self._advance_graph()
 
     def cbGateId(self, msg):
         gate_id = msg.data
@@ -239,15 +257,13 @@ class GraphStateNode:
         self.visited_edges = []
 
     def cbPhase(self, msg):
+        # _advance_graph() wird NICHT mehr hier ausgeloest (siehe cbTurnStart) -
+        # current_node/visited_edges werden trotzdem "sofort" aktualisiert,
+        # da turn_start beim selben Uebergang (Stopping->Turning) publiziert
+        # wird, nur eben ueber ein eigenes, dafuer robustes Topic.
         phase = msg.data
         self.phase = phase
-        if phase == "Turning" and self._last_phase != "Turning":
-            # Kreuzung wird verlassen: Graph-Zustand (current_node/visited_edges)
-            # ist deterministisch aus der eigenen Karte bekannt -> sofort aktualisieren.
-            # Die Kante selbst wird aber erst "aktiv" (current_edge), sobald das
-            # Abbiegen fertig ist und der Bot tatsaechlich auf ihr faehrt (s.u.).
-            self._advance_graph()
-        elif phase == "Lane" and self._last_phase == "Turning":
+        if phase == "Lane" and self._last_phase == "Turning":
             # Abbiegen abgeschlossen: Bot faehrt jetzt wirklich die neue Kante ab
             # -> Tor-Erkennung (cbGateId) darf ihr ab jetzt zugeordnet werden.
             self.current_edge = self._pending_edge

@@ -48,6 +48,8 @@ class DetectLaneNode:
         self.used_detection_row = int(self._crop_im_size * 0.75)
         self.used_detection_row_white = self.used_detection_row
         self.used_detection_row_yellow = self.used_detection_row
+        self.stop_line_roi = (int(self._crop_im_size * 0.70), 0, self._crop_im_size)
+        self.stop_line_detected = False
 
         util.init_parameters(node_name, self.cbUpdateParameters)
 
@@ -181,8 +183,12 @@ class DetectLaneNode:
         cv2.putText(debug_img, f"Red pixels: {num_red_pixels}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         self.debug_img_red = debug_img
+        # ROI-Grenzen fuer die Bounding-Box im Haupt-Debug-Bild (run_debug).
+        self.stop_line_roi = (row_start, col_start, col_end)
 
-        return num_red_pixels > self.thresh_red_pixels
+        detected = num_red_pixels > self.thresh_red_pixels
+        self.stop_line_detected = detected
+        return detected
 
     # ── Haupt-Callback ───────────────────────────────────────────────────────
 
@@ -297,6 +303,13 @@ class DetectLaneNode:
                                       (int(len(debug_img[0]) / 2), len(debug_img)), (0, 255, 0))
                 debug_img = cv2.circle(debug_img, (int(self.center_white), self.used_detection_row_white), 5, (255, 255, 255))
                 debug_img = cv2.circle(debug_img, (int(self.center_yellow), self.used_detection_row_yellow), 5, (0, 255, 255))
+                # Bounding-Box der Haltelinien-Erkennungszone - rot wenn gerade
+                # erkannt, sonst nur als Umriss (Kalibrierhilfe).
+                row_start, col_start, col_end = self.stop_line_roi
+                box_color = (0, 0, 255) if self.stop_line_detected else (0, 165, 255)
+                debug_img = cv2.rectangle(
+                    debug_img, (col_start, row_start), (col_end - 1, self._crop_im_size - 1),
+                    box_color, 3 if self.stop_line_detected else 1)
                 self._publish_compressed(self.pub_debug_lane, debug_img)
 
             if self.pub_debug_white.get_num_connections() > 0:
