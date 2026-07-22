@@ -1,183 +1,213 @@
-root@duckie3-ThinkPad-L15-Gen-4:~/DuckieRace# launchers/mapping.sh
-[INFO] [1784711168.679681]: [switch_control_node] Bereit – Zustand: Lane
-[INFO] [1784711168.720473]: [path_planner_node] Bereit. Delivery-Start: A
-[INFO] [1784711168.799432]: [explore_control_node] Bereit. 5 Kanten zu erkunden.
-[INFO] [1784711168.823407]: [graph_state_node] Bereit. Start-Knoten: A
-[INFO] [1784711168.830056]: [detect_lane_node] Bereit.
-[INFO] [1784711168.864900]: Lane error: 0.025 range [-1,1]
-[INFO] [1784711169.050642]: [debug_graph_node] Bereit.
-[INFO] [1784711169.882383]: Lane error: 0.025 range [-1,1]
-[INFO] [1784711170.883929]: Lane error: 0.025 range [-1,1]
-[INFO] [1784711171.884192]: Lane error: 0.025 range [-1,1]
-[INFO] [1784711172.884248]: Lane error: 0.025 range [-1,1]
-[INFO] [1784711173.916878]: Lane error: 0.025 range [-1,1]
-[INFO] [1784711173.984097]: [detect_apriltag] Detektor geladen: tagStandard52h13
-[INFO] [1784711174.151723]: [detect_apriltag_node] Bereit (Paket: dt_apriltags). Familien: ['tagStandard52h13']  Mapping: {1: ['left', 'straight', 'right'], 2: ['right', 'left'], 3: ['straight', 'left'], 4: ['straight', 'right']}
-[INFO] [1784711174.920060]: Lane error: 0.025 range [-1,1]
-[INFO] [1784711175.950725]: Lane error: 0.025 range [-1,1]
-[INFO] [1784711176.952310]: Lane error: 0.025 range [-1,1]
-[INFO] [1784711177.983978]: Lane error: 0.025 range [-1,1]
-[INFO] [1784711178.413954]: [control_lane_node] Bereit. Warte auf Spurversatz ...
-[INFO] [1784711178.460271]: [control_intersection_node] Bereit.
-[INFO] [1784711178.984759]: Lane error: 0.060 range [-1,1]
-[INFO] [1784711180.026019]: Lane error: 0.068 range [-1,1]
-[INFO] [1784711181.048110]: Lane error: 0.165 range [-1,1]
-[INFO] [1784711182.055403]: Lane error: -0.002 range [-1,1]
-[INFO] [1784711183.095232]: Lane error: 0.204 range [-1,1]
-[INFO] [1784711184.115381]: Lane error: 0.118 range [-1,1]
-[INFO] [1784711185.161578]: Lane error: 0.104 range [-1,1]
-[INFO] [1784711186.180880]: Lane error: -0.792 range [-1,1]
-[INFO] [1784711187.214658]: Lane error: -0.423 range [-1,1]
-[INFO] [1784711188.251644]: Lane error: -0.314 range [-1,1]
-[INFO] [1784711189.290452]: Lane error: 0.399 range [-1,1]
-[INFO] [1784711190.314805]: Lane error: -0.018 range [-1,1]
-[INFO] [1784711191.316131]: Lane error: -0.009 range [-1,1]
-[INFO] [1784711192.345634]: Lane error: 0.000 range [-1,1]
-[INFO] [1784711193.354286]: Lane error: 0.073 range [-1,1]
-[INFO] [1784711194.379731]: Lane error: 0.034 range [-1,1]
-[INFO] [1784711195.417638]: Lane error: 0.330 range [-1,1]
-[INFO] [1784711196.449497]: Lane error: -0.067 range [-1,1]
-[INFO] [1784711197.500174]: Lane error: 0.374 range [-1,1]
-[INFO] [1784711198.510779]: Lane error: 0.083 range [-1,1]
-[INFO] [1784711199.546580]: Lane error: 0.267 range [-1,1]
-[WARN] [1784711200.214141]: [apriltag] Tag 1 verworfen (hamming=1 - nur mit Bitfehler-Korrektur dekodiert)
-[INFO] [1784711200.551833]: Lane error: 0.073 range [-1,1]
-[INFO] [1784711201.552475]: Lane error: 0.209 range [-1,1]
-[INFO] [1784711202.310151]: [switch] Kreuzung (Linie+Tag) -> STOPPING | erlaubte Richtungen (Live-Tag): ['left', 'straight', 'right']
-[INFO] [1784711202.323109]: [switch] -> Stopping
-[INFO] [1784711202.577034]: Lane error: 0.010 range [-1,1]
-[INFO] [1784711203.581118]: Lane error: 0.221 range [-1,1]
-[INFO] [1784711204.412128]: [switch] Richtung bestaetigt: right (aus ['left', 'straight', 'right']) -> TURNING
-[INFO] [1784711204.424705]: [switch] -> Turning
-[INFO] [1784711204.425350]: [control_intersection] Starte Sequenz: right
-[INFO] [1784711204.440591]: [graph_state] A --2(right)--> C
-[INFO] [1784711204.632714]: Lane error: 0.223 range [-1,1]
-[INFO] [1784711205.649652]: Lane error: 0.000 range [-1,1]
-[INFO] [1784711206.572780]: [control_intersection] Sequenz fertig -> turn_done
-[INFO] [1784711206.614326]: [switch] Turning fertig -> LANE
-[INFO] [1784711206.628057]: [switch] -> Lane
-[INFO] [1784711206.651206]: [detect_apriltag] Neue Kante – Tag-Gedaechtnis zurueckgesetzt
-[INFO] [1784711206.652069]: Lane error: 0.493 range [-1,1]
-[INFO] [1784711207.678088]: Lane error: 0.026 range [-1,1]
-[INFO] [1784711208.694471]: Lane error: -0.087 range [-1,1]
-[INFO] [1784711209.712292]: Lane error: -0.065 range [-1,1]
-[INFO] [1784711210.742957]: Lane error: 0.075 range [-1,1]
-[INFO] [1784711211.763075]: Lane error: 0.190 range [-1,1]
-[INFO] [1784711212.791372]: Lane error: 0.156 range [-1,1]
-[INFO] [1784711213.817906]: Lane error: -0.163 range [-1,1]
-[INFO] [1784711214.841096]: Lane error: 0.599 range [-1,1]
-[INFO] [1784711215.844237]: Lane error: 0.309 range [-1,1]
-[INFO] [1784711216.886627]: Lane error: 0.473 range [-1,1]
-[INFO] [1784711217.898222]: Lane error: 0.252 range [-1,1]
-[INFO] [1784711218.907109]: Lane error: 0.081 range [-1,1]
-[INFO] [1784711219.939543]: Lane error: -0.002 range [-1,1]
-[INFO] [1784711220.954941]: Lane error: -0.120 range [-1,1]
-[INFO] [1784711221.989910]: Lane error: 0.177 range [-1,1]
-[INFO] [1784711223.010671]: Lane error: 0.191 range [-1,1]
-[INFO] [1784711224.011853]: Lane error: 0.035 range [-1,1]
-[INFO] [1784711225.028178]: Lane error: 0.316 range [-1,1]
-[INFO] [1784711225.645353]: [switch] Kreuzung (Linie+Tag) -> STOPPING | erlaubte Richtungen (Live-Tag): ['straight', 'left']
-[INFO] [1784711225.657248]: [switch] -> Stopping
-[WARN] [1784711226.010990]: [apriltag] Tag 3 verworfen (hamming=1 - nur mit Bitfehler-Korrektur dekodiert)
-[INFO] [1784711226.042920]: Lane error: -0.093 range [-1,1]
-[INFO] [1784711227.071680]: Lane error: -0.085 range [-1,1]
-[INFO] [1784711227.712180]: [switch] Richtung bestaetigt: straight (aus ['straight', 'left']) -> TURNING
-[INFO] [1784711227.725038]: [switch] -> Turning
-[INFO] [1784711227.725673]: [control_intersection] Starte Sequenz: straight
-[INFO] [1784711227.745229]: [graph_state] C --4(right)--> B
-[INFO] [1784711228.072484]: Lane error: -0.090 range [-1,1]
-[WARN] [1784711228.073329]: [apriltag] Tag 3 verworfen (hamming=1 - nur mit Bitfehler-Korrektur dekodiert)
-[INFO] [1784711229.108361]: Lane error: 0.137 range [-1,1]
-[INFO] [1784711229.872054]: [control_intersection] Sequenz fertig -> turn_done
-[INFO] [1784711229.912163]: [switch] Turning fertig -> LANE
-[INFO] [1784711229.924549]: [switch] -> Lane
-[INFO] [1784711229.937312]: [detect_apriltag] Neue Kante – Tag-Gedaechtnis zurueckgesetzt
-[INFO] [1784711230.109599]: Lane error: 0.145 range [-1,1]
-[INFO] [1784711231.110049]: Lane error: 0.068 range [-1,1]
-[INFO] [1784711232.141291]: Lane error: -0.245 range [-1,1]
-[INFO] [1784711233.141379]: Lane error: -0.133 range [-1,1]
-[INFO] [1784711234.142476]: Lane error: 0.115 range [-1,1]
-[INFO] [1784711235.151282]: Lane error: 0.270 range [-1,1]
-[INFO] [1784711236.180461]: Lane error: -0.067 range [-1,1]
-[INFO] [1784711237.205706]: Lane error: -0.248 range [-1,1]
-[INFO] [1784711238.206544]: Lane error: -0.150 range [-1,1]
-[INFO] [1784711239.211882]: Lane error: -0.403 range [-1,1]
-[WARN] [1784711239.358167]: [apriltag] Tag 3 verworfen (hamming=1 - nur mit Bitfehler-Korrektur dekodiert)
-[INFO] [1784711239.383769]: [graph_state] Tor 9 -> Kante {'node': 'C', 'tag': '4'}
-[INFO] [1784711240.235187]: Lane error: 0.130 range [-1,1]
-[INFO] [1784711241.290771]: Lane error: -0.051 range [-1,1]
-[INFO] [1784711242.304086]: Lane error: 0.002 range [-1,1]
-[WARN] [1784711242.644476]: [apriltag] Tag 3 verworfen (hamming=2 - nur mit Bitfehler-Korrektur dekodiert)
-[INFO] [1784711243.336018]: Lane error: 0.090 range [-1,1]
-[INFO] [1784711243.670281]: [switch] Kreuzung (Linie+Tag) -> STOPPING | erlaubte Richtungen (Live-Tag): ['straight', 'left']
-[INFO] [1784711243.682038]: [switch] -> Stopping
-[INFO] [1784711244.347274]: Lane error: -0.218 range [-1,1]
-[INFO] [1784711245.347449]: Lane error: -0.218 range [-1,1]
-[INFO] [1784711245.712117]: [switch] Richtung bestaetigt: straight (aus ['straight', 'left']) -> TURNING
-[INFO] [1784711245.724165]: [switch] -> Turning
-[INFO] [1784711245.724603]: [control_intersection] Starte Sequenz: straight
-[INFO] [1784711245.744574]: [graph_state] B --1(straight)--> A
-[INFO] [1784711246.370394]: Lane error: -0.248 range [-1,1]
-[INFO] [1784711247.373656]: Lane error: 0.000 range [-1,1]
-[INFO] [1784711247.872335]: [control_intersection] Sequenz fertig -> turn_done
-[INFO] [1784711247.912587]: [switch] Turning fertig -> LANE
-[INFO] [1784711247.932339]: [switch] -> Lane
-[INFO] [1784711247.945108]: [detect_apriltag] Neue Kante – Tag-Gedaechtnis zurueckgesetzt
-[INFO] [1784711248.392986]: Lane error: 0.000 range [-1,1]
-[INFO] [1784711249.037806]: [switch] Kreuzung (Linie+Tag) -> STOPPING | erlaubte Richtungen (Graph-Fallback): ['left', 'straight', 'right']
-[INFO] [1784711249.050240]: [switch] -> Stopping
-[INFO] [1784711249.406022]: Lane error: -0.051 range [-1,1]
-[INFO] [1784711250.450514]: Lane error: -0.011 range [-1,1]
-[INFO] [1784711251.111913]: [switch] Richtung bestaetigt: straight (aus ['left', 'straight', 'right']) -> TURNING
-[INFO] [1784711251.123982]: [switch] -> Turning
-[INFO] [1784711251.124891]: [control_intersection] Starte Sequenz: straight
-[INFO] [1784711251.164575]: [graph_state] A --3(straight)--> C
-[INFO] [1784711251.469115]: Lane error: -0.008 range [-1,1]
-[INFO] [1784711252.535080]: Lane error: 0.137 range [-1,1]
-[INFO] [1784711253.272038]: [control_intersection] Sequenz fertig -> turn_done
-[INFO] [1784711253.312216]: [switch] Turning fertig -> LANE
-[INFO] [1784711253.324556]: [switch] -> Lane
-[INFO] [1784711253.342985]: [detect_apriltag] Neue Kante – Tag-Gedaechtnis zurueckgesetzt
-[INFO] [1784711253.536363]: Lane error: 0.280 range [-1,1]
-[INFO] [1784711254.537960]: Lane error: 0.012 range [-1,1]
-[INFO] [1784711255.551819]: Lane error: 0.100 range [-1,1]
-[INFO] [1784711256.569797]: Lane error: 0.370 range [-1,1]
-[INFO] [1784711257.601089]: Lane error: -0.005 range [-1,1]
-[INFO] [1784711258.607895]: Lane error: 0.157 range [-1,1]
-[INFO] [1784711259.636092]: Lane error: 0.190 range [-1,1]
-[INFO] [1784711260.638742]: Lane error: -0.120 range [-1,1]
-[INFO] [1784711260.803477]: [graph_state] Tor 7 -> Kante {'node': 'A', 'tag': '3'}
-[INFO] [1784711261.684963]: Lane error: 0.069 range [-1,1]
-[INFO] [1784711262.699790]: Lane error: 0.265 range [-1,1]
-[INFO] [1784711263.699902]: Lane error: 0.125 range [-1,1]
-[INFO] [1784711264.711321]: Lane error: -0.103 range [-1,1]
-[INFO] [1784711265.734199]: Lane error: 0.076 range [-1,1]
-[INFO] [1784711266.736816]: Lane error: 0.374 range [-1,1]
-[INFO] [1784711267.766017]: Lane error: 0.312 range [-1,1]
-[INFO] [1784711268.799137]: Lane error: -0.333 range [-1,1]
-[INFO] [1784711269.804299]: Lane error: -0.020 range [-1,1]
-[INFO] [1784711270.830830]: Lane error: -0.035 range [-1,1]
-[WARN] [1784711271.104658]: [apriltag] Tag 1 verworfen (hamming=1 - nur mit Bitfehler-Korrektur dekodiert)
-[INFO] [1784711271.609933]: [switch] Kreuzung (Linie+Tag) -> STOPPING | erlaubte Richtungen (Live-Tag): ['left', 'straight', 'right']
-[INFO] [1784711271.626244]: [switch] -> Stopping
-[INFO] [1784711271.847261]: Lane error: -0.170 range [-1,1]
-[INFO] [1784711272.862406]: Lane error: 0.062 range [-1,1]
-[WARN] [1784711273.712138]: [switch] Keine gueltige next_direction ('') in erlaubten Richtungen ['left', 'straight', 'right'] - bleibe in STOPPING
-[INFO] [1784711273.868300]: Lane error: 0.062 range [-1,1]
-[WARN] [1784711274.712277]: [switch] Keine gueltige next_direction ('') in erlaubten Richtungen ['left', 'straight', 'right'] - bleibe in STOPPING
-[INFO] [1784711274.897969]: Lane error: 0.062 range [-1,1]
-[WARN] [1784711275.812153]: [switch] Keine gueltige next_direction ('') in erlaubten Richtungen ['left', 'straight', 'right'] - bleibe in STOPPING
-[INFO] [1784711275.956655]: Lane error: 0.061 range [-1,1]
-[WARN] [1784711276.812153]: [switch] Keine gueltige next_direction ('') in erlaubten Richtungen ['left', 'straight', 'right'] - bleibe in STOPPING
-[INFO] [1784711276.963539]: Lane error: 0.061 range [-1,1]
-[WARN] [1784711277.912336]: [switch] Keine gueltige next_direction ('') in erlaubten Richtungen ['left', 'straight', 'right'] - bleibe in STOPPING
-[INFO] [1784711277.968338]: Lane error: 0.060 range [-1,1]
-[WARN] [1784711279.012427]: [switch] Keine gueltige next_direction ('') in erlaubten Richtungen ['left', 'straight', 'right'] - bleibe in STOPPING
-[INFO] [1784711279.028466]: Lane error: 0.060 range [-1,1]
-[INFO] [1784711280.041214]: Lane error: 0.060 range [-1,1]
-[WARN] [1784711280.112506]: [switch] Keine gueltige next_direction ('') in erlaubten Richtungen ['left', 'straight', 'right'] - bleibe in STOPPING
-[INFO] [1784711281.047730]: Lane error: 0.062 range [-1,1]
-[WARN] [1784711281.212174]: [switch] Keine gueltige next_direction ('') in erlaubten Richtungen ['left', 'straight', 'right'] - bleibe in STOPPING
-[INFO] [1784711282.067954]: Lane error: 0.062 range [-1,1]
-[WARN] [1784711282.212202]: [switch] Keine gueltige next_direction ('') in erlaubten Richtungen ['left', 'straight', 'right'] - bleibe in STOPPING
-[INFO] [1784711283.101511]: Lane error: 0.060 range [-1,1]
+root@duckie3-ThinkPad-L15-Gen-4:~/DuckieRace# launchers/mapping.sh 
+[INFO] [1784724774.698293]: [explore_control_node] Bereit. 5 Kanten zu erkunden.
+[INFO] [1784724774.830965]: [switch_control_node] Bereit – Zustand: Lane
+[INFO] [1784724774.840146]: [graph_state_node] Bereit. Start-Knoten: C
+[INFO] [1784724774.849720]: [detect_lane_node] Bereit.
+[INFO] [1784724774.877286]: [path_planner_node] Bereit. Delivery-Start: C
+[INFO] [1784724774.957674]: Lane error: -0.117 range [-1,1]
+[INFO] [1784724775.167416]: [debug_graph_node] Bereit.
+[INFO] [1784724775.992987]: Lane error: -0.117 range [-1,1]
+[INFO] [1784724777.019080]: Lane error: -0.117 range [-1,1]
+[INFO] [1784724778.050528]: Lane error: -0.117 range [-1,1]
+[INFO] [1784724779.051252]: Lane error: -0.117 range [-1,1]
+[INFO] [1784724780.084410]: Lane error: -0.117 range [-1,1]
+[INFO] [1784724780.450163]: [detect_apriltag] Detektor geladen: tagStandard52h13
+[INFO] [1784724780.612198]: [detect_apriltag_node] Bereit (Paket: dt_apriltags). Familien: ['tagStandard52h13']  Mapping: {1: ['left', 'straight', 'right'], 2: ['right', 'left'], 3: ['straight', 'left'], 4: ['straight', 'right']}
+[WARN] [1784724780.722620]: [apriltag] Tag 2 verworfen (hamming=2 - nur mit Bitfehler-Korrektur dekodiert)
+[INFO] [1784724781.117168]: Lane error: -0.117 range [-1,1]
+[INFO] [1784724782.118019]: Lane error: -0.117 range [-1,1]
+[WARN] [1784724782.753256]: [apriltag] Tag 2 verworfen (hamming=2 - nur mit Bitfehler-Korrektur dekodiert)
+[INFO] [1784724783.149798]: Lane error: -0.117 range [-1,1]
+[INFO] [1784724784.154319]: Lane error: -0.117 range [-1,1]
+[INFO] [1784724784.562401]: [control_lane_node] Bereit. Warte auf Spurversatz ...
+[INFO] [1784724784.619139]: [control_intersection_node] Bereit.
+[WARN] [1784724784.785769]: [apriltag] Tag 2 verworfen (hamming=2 - nur mit Bitfehler-Korrektur dekodiert)
+[INFO] [1784724785.183324]: Lane error: -0.083 range [-1,1]
+[INFO] [1784724785.350368]: [switch] Kreuzung (Linie+Tag) -> STOPPING | erlaubte Richtungen (Graph-Fallback): ['straight', 'right']
+[INFO] [1784724785.362227]: [switch] -> Stopping
+[INFO] [1784724786.183939]: Lane error: 0.025 range [-1,1]
+[WARN] [1784724786.882200]: [apriltag] Tag 3 verworfen (hamming=1 - nur mit Bitfehler-Korrektur dekodiert)
+[INFO] [1784724787.215382]: Lane error: 0.026 range [-1,1]
+[INFO] [1784724787.458739]: [switch] Richtung bestaetigt: right (aus ['straight', 'right']) -> TURNING
+[INFO] [1784724787.469528]: [switch] -> Turning
+[INFO] [1784724787.469867]: [graph_state] C --1(right)--> A
+[INFO] [1784724787.469877]: [control_intersection] Starte Sequenz: right
+[INFO] [1784724788.216533]: Lane error: 0.000 range [-1,1]
+[INFO] [1784724789.249813]: Lane error: 0.000 range [-1,1]
+[INFO] [1784724790.029956]: [control_intersection] Sequenz fertig -> turn_done
+[INFO] [1784724790.058709]: [switch] Turning fertig -> LANE
+[INFO] [1784724790.077841]: [switch] -> Lane
+[INFO] [1784724790.090652]: [detect_apriltag] Neue Kante – Tag-Gedaechtnis zurueckgesetzt
+[INFO] [1784724790.254037]: Lane error: -0.351 range [-1,1]
+[INFO] [1784724790.858327]: [graph_state] Tor 6 -> Kante {'node': 'C', 'tag': '1'}
+[INFO] [1784724791.281389]: Lane error: -0.147 range [-1,1]
+[INFO] [1784724792.285959]: Lane error: -0.123 range [-1,1]
+[INFO] [1784724793.286558]: Lane error: 0.085 range [-1,1]
+[INFO] [1784724794.289771]: Lane error: 0.081 range [-1,1]
+[INFO] [1784724795.314753]: Lane error: -0.242 range [-1,1]
+[INFO] [1784724796.347777]: Lane error: -0.522 range [-1,1]
+[WARN] [1784724796.866302]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724796.966105]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724797.066024]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724797.166410]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724797.266264]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724797.366199]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[INFO] [1784724797.381405]: Lane error: -0.230 range [-1,1]
+[WARN] [1784724797.466351]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724797.566385]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724797.666125]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724797.765971]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724797.866192]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724797.966067]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724798.066111]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724798.165910]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724798.266178]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724798.366209]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[INFO] [1784724798.413958]: Lane error: -0.091 range [-1,1]
+[WARN] [1784724798.466169]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724798.566277]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724798.666024]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724798.766284]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724798.866059]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724798.967066]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724799.066048]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[INFO] [1784724799.113003]: [switch] Kreuzung (Linie+Tag) -> STOPPING | erlaubte Richtungen (Live-Tag): ['left', 'straight', 'right']
+[INFO] [1784724799.123671]: [switch] -> Stopping
+[WARN] [1784724799.166213]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724799.266024]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724799.366278]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[INFO] [1784724799.448305]: Lane error: -0.042 range [-1,1]
+[WARN] [1784724799.466105]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724799.566498]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724799.666018]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724799.766323]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724799.866127]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724799.966228]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724800.066081]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724800.166197]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724800.266154]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724800.366385]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724800.466224]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[INFO] [1784724800.481756]: Lane error: -0.059 range [-1,1]
+[WARN] [1784724800.566296]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724800.666409]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724800.766584]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724800.866399]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724800.966489]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724801.066315]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[INFO] [1784724801.158780]: [switch] Richtung bestaetigt: straight (aus ['left', 'straight', 'right']) -> TURNING
+[WARN] [1784724801.166149]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[INFO] [1784724801.174432]: [switch] -> Turning
+[WARN] [1784724801.174487]: [graph_state] Live-Tag (1) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (3) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[INFO] [1784724801.174697]: [control_intersection] Starte Sequenz: straight
+[INFO] [1784724801.198636]: [graph_state] A --1(straight)--> B
+[INFO] [1784724801.515032]: Lane error: 0.083 range [-1,1]
+[INFO] [1784724802.550149]: Lane error: 0.000 range [-1,1]
+[INFO] [1784724803.577067]: Lane error: 0.147 range [-1,1]
+[INFO] [1784724803.730011]: [control_intersection] Sequenz fertig -> turn_done
+[INFO] [1784724803.758726]: [switch] Turning fertig -> LANE
+[INFO] [1784724803.774126]: [switch] -> Lane
+[INFO] [1784724803.790055]: [detect_apriltag] Neue Kante – Tag-Gedaechtnis zurueckgesetzt
+[INFO] [1784724803.812550]: [graph_state] Tor 10 -> Kante {'node': 'A', 'tag': '1'}
+[INFO] [1784724804.610278]: Lane error: 0.257 range [-1,1]
+[WARN] [1784724805.278998]: [apriltag] Tag 2 verworfen (hamming=1 - nur mit Bitfehler-Korrektur dekodiert)
+[WARN] [1784724805.466190]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724805.566572]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[INFO] [1784724805.611807]: Lane error: 0.037 range [-1,1]
+[WARN] [1784724805.666138]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724805.766374]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724805.866146]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724805.966568]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724806.066142]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724806.166272]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724806.266076]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724806.366432]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724806.466080]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724806.566469]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[INFO] [1784724806.644320]: Lane error: 0.027 range [-1,1]
+[WARN] [1784724806.666188]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724806.766561]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724806.866344]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[INFO] [1784724806.913248]: [switch] Kreuzung (Linie+Tag) -> STOPPING | erlaubte Richtungen (Live-Tag): ['right', 'left']
+[INFO] [1784724806.924500]: [switch] -> Stopping
+[WARN] [1784724806.966364]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724807.066294]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724807.166283]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724807.266101]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724807.366244]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724807.465983]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724807.566658]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[INFO] [1784724807.645927]: Lane error: -0.133 range [-1,1]
+[WARN] [1784724807.666092]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724807.766466]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724807.866132]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724807.966098]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724808.066165]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724808.166311]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724808.266719]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724808.366149]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724808.466500]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724808.566227]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724808.666556]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[INFO] [1784724808.678480]: Lane error: -0.135 range [-1,1]
+[WARN] [1784724808.766366]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[WARN] [1784724808.866574]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[INFO] [1784724808.958825]: [switch] Richtung bestaetigt: right (aus ['right', 'left']) -> TURNING
+[WARN] [1784724808.966072]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[INFO] [1784724808.972970]: [switch] -> Turning
+[WARN] [1784724808.973217]: [graph_state] Live-Tag (2) widerspricht der aus der letzten Abbiegung vorhergesagten Einfahrt (1) - vertraue der Vorhersage (z.B. gegenueberliegender statt tatsaechlicher Einfahrt-Tag gelesen).
+[INFO] [1784724808.973359]: [control_intersection] Starte Sequenz: right
+[INFO] [1784724808.995911]: [graph_state] B --2(right)--> A
+[INFO] [1784724809.710876]: Lane error: 0.000 range [-1,1]
+[INFO] [1784724810.744061]: Lane error: 0.000 range [-1,1]
+[INFO] [1784724811.529959]: [control_intersection] Sequenz fertig -> turn_done
+[INFO] [1784724811.558724]: [switch] Turning fertig -> LANE
+[INFO] [1784724811.573675]: [switch] -> Lane
+[INFO] [1784724811.585373]: [detect_apriltag] Neue Kante – Tag-Gedaechtnis zurueckgesetzt
+[INFO] [1784724811.610890]: [graph_state] Tor 8 -> Kante {'node': 'B', 'tag': '2'}
+[INFO] [1784724811.744761]: Lane error: -0.163 range [-1,1]
+[INFO] [1784724812.775743]: Lane error: -0.045 range [-1,1]
+[INFO] [1784724813.777689]: Lane error: -0.009 range [-1,1]
+[INFO] [1784724814.778796]: Lane error: -0.262 range [-1,1]
+[WARN] [1784724815.146077]: [apriltag] Tag 4 verworfen (hamming=2 - nur mit Bitfehler-Korrektur dekodiert)
+[INFO] [1784724815.809970]: Lane error: 0.039 range [-1,1]
+[INFO] [1784724816.811792]: Lane error: -0.114 range [-1,1]
+[WARN] [1784724817.811812]: [apriltag] Tag 4 verworfen (hamming=1 - nur mit Bitfehler-Korrektur dekodiert)
+[INFO] [1784724817.812701]: Lane error: 0.000 range [-1,1]
+[INFO] [1784724817.911773]: [switch] Kreuzung (Linie+Tag) -> STOPPING | erlaubte Richtungen (Live-Tag): ['straight', 'right']
+[INFO] [1784724817.922490]: [switch] -> Stopping
+[INFO] [1784724818.844735]: Lane error: 0.000 range [-1,1]
+[INFO] [1784724819.845403]: Lane error: -0.272 range [-1,1]
+[INFO] [1784724819.958788]: [switch] Richtung bestaetigt: straight (aus ['straight', 'right']) -> TURNING
+[INFO] [1784724819.973476]: [switch] -> Turning
+[INFO] [1784724819.973523]: [graph_state] A --2(straight)--> C
+[INFO] [1784724819.973766]: [control_intersection] Starte Sequenz: straight
+[INFO] [1784724820.848528]: Lane error: 0.000 range [-1,1]
+[INFO] [1784724821.862976]: Lane error: 0.000 range [-1,1]
+[INFO] [1784724822.530004]: [control_intersection] Sequenz fertig -> turn_done
+[INFO] [1784724822.558742]: [switch] Turning fertig -> LANE
+[INFO] [1784724822.628015]: [switch] -> Lane
+[INFO] [1784724822.635652]: [switch] Kreuzung (Linie+Tag) -> STOPPING | erlaubte Richtungen (Graph-Fallback): ['right', 'left']
+[INFO] [1784724822.651801]: [detect_apriltag] Neue Kante – Tag-Gedaechtnis zurueckgesetzt
+[INFO] [1784724822.675269]: [switch] -> Stopping
+[INFO] [1784724822.878193]: Lane error: -0.538 range [-1,1]
+[INFO] [1784724823.914582]: Lane error: -0.500 range [-1,1]
+[WARN] [1784724824.758855]: [switch] Keine gueltige next_direction ('straight') in erlaubten Richtungen ['right', 'left'] - bleibe in STOPPING
+[INFO] [1784724824.945045]: Lane error: -0.500 range [-1,1]
+[WARN] [1784724825.758885]: [switch] Keine gueltige next_direction ('straight') in erlaubten Richtungen ['right', 'left'] - bleibe in STOPPING
+[INFO] [1784724825.945382]: Lane error: -0.500 range [-1,1]
+[WARN] [1784724826.858878]: [switch] Keine gueltige next_direction ('straight') in erlaubten Richtungen ['right', 'left'] - bleibe in STOPPING
+[INFO] [1784724826.975728]: Lane error: -0.500 range [-1,1]
+[WARN] [1784724827.958903]: [switch] Keine gueltige next_direction ('straight') in erlaubten Richtungen ['right', 'left'] - bleibe in STOPPING
+[INFO] [1784724827.976533]: Lane error: -0.500 range [-1,1]
+[INFO] [1784724828.977401]: Lane error: -0.500 range [-1,1]
+[WARN] [1784724829.059003]: [switch] Keine gueltige next_direction ('straight') in erlaubten Richtungen ['right', 'left'] - bleibe in STOPPING
+[INFO] [1784724829.978627]: Lane error: -0.500 range [-1,1]
+[WARN] [1784724830.158858]: [switch] Keine gueltige next_direction ('straight') in erlaubten Richtungen ['right', 'left'] - bleibe in STOPPING
+[INFO] [1784724830.978806]: Lane error: -0.500 range [-1,1]
+[WARN] [1784724831.258785]: [switch] Keine gueltige next_direction ('straight') in erlaubten Richtungen ['right', 'left'] - bleibe in STOPPING
+[INFO] [1784724831.979188]: Lane error: -0.500 range [-1,1]
+[WARN] [1784724832.258890]: [switch] Keine gueltige next_direction ('straight') in erlaubten Richtungen ['right', 'left'] - bleibe in STOPPING
+[INFO] [1784724833.009890]: Lane error: -0.500 range [-1,1]
+[WARN] [1784724833.259004]: [switch] Keine gueltige next_direction ('straight') in erlaubten Richtungen ['right', 'left'] - bleibe in STOPPING
+[INFO] [1784724834.011613]: Lane error: -0.500 range [-1,1]
