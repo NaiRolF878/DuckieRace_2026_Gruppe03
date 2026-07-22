@@ -84,7 +84,19 @@ class GraphStateNode:
         # _effective_entry_tag) - wir kennen die Einfahrt-Geometrie durch die
         # eigene Kartenverfolgung ohnehin deterministisch, unabhaengig davon,
         # ob die Kamera sie gerade bestaetigen kann.
-        self.predicted_entry_tag = None
+        #
+        # Fuer JEDE Kreuzung ausser der ALLERERSTEN (nach Start bzw. nach
+        # "Bot versetzt") kommt dieser Fallback automatisch aus der letzten
+        # gefahrenen Abbiegung. Genau an dieser ersten Kreuzung gibt es aber
+        # noch keine vorherige Abbiegung, aus der man ihn ableiten koennte -
+        # ohne Vorbelegung waere der Bot dort komplett auf eine erfolgreiche
+        # Live-Erkennung angewiesen, ohne jeden Fallback. mapping_start_entry_tag/
+        # delivery_start_entry_tag (Config, optional) schliessen genau diese
+        # Luecke. ACHTUNG: ein falscher Wert hier wuerde eine korrekte
+        # Live-Erkennung faelschlich verwerfen (siehe _effective_entry_tag -
+        # Vorhersage hat Vorrang) - nur setzen, wenn er sicher zur tatsaechlichen
+        # physischen Ausrichtung des Bots beim Hinstellen passt.
+        self.predicted_entry_tag = self.mapping_start_entry_tag
         self._last_direction    = ""   # zuletzt von switch_control gewaehltes Wort
         self.phase               = "Lane"
         self._last_phase         = "Lane"
@@ -159,9 +171,30 @@ class GraphStateNode:
             self.mapping_start_node  = config["mapping_start_node"]
             self.delivery_start_node = config.get("delivery_start_node", self.mapping_start_node)
             self.path_planning       = config.get("path_planning", {})
+            self.mapping_start_entry_tag  = self._parse_start_entry_tag(
+                config.get("mapping_start_entry_tag"))
+            self.delivery_start_entry_tag = self._parse_start_entry_tag(
+                config.get("delivery_start_entry_tag"))
         except Exception as e:
             rospy.logerr(f"[graph_state] mapping_node.json konnte nicht geladen werden: {e}")
             raise
+
+    def _parse_start_entry_tag(self, value):
+        # Optionales Config-Feld (mapping_start_entry_tag/delivery_start_entry_tag):
+        # fehlt es (None) oder ist es ungueltig, bleibt das Verhalten wie vorher
+        # (Vorhersage bleibt None, reine Live-Erkennung an der ersten Kreuzung) -
+        # kein Absturz bei fehlendem/falschem Wert.
+        if value is None:
+            return None
+        try:
+            tag = int(value)
+        except (TypeError, ValueError):
+            rospy.logwarn(f"[graph_state] Ungueltiger Start-Einfahrt-Tag '{value}' - ignoriert")
+            return None
+        if not 1 <= tag <= 4:
+            rospy.logwarn(f"[graph_state] Start-Einfahrt-Tag {tag} ausserhalb 1-4 - ignoriert")
+            return None
+        return tag
 
     def _load_gate_map_from_config(self):
         # Liest NUR das gate_map-Feld frisch von der Platte - fuer den
@@ -278,7 +311,10 @@ class GraphStateNode:
         self.current_edge        = None
         self._pending_edge       = None
         self.current_entry_tag   = None
-        self.predicted_entry_tag = None
+        # delivery_start_entry_tag statt None: gibt der ersten Kreuzung der
+        # Abfahrt denselben Live-Tag-Ausfall-Schutz wie allen folgenden (siehe
+        # Kommentar bei predicted_entry_tag im __init__).
+        self.predicted_entry_tag = self.delivery_start_entry_tag
         self._last_direction     = ""
 
     def cbPhase(self, msg):

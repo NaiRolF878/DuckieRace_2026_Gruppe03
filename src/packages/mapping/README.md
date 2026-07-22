@@ -284,6 +284,21 @@ Live-Tag an der ersten Kreuzung der Abfahrt widerspricht der längst
 `current_node` auf `delivery_start_node` und leert `current_edge`/
 `current_entry_tag`/`predicted_entry_tag` explizit.
 
+**Start-Einfahrt-Tag (`mapping_start_entry_tag`/`delivery_start_entry_tag`,
+optional):** Für JEDE Kreuzung außer der allerersten (nach Start bzw. nach
+"Bot versetzt") liefert `predicted_entry_tag` automatisch einen Fallback,
+falls die Kamera den Einfahrt-Tag mal nicht lesen kann – hergeleitet aus der
+zuletzt gefahrenen Abbiegung. Genau an dieser ersten Kreuzung gibt es aber
+noch keine vorherige Abbiegung, aus der sich das ableiten ließe – ohne
+Vorbelegung ist der Bot dort komplett auf eine erfolgreiche Live-Erkennung
+angewiesen. Diese beiden (optionalen, Default `null` = altes Verhalten,
+reine Live-Erkennung) Config-Felder legen den Einfahrt-Tag (1–4) fest, mit
+dem der Bot beim Start der Erkundung bzw. nach "Bot versetzt" tatsächlich
+physisch an der Kreuzung steht. **Wichtig:** ein falscher Wert würde eine
+korrekte Live-Erkennung fälschlich verwerfen (Vorhersage hat bei
+Widerspruch Vorrang, siehe oben) – nur setzen, wenn er sicher zur
+tatsächlichen Ausrichtung beim Hinstellen passt.
+
 ### explore_control_node — Phase 1 (DFS)
 Wählt an jeder Kreuzung die erste noch unbesuchte, aktuell wählbare Ausfahrt.
 Sind alle Ausgänge eines Knotens besucht, sucht eine BFS über den **vollen**

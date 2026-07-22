@@ -6,6 +6,8 @@
   },
   "mapping_start_node": "A",
   "delivery_start_node": "A",
+  "mapping_start_entry_tag": null,
+  "delivery_start_entry_tag": null,
   "gate_map": {},
   "path_planning": {
     "mode": "optimal",
