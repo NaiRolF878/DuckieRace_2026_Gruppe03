@@ -322,6 +322,19 @@ ausschließlich State-Variablen; gezeichnet wird nur im Hauptthread über
 `/graph/reload_gate_map` (bei Klick auf "Tor-Zuordnung neu laden"),
 `/graph/reset_exploration` (bei Klick auf "Erkundung neu starten")
 
+### tools/preview_mapping_graph.py — Vorschau ohne ROS
+Standalone-Skript (kein rospy-Import, laeuft mit reinem `python3`), zeichnet
+Knoten/Kanten/Tor-Zuordnung aus einer `mapping_node.json` exakt wie
+`debug_graph_node`, um eine vor Ort editierte Datei (neue Kreuzung,
+verschobenes Tor) kurz zu pruefen, ohne den ROS-Stack hochzufahren:
+```
+python3 src/packages/mapping/tools/preview_mapping_graph.py [pfad/zur/mapping_node.json]
+```
+Ohne Argument wird die Datei aus `config/` verwendet. Meldet auf der Konsole
+Referenzfehler (z.B. Tippfehler bei Knotennamen in `graph`, `debug_layout`
+oder `gate_map`) und legt zusaetzlich einen Screenshot `..._preview.png`
+neben der json-Datei ab.
+
 ### detect_lane_node / control_lane_node (Neuaufbau)
 Ersetzt die Challenge-2-Implementierung, weil die Spurführung auf dieser
 Strecke unzuverlässig war (Spur verloren, unerklärliches Stehenbleiben) –
