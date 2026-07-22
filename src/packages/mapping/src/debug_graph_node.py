@@ -52,6 +52,7 @@ class DebugGraphNode:
         self.gate_map          = {}
         self.phase              = "exploration"
         self.exploration_done   = False
+        self.delivery_done      = False
         self.delivery_progress  = {"done": [], "remaining": [], "planned_order": [],
                                     "bot_relocated_confirmed": False}
         # FSM-Phase (Lane/Stopping/Turning) + gewaehlte Richtung - fuer die
@@ -61,6 +62,7 @@ class DebugGraphNode:
 
         self._last_drawn_planned_order = None
         self._exploration_done_notified = False
+        self._delivery_done_notified = False
 
         rospy.Subscriber(f'/{self._vehicle_name}/graph/current_node',
                          String, self.cbCurrentNode, queue_size=1)
@@ -76,6 +78,8 @@ class DebugGraphNode:
                          Bool, self.cbExplorationDone, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/navigation/delivery_progress',
                          String, self.cbDeliveryProgress, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/navigation/delivery_done',
+                         Bool, self.cbDeliveryDone, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/intersection/phase',
                          String, self.cbIntersectionPhase, queue_size=1)
         # turn_start statt des race-anfaelligen /intersection/direction (siehe
@@ -343,6 +347,9 @@ class DebugGraphNode:
 
     def cbExplorationDone(self, msg):
         self.exploration_done = msg.data
+
+    def cbDeliveryDone(self, msg):
+        self.delivery_done = msg.data
 
     def cbDeliveryProgress(self, msg):
         try:
@@ -712,6 +719,18 @@ class DebugGraphNode:
                 "\"Delivery starten\" klicken.")
         elif not self.exploration_done:
             self._exploration_done_notified = False
+
+        # Analoge Meldung fuers Ende der Abfahrt: bisher blieb next_direction
+        # nur stillschweigend leer, ohne dass klar wurde, dass der Bot
+        # ABSICHTLICH steht (alle geplanten Tore abgefahren), nicht haengt.
+        if self.delivery_done and not self._delivery_done_notified:
+            self._delivery_done_notified = True
+            messagebox.showinfo(
+                "Delivery abgeschlossen",
+                "Alle geplanten Tore wurden abgefahren. Der Bot steht "
+                "absichtlich still.")
+        elif not self.delivery_done:
+            self._delivery_done_notified = False
 
         self.root.after(200, self.update_canvas)
 

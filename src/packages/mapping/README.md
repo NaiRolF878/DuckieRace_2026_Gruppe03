@@ -381,6 +381,20 @@ mehr als 10 Toren), sonst greedy nach kürzester Distanz. In beiden Fällen
 berechnet Dijkstra die kürzesten Wege *zwischen* den (vorgegebenen oder
 optimierten) Stationen.
 
+**Vorgegebene Reihenfolge = exakt und ausschließlich diese Tore:** Werden
+weniger Tore vorgegeben als gefunden wurden, fahren nur die vorgegebenen ab
+– alle anderen gefundenen Tore werden bewusst NICHT angehängt (früher
+wurden sie als "extra" ans Ende gehängt, dabei aber gar nicht per Dijkstra
+einsortiert, sondern kamen roh aus einem Set – praktisch zufällige
+Reihenfolge, unnötige Umwege).
+
+**Explizites Delivery-Ende (`/navigation/delivery_done`):** Sobald
+`remaining` leer ist, wird das jetzt sichtbar gemacht (Log + Publish +
+Dashboard-Popup analog zu "Erkundung abgeschlossen"), statt dass
+`next_direction` nur stillschweigend leer bleibt – vorher gab es kein
+erkennbares Signal, dass der Bot ABSICHTLICH steht und nicht hängen
+geblieben ist.
+
 Ein Tor gilt erst als abgefahren, wenn sein Tag **während der Fahrt über
 seine Kante erneut erkannt** wird (`cbGateDetected`, primärer Weg) – nur
 wenn die Kante komplett durchfahren wird, ohne den Tag nochmal zu sehen
@@ -392,7 +406,7 @@ sobald seine Kante nur als Durchgangsstrecke befahren wird (relevant u.a.
 wenn zwei Tore auf derselben Kante liegen und in zwei getrennten
 Durchfahrten abgeliefert werden müssen).
 **Publiziert:** `/navigation/next_direction`, `/navigation/phase` (nur
-während Delivery), `/navigation/delivery_progress`
+während Delivery), `/navigation/delivery_progress`, `/navigation/delivery_done`
 
 ### debug_graph_node — tkinter-Dashboard
 Zeigt den statischen Graphen, live wachsende grüne "befahren"-Kanten, den
@@ -551,6 +565,7 @@ weiter, statt anzuhalten).
 | `/navigation/exploration_done` | Bool | explore → debug |
 | `/navigation/start_delivery` | Bool | debug (Button) → path_planner |
 | `/navigation/delivery_progress` | String (JSON) | path_planner → debug |
+| `/navigation/delivery_done` | Bool | path_planner → debug |
 | `/intersection/phase` | String | switch_control → control_intersection, graph_state |
 | `/intersection/direction` | String | switch_control → (nur historisch, kein Abonnent mehr) |
 | `/intersection/turn_start` | String (Wort) | switch_control → control_intersection, graph_state, debug (einmalig pro Abbiegung) |

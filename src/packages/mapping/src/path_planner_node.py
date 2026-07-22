@@ -80,6 +80,14 @@ class PathPlannerNode:
         self.remaining     = []
         self.delivered     = []
         self.delivery_active = False
+        # Wird True, sobald delivery_active war UND remaining leer ist (alle
+        # geplanten Tore abgefahren) - anders als exploration_done gab es
+        # dafuer bisher kein explizites Signal: delivery_active blieb einfach
+        # fuer immer True, next_direction wurde nur stillschweigend "" (siehe
+        # _decide_next_tag: "not self.remaining" -> None). Jetzt explizit
+        # sichtbar (Log + Publish), damit klar ist, dass der Bot ABSICHTLICH
+        # steht und nicht unsicher/haengengeblieben ist.
+        self.delivery_done = False
         self._last_planned_keys = None
         # Bot wird zwischen Erkundung und Abfahrt von Hand an delivery_start_node
         # neu hingestellt (Dashboard-Button "Bot versetzt", siehe graph_state_node.
@@ -115,6 +123,8 @@ class PathPlannerNode:
             f'/{self._vehicle_name}/navigation/phase', String, queue_size=1)
         self.pub_delivery_progress = rospy.Publisher(
             f'/{self._vehicle_name}/navigation/delivery_progress', String, queue_size=1)
+        self.pub_delivery_done = rospy.Publisher(
+            f'/{self._vehicle_name}/navigation/delivery_done', Bool, queue_size=1)
 
         rospy.loginfo(f"[{node_name}] Bereit. Delivery-Start: {self.delivery_start_node}")
 
@@ -463,6 +473,12 @@ class PathPlannerNode:
         # erfuellbar ist, statt mit einer unvollstaendigen/umsortierten Route
         # zu starten. run() versucht es bei jedem neu gefundenen Tor erneut
         # (siehe current_keys-Vergleich).
+        #
+        # NUR die vorgegebenen Tore werden abgefahren, alle anderen
+        # gefundenen Tore werden bewusst NICHT angehaengt (galt frueher als
+        # "extra" - wurde dann trotzdem in einer unoptimierten, praktisch
+        # zufaelligen Reihenfolge mitgeliefert, obwohl nur eine Teilmenge
+        # gewuenscht war).
         self.missing_gates = [g for g in self.fixed_gate_order if g not in gate_ids]
         if self.missing_gates:
             rospy.logwarn_throttle(5.0,
@@ -470,8 +486,7 @@ class PathPlannerNode:
                 f"vorgegebenen Reihenfolge - noch nicht gefunden, Route wird "
                 f"noch nicht geplant")
             return []
-        extra = [g for g in gate_ids if g not in self.fixed_gate_order]
-        return list(self.fixed_gate_order) + extra
+        return list(self.fixed_gate_order)
 
     def _compute_order(self, start_node, gate_ids):
         self.missing_gates = []
@@ -550,7 +565,17 @@ class PathPlannerNode:
                     "versetzt' wurde noch nicht bestaetigt - warte darauf, "
                     "um nicht von der alten Erkundungs-Position aus loszufahren.")
 
-        if self.delivery_active:
+        if self.delivery_active and not self.remaining and not self.delivery_done:
+            # Alle geplanten Tore abgefahren - explizites "fertig"-Signal
+            # (bisher blieb next_direction nur stillschweigend "" haengen,
+            # ohne dass irgendwo klar wurde: das ist ABSICHT, kein Haengen-
+            # bleiben).
+            self.delivery_done = True
+            self.pub_next_direction.publish(String(data=""))
+            rospy.loginfo(f"[path_planner] Delivery abgeschlossen - alle "
+                          f"{len(self.planned_order)} geplanten Tore abgefahren, Bot bleibt stehen.")
+
+        if self.delivery_active and not self.delivery_done:
             exit_tag = self._decide_next_tag()
             word = self.exit_directions.get(exit_tag, "") if exit_tag is not None else ""
             if not word and self.remaining:
@@ -566,6 +591,7 @@ class PathPlannerNode:
             self.pub_next_direction.publish(String(data=word))
             self.pub_phase.publish(String(data=self.phase))
 
+        self.pub_delivery_done.publish(Bool(data=self.delivery_done))
         self.pub_delivery_progress.publish(String(data=json.dumps({
             "done": self.delivered,
             "remaining": self.remaining,
