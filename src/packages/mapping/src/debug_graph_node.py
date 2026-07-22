@@ -360,9 +360,26 @@ class DebugGraphNode:
                                  highlightthickness=0)
         self.canvas.pack(side="left", fill="y")
 
-        self.panel = tk.Frame(self.root, width=280)
-        self.panel.pack(side="right", fill="both", expand=True)
-        self.panel.pack_propagate(False)
+        # Scrollbares Panel: mittlerweile deutlich mehr Widgets (Tor-Reihenfolge,
+        # Notfall-Buttons, Status) als in die feste Fensterhoehe passen -
+        # "Gefundene Tore"/"Abgefahrene Tore" wachsen ausserdem dynamisch mit
+        # jedem neuen Tor. Ohne Scrollbar waeren untere Buttons (z.B. "Delivery
+        # starten") schlicht unsichtbar/unklickbar, nicht defekt.
+        panel_container = tk.Frame(self.root, width=280)
+        panel_container.pack(side="right", fill="both", expand=True)
+        panel_canvas = tk.Canvas(panel_container, highlightthickness=0)
+        panel_scrollbar = tk.Scrollbar(panel_container, orient="vertical",
+                                        command=panel_canvas.yview)
+        self.panel = tk.Frame(panel_canvas, width=280)
+        self.panel.bind(
+            "<Configure>",
+            lambda e: panel_canvas.configure(scrollregion=panel_canvas.bbox("all")))
+        panel_canvas.create_window((0, 0), window=self.panel, anchor="nw", width=280)
+        panel_canvas.configure(yscrollcommand=panel_scrollbar.set)
+        panel_canvas.pack(side="left", fill="both", expand=True)
+        panel_scrollbar.pack(side="right", fill="y")
+        panel_canvas.bind_all(
+            "<MouseWheel>", lambda e: panel_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
 
         self.lbl_phase = tk.Label(self.panel, anchor="w", justify="left")
         self.lbl_phase.pack(fill="x", padx=10, pady=(10, 2))
@@ -378,6 +395,14 @@ class DebugGraphNode:
         self.lbl_planned.pack(fill="x", padx=10, pady=2)
 
         ttk.Separator(self.panel, orient="horizontal").pack(fill="x", padx=10, pady=10)
+
+        # Sichtbare Klick-Bestaetigung: die Buttons unten loesen nur einen
+        # rospy.loginfo im Terminal aus, das GUI selbst zeigte bisher keine
+        # Rueckmeldung - wirkte dadurch so, als wuerde der Klick nichts tun.
+        self.lbl_action_feedback = tk.Label(self.panel, anchor="w", justify="left",
+                                             wraplength=260, fg="#1a7a1a")
+        self.lbl_action_feedback.pack(fill="x", padx=10, pady=(0, 6))
+        self._feedback_after_id = None
 
         tk.Label(self.panel, text="Vorgegebene Tor-Reihenfolge (z.B. 5,9,3):",
                  anchor="w", justify="left", wraplength=260).pack(fill="x", padx=10)
@@ -420,17 +445,27 @@ class DebugGraphNode:
         self._draw_static_graph()
         self.root.after(200, self.update_canvas)
 
+    def _show_action_feedback(self, text):
+        if self._feedback_after_id is not None:
+            self.root.after_cancel(self._feedback_after_id)
+        self.lbl_action_feedback.config(text=f"✓ {text}")
+        self._feedback_after_id = self.root.after(
+            3000, lambda: self.lbl_action_feedback.config(text=""))
+
     def _on_start_delivery_click(self):
         self.pub_start_delivery.publish(Bool(data=True))
         rospy.loginfo("[debug_graph] 'Delivery starten' gedrueckt")
+        self._show_action_feedback("Delivery gestartet")
 
     def _on_reload_gate_map(self):
         self.pub_reload_gate_map.publish(Bool(data=True))
         rospy.loginfo("[debug_graph] 'Tor-Zuordnung neu laden' gedrueckt")
+        self._show_action_feedback("Tor-Zuordnung neu geladen")
 
     def _on_reset_exploration(self):
         self.pub_reset_exploration.publish(Bool(data=True))
         rospy.loginfo("[debug_graph] 'Erkundung neu starten' gedrueckt")
+        self._show_action_feedback("Erkundung zurueckgesetzt")
 
     def _on_apply_gate_order(self):
         # Eingabe wie "5, 9, 3" -> ["5","9","3"]; leeres Feld -> [] (keine
@@ -441,6 +476,8 @@ class DebugGraphNode:
         self._save_gate_order(order)
         self.pub_gate_order.publish(String(data=json.dumps(order)))
         rospy.loginfo(f"[debug_graph] Vorgegebene Tor-Reihenfolge uebernommen: {order}")
+        self._show_action_feedback(f"Reihenfolge uebernommen: {order}" if order
+                                    else "Reihenfolge geloescht (Auto-Optimierung aktiv)")
 
     def _save_gate_order(self, order):
         # In mapping_node.json zurueckschreiben, damit path_planner_node die
