@@ -53,18 +53,10 @@ Alle Wackel-/Such-Parameter waren vorher fest im Code (`wiggle_power = 0.08` usw
 |---|---|
 | `wiggle.power` | Stärke des Vor/Zurück-"Wackelns" beim Drehen auf der Stelle (überwindet Rollmoment) |
 | `wiggle.interval_seconds` | Wie oft die Wackel-Richtung wechselt |
-| `search.escape_omega` | Dreh-Geschwindigkeit während Test- und Ausweichphase |
+| `search.escape_omega` | Dreh-Geschwindigkeit während des Ausweichens |
 | `search.inversion_cooldown_seconds` | Mindestabstand zwischen zwei Richtungs-Korrekturen während des Ausweichens |
-| `probe.angle_rad` | Testwinkel je Seite in der Lücken-Suche (Standard 0.35 rad ≈ 20°) |
-| `probe.return_tolerance_rad` | Ab wann "wieder bei der Ausgangsrichtung" gilt |
-| `probe.phase_timeout_seconds` | Sicherheitsnetz, falls die Odometrie eine Testphase nie abschließt |
-
-### Beidseitige Lücken-Suche statt geratener Richtung — neuer `PROBING`-Zustand
-Vorher wurde die Ausweichrichtung sofort aus einer Heuristik geraten (Entenposition relativ zur Bildmitte, oder welche Linienfarbe zuerst kam) und erst nachträglich per Inversions-Check korrigiert, falls sie sich als falsch herausstellte. Jetzt testet der Bot vor der Entscheidung erst kurz nach links, dann kurz nach rechts (per Odometrie/`theta` gesteuert, `_start_probing`/`PROBING`-Zustand in `duck_avoidance_node.py`), vergleicht die "Gefahr" (Linie/Ente in Sichtweite, `_danger_score`) auf beiden Seiten und committet sich erst danach auf die tatsächlich freiere Richtung für das eigentliche Ausweichmanöver (`ROTATING`, unverändert). Bei Gleichstand bleibt die ursprüngliche Heuristik als Tie-Breaker bestehen.
-
-Der Gefahren-Wert wird dabei über **alle Ticks** einer Testseite gemittelt, nicht nur an einem einzigen Tick am Ende gemessen – ein einzelner Fehlerkennungs-Frame soll die Entscheidung nicht verfälschen (analog zum bestehenden Median-Puffer für die Zone-2-Gelberkennung).
-
-**Bekannte Grenze:** Die Odometrie (Radticks) kann bei einer Drehung auf der Stelle durchrutschen – der gemessene Testwinkel entspricht dann nicht exakt dem tatsächlich gefahrenen Winkel. Ohne zusätzliche Sensorik (z.B. IMU) nicht behebbar.
 
 ### Debug-Overlay zeigt die tatsächliche FSM-Aktion
-Der Text im Debug-Fenster kam vorher direkt aus den rohen Motorbefehlen ("Ich würde gerne: fahren und links" – bei jedem Wackel-Tick praktisch identisch, unabhängig vom Zustand). Jetzt zeigt `_state_action_text()` die tatsächliche Aktion in Klartext: "Freie Fahrt", "Spurkorrektur", "Lücke suchen (teste links)", "Weiche aus wegen Ente (rechts)", "Fahre an Ente vorbei".
+Der Text im Debug-Fenster kam vorher direkt aus den rohen Motorbefehlen ("Ich würde gerne: fahren und links" – bei jedem Wackel-Tick praktisch identisch, unabhängig vom Zustand). Jetzt zeigt `_state_action_text()` die tatsächliche Aktion in Klartext: "Freie Fahrt", "Spurkorrektur", "Weiche aus wegen Ente (rechts)", "Fahre an Ente vorbei".
+
+**Kurzzeitig ausprobiert und wieder verworfen:** Ein Zustand, der vor der Richtungs-Entscheidung erst kurz nach links UND rechts testet (statt sofort per Heuristik zu entscheiden), hat sich in der Praxis nicht bewährt und wurde wieder entfernt – die Ausweichrichtung wird weiterhin direkt aus der Heuristik (Entenposition/Linienfarbe) plus nachträglichem Inversions-Check bestimmt, wie ursprünglich.

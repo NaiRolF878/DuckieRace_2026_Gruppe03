@@ -61,7 +61,7 @@ class DuckAvoidanceNode:
         self._drive_speed = 0.15
 
         # --- ZUSTAND & PERCEPTION ---
-        self.state = "DRIVING" # DRIVING, PROBING, ROTATING, DRIVE_FORWARD_DISTANCE
+        self.state = "DRIVING" # DRIVING, ROTATING, DRIVE_FORWARD_DISTANCE
         # Wird erst von Trigger A/B (Linie/Ente erkannt) auf einen echten Wert
         # gesetzt - Default hier noetig, damit _state_action_text() auch
         # VOR der allerersten Erkennung (state=="DRIVING", noch nie ausgewichen)
@@ -82,22 +82,7 @@ class DuckAvoidanceNode:
         self.wiggle_interval = 0.06
         self.escape_omega = 1.5
         self.inversion_cooldown = 1.0
-        # PROBING: vor dem Festlegen auf eine Ausweichrichtung wird zuerst
-        # kurz nach links UND nach rechts gedreht und verglichen, welche
-        # Seite tatsaechlich freier ist - statt sich sofort auf eine geratene
-        # Richtung (Entenposition/Linienfarbe) festzulegen und erst hinterher
-        # per Inversions-Check zu merken, dass sie falsch war.
-        self.probe_angle = 0.35            # rad, Testwinkel je Seite
-        self.probe_return_tolerance = 0.03 # rad, "wieder bei der Ausgangsrichtung"
-        self.probe_phase_timeout = 3.0      # s, Sicherheitsnetz falls die Odometrie nie ankommt
         util.init_parameters('duck_avoidance_node', self.cbUpdateParameters)
-        self.probe_phase = None            # None, "left", "return_1", "right", "return_2"
-        self.probe_start_theta = 0.0
-        self.probe_phase_start_time = time.monotonic()
-        self.probe_left_score = None
-        self.probe_right_score = None
-        self.probe_left_samples = []
-        self.probe_right_samples = []
         # Tracking für Rotationsursache und Inversions-Schutz
         self.rotation_reason = None
         # use monotonic wall-clock for inversion cooldown (robust to /use_sim_time)
@@ -208,21 +193,14 @@ class DuckAvoidanceNode:
     def cbUpdateParameters(self, parameters):
         # Aus duck_avoidance_node.json (bzw. live per /update_parameters) -
         # steuert das Vor/Zurueck-"Wackeln" waehrend der Freie-Zonen-Suche
-        # (ROTATING-Zustand), die zugehoerige Dreh-Geschwindigkeit, und den
-        # beidseitigen Test vor der Richtungs-Entscheidung (PROBING-Zustand).
+        # (ROTATING-Zustand) und die zugehoerige Dreh-Geschwindigkeit.
         wiggle = parameters.get("wiggle", {})
         search = parameters.get("search", {})
-        probe = parameters.get("probe", {})
         self.wiggle_power = wiggle.get("power", {}).get("default", self.wiggle_power)
         self.wiggle_interval = wiggle.get("interval_seconds", {}).get("default", self.wiggle_interval)
         self.escape_omega = search.get("escape_omega", {}).get("default", self.escape_omega)
         self.inversion_cooldown = search.get("inversion_cooldown_seconds", {}).get(
             "default", self.inversion_cooldown)
-        self.probe_angle = probe.get("angle_rad", {}).get("default", self.probe_angle)
-        self.probe_return_tolerance = probe.get("return_tolerance_rad", {}).get(
-            "default", self.probe_return_tolerance)
-        self.probe_phase_timeout = probe.get("phase_timeout_seconds", {}).get(
-            "default", self.probe_phase_timeout)
 
     # ==========================================
     # 2. ODOMETRIE & EINGANGSDATEN
@@ -352,34 +330,6 @@ class DuckAvoidanceNode:
     # ==========================================
     # 4. CONTROL LOOP & FSM
     # ==========================================
-    def _start_probing(self, reason):
-        # Startet die beidseitige Testphase statt sofort auf eine geratene
-        # Richtung zu rotieren - self.escape_direction (von den Triggern
-        # bereits gesetzt) dient nur noch als Tie-Breaker, falls beide
-        # Seiten gleich frei sind.
-        self.state = "PROBING"
-        self.rotation_reason = reason
-        self.probe_phase = "left"
-        self.probe_start_theta = self.theta
-        self.probe_phase_start_time = time.monotonic()
-        self.probe_left_score = None
-        self.probe_right_score = None
-        # Alle Gefahren-Messwerte WAEHREND jeder Testseite sammeln (nicht nur
-        # eine Momentaufnahme am Ende) - ein einzelner Fehlerkennungs-Frame
-        # genau im Schlussmoment soll die Entscheidung nicht verfaelschen.
-        self.probe_left_samples = []
-        self.probe_right_samples = []
-
-    def _danger_score(self, z0, z1):
-        # Je niedriger, desto freier ist die gerade getestete Richtung.
-        # Dieselben Zonen wie beim bisherigen Inversions-Schutz: bei einer
-        # Ente blicken wir voraus (z1), bei einer Linie nur direkt vor den
-        # Bot (z0) - verhindert Endlosschleifen in scharfen Kurven.
-        if self.rotation_reason == "duck":
-            return (int(z1.get("duck", False)) + int(z1.get("white", False))
-                    + int(z1.get("yellow", False)))
-        return int(z0.get("white", False)) + int(z0.get("yellow", False))
-
     def run(self):
         rate = rospy.Rate(10)
         IMAGE_CENTER_X = 320 
@@ -406,24 +356,24 @@ class DuckAvoidanceNode:
             
             # Trigger A: Linie in Zone 0
             if z0["white"] or z0["yellow"]:
-                if self.state not in ("PROBING", "ROTATING"):
-                    rospy.loginfo("Wegen Linie in Zone 0. Teste beide Richtungen.")
-                    # Grobe Ausgangsrichtung nur als Tie-Breaker, falls beide
-                    # Seiten in der Testphase gleich frei sind (siehe unten) -
-                    # die tatsaechliche Entscheidung faellt jetzt erst nach
-                    # dem beidseitigen Test, nicht mehr sofort per Heuristik.
+                if self.state != "ROTATING":
+                    rospy.loginfo("Wegen Linie in Zone 0. Rotieren")
+                    self.state = "ROTATING"
+                    self.rotation_reason = "line"
                     if z0["white"]:
                         self.escape_direction = 1.0
+                        rospy.loginfo("Rotation nach links läuft...")
                     if z0["yellow"]:
                         self.escape_direction = -1.0
-                    self._start_probing("line")
+                        rospy.loginfo("Rotation nach rechts läuft...")
 
             # Trigger B: Ente in Zone 1
             elif z1["duck"]:
-                if self.state not in ("PROBING", "ROTATING"):
-                    rospy.loginfo("Ente in Z1! Teste beide Richtungen.")
+                if self.state != "ROTATING":
+                    rospy.loginfo("Ente in Z1! Freien Fahrkorridor finden.")
+                    self.state = "ROTATING"
+                    self.rotation_reason = "duck"
                     self.escape_direction = -1.0 if duck_center_x < IMAGE_CENTER_X else 1.0
-                    self._start_probing("duck")
 
             # Trigger C: Abbruch der Rotation (Alles frei)
             elif self.state == "ROTATING" and not z1["duck"] and not z0["yellow"] and not z0["white"]: #z1 yellow z1 white davor and not z2["duck"]
@@ -441,69 +391,6 @@ class DuckAvoidanceNode:
             # PHASE 2: MOTOR-AKTIONEN (Ausführen, was der Zustand sagt)
             # WICHTIG: Das hier sind NEUE 'if'-Blöcke, keine 'elif' mehr!
             # ==========================================================
-
-            if self.state == "PROBING":
-                current_time = time.monotonic()
-                if current_time - self.last_wiggle_time > self.wiggle_interval:
-                    self.wiggle_direction *= -1.0
-                    self.last_wiggle_time = current_time
-                cmd.v = 1.0 * self.wiggle_power * self.wiggle_direction
-
-                rel_theta = self.theta - self.probe_start_theta
-                phase_elapsed = current_time - self.probe_phase_start_time
-                phase_timed_out = phase_elapsed > self.probe_phase_timeout
-
-                if self.probe_phase == "left":
-                    cmd.omega = self.escape_omega
-                    # Jeden Tick der Testseite sammeln, nicht nur eine
-                    # Momentaufnahme am Ende - ein einzelner Fehlerkennungs-
-                    # Frame genau im Schlussmoment soll die Entscheidung
-                    # nicht verfaelschen (Mittelwert wie beim Zone-2-Puffer).
-                    self.probe_left_samples.append(self._danger_score(z0, z1))
-                    if rel_theta >= self.probe_angle or phase_timed_out:
-                        self.probe_left_score = (sum(self.probe_left_samples)
-                                                  / len(self.probe_left_samples))
-                        rospy.loginfo(f"Testphase links fertig (Gefahr={self.probe_left_score:.2f}, "
-                                      f"{len(self.probe_left_samples)} Messwerte)"
-                                      f"{' - Timeout' if phase_timed_out else ''}")
-                        self.probe_phase = "return_1"
-                        self.probe_phase_start_time = current_time
-
-                elif self.probe_phase == "return_1":
-                    cmd.omega = -self.escape_omega
-                    if rel_theta <= self.probe_return_tolerance or phase_timed_out:
-                        self.probe_phase = "right"
-                        self.probe_phase_start_time = current_time
-
-                elif self.probe_phase == "right":
-                    cmd.omega = -self.escape_omega
-                    self.probe_right_samples.append(self._danger_score(z0, z1))
-                    if rel_theta <= -self.probe_angle or phase_timed_out:
-                        self.probe_right_score = (sum(self.probe_right_samples)
-                                                   / len(self.probe_right_samples))
-                        rospy.loginfo(f"Testphase rechts fertig (Gefahr={self.probe_right_score:.2f}, "
-                                      f"{len(self.probe_right_samples)} Messwerte)"
-                                      f"{' - Timeout' if phase_timed_out else ''}")
-                        self.probe_phase = "return_2"
-                        self.probe_phase_start_time = current_time
-
-                elif self.probe_phase == "return_2":
-                    cmd.omega = self.escape_omega
-                    if rel_theta >= -self.probe_return_tolerance or phase_timed_out:
-                        # Entscheidung: die Seite mit weniger "Gefahr" gewinnt.
-                        # Bei Gleichstand bleibt die urspruengliche Heuristik
-                        # (self.escape_direction von den Triggern) als
-                        # Tie-Breaker bestehen.
-                        if self.probe_left_score < self.probe_right_score:
-                            self.escape_direction = 1.0
-                        elif self.probe_right_score < self.probe_left_score:
-                            self.escape_direction = -1.0
-                        rospy.loginfo(
-                            f"Test abgeschlossen: links={self.probe_left_score} "
-                            f"rechts={self.probe_right_score} -> "
-                            f"{'links' if self.escape_direction == 1.0 else 'rechts'}")
-                        self.state = "ROTATING"
-                        self.probe_phase = None
 
             if self.state == "ROTATING":
                 current_time = time.monotonic()
@@ -613,15 +500,6 @@ class DuckAvoidanceNode:
         # die sagten z.B. bei jedem Wackel-Tick "fahren", ohne erkennen zu
         # lassen, OB gerade eine Luecke gesucht, ausgewichen oder normal
         # gefahren wird.
-        if self.state == "PROBING":
-            phase_txt = {
-                "left": "teste links",
-                "return_1": "zurueck zur Mitte",
-                "right": "teste rechts",
-                "return_2": "zurueck zur Mitte",
-            }.get(self.probe_phase, "...")
-            return f"Luecke suchen ({phase_txt})"
-
         if self.state == "ROTATING":
             reason_txt = "Ente" if self.rotation_reason == "duck" else "Linie"
             direction_txt = "links" if self.escape_direction == 1.0 else "rechts"
