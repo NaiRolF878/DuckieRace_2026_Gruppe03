@@ -6,13 +6,12 @@ import rospy
 import cv2
 import numpy as np
 import math
-from shapely.geometry import Polygon as ShapelyPolygon, box as ShapelyBox, Point as ShapelyPoint
+from shapely.geometry import Polygon as ShapelyPolygon, box as ShapelyBox
 from sensor_msgs.msg import CompressedImage
 from geometry_msgs.msg import Polygon as RosPolygon
 from duckietown_msgs.msg import Twist2DStamped, WheelEncoderStamped
 import time
 from collections import deque
-import util
 
 
 class DuckAvoidanceNode:
@@ -35,11 +34,8 @@ class DuckAvoidanceNode:
         
         # --- HOMOGRAPHIE & TRAPEZE ---
         self.H = None
-        self.H_inv = None
         self.trapezoids_2d = [] # Pixel-Koordinaten (Numpy für cv2)
         self.trapezoids_shapely = [] # Shapely Polygone für Intersection
-        self.zones_3d_raw = [] # dieselben Zonen als rohe Punktlisten (fuer Toter-Winkel-Grenzen)
-        self.zones_3d_shapely = [] # dieselben Zonen in echten Metern (siehe _load_homography_and_build_zones)
         self._load_homography_and_build_zones()
 
         # --- MASKEN PARAMETER ---
@@ -64,36 +60,16 @@ class DuckAvoidanceNode:
         self._drive_speed = 0.15
 
         # --- ZUSTAND & PERCEPTION ---
-        self.state = "DRIVING" # DRIVING, ROTATING, DRIVE_FORWARD_DISTANCE
-        # Wird erst von Trigger A/B (Linie/Ente erkannt) auf einen echten Wert
-        # gesetzt - Default hier noetig, damit _state_action_text() auch
-        # VOR der allerersten Erkennung (state=="DRIVING", noch nie ausgewichen)
-        # nicht mit AttributeError abstuerzt.
-        self.escape_direction = 1.0
+        self.state = "DRIVING" # DRIVING, ROTATING
         self.zones_status = [{"white": False, "yellow": False, "duck": False} for _ in range(3)] # Status für Zone 1, 2, 3
-        self.duck_bboxes = [] # Eingehende Enten [(x1,y1,x2,y2), ...] - nur die zuletzt ECHT erkannten (fuers Debug-Bild)
-        # Kurzes Positions-Gedaechtnis gegen verpasste Frames (siehe cb_ducks/
-        # _to_world_position/_remembered_duck_zone_hits) - Default hier, per
-        # JSON ueberschreibbar. Speichert reale Weltkoordinaten statt
-        # Bildpixeln, damit sowohl Drehung als auch Vorwaertsfahrt seit der
-        # letzten Erkennung korrekt beruecksichtigt werden.
-        self._last_duck_seen_time = 0.0
-        self._remembered_world_positions = []
-        self.duck_memory_seconds = 0.5
+        self.duck_bboxes = [] # Eingehende Enten [(x1,y1,x2,y2), ...]
         self.display_image = None
-        self.buffer_size = 3 #17
+        self.buffer_size = 9 #17
         # Puffer exklusiv für Zone 2
         self.z2_yellow_history = deque(maxlen=self.buffer_size)
         self.wiggle_direction = -1.0
         self.last_wiggle_time = time.monotonic()
-        # Defaults, falls duck_avoidance_node.json (noch) fehlt/fehlerhaft ist -
-        # per util.init_parameters unten aus der JSON ueberschrieben, live per
-        # /update_parameters aenderbar.
-        self.wiggle_power = 0.08
-        self.wiggle_interval = 0.06
-        self.escape_omega = 1.5
-        self.inversion_cooldown = 1.0
-        util.init_parameters('duck_avoidance_node', self.cbUpdateParameters)
+        self.wiggle_power = 0.08 #0.66 # mit 0.8 ist der wiggel sichtbar und effektiv, aber es ist halt weniger schön, je nach akkustand sinnvoll
         # Tracking für Rotationsursache und Inversions-Schutz
         self.rotation_reason = None
         # use monotonic wall-clock for inversion cooldown (robust to /use_sim_time)
@@ -161,7 +137,6 @@ class DuckAvoidanceNode:
             with open(self.path_homography, 'r') as f:
                 data = yaml.safe_load(f)
                 self.H = np.array(data['homography']).reshape((3,3))
-            self.H_inv = np.linalg.inv(self.H)
             rospy.loginfo("Homographie geladen.")
         except Exception as e:
             rospy.logerr(f"Homographie Fehler: {e}")
@@ -175,13 +150,6 @@ class DuckAvoidanceNode:
             [(0.2, -0.073), (0.3, -0.07), (0.3, 0.07), (0.2, 0.073)]       # Zone 2
             #[(0.30, -0.07), (0.42, -0.07), (0.42, 0.07), (0.30, 0.07)]      # Zone 3
         ]
-        # Fuer den Positions-Gedaechtnis-Check (_remembered_duck_zone_hits):
-        # dieselben Zonen, aber in echten Metern statt Pixeln - vermeidet
-        # einen zweiten Umweg ueber die Homographie beim Rueck-Projizieren
-        # gemerkter Enten. self.zones_3d_raw zusaetzlich fuer die Grenzen des
-        # toten Winkels (naeher als Zone 0, siehe _remembered_duck_zone_hits).
-        self.zones_3d_raw = zones_3d
-        self.zones_3d_shapely = [ShapelyPolygon(z) for z in zones_3d]
 
         for z in zones_3d:
             pts_2d = []
@@ -192,7 +160,7 @@ class DuckAvoidanceNode:
                 u = int(proj[0] / proj[2])
                 v = int(proj[1] / proj[2])
                 pts_2d.append([u, v])
-
+            
             pts_2d = np.array(pts_2d, dtype=np.int32)
             self.trapezoids_2d.append(pts_2d)
             self.trapezoids_shapely.append(ShapelyPolygon(pts_2d))
@@ -208,21 +176,6 @@ class DuckAvoidanceNode:
                 "white": {"lower": [0, 0, 150], "upper": [180, 50, 255]},
                 "yellow": {"lower": [20, 100, 100], "upper": [40, 255, 255]}
             }
-
-    def cbUpdateParameters(self, parameters):
-        # Aus duck_avoidance_node.json (bzw. live per /update_parameters) -
-        # steuert das Vor/Zurueck-"Wackeln" waehrend der Freie-Zonen-Suche
-        # (ROTATING-Zustand) und die zugehoerige Dreh-Geschwindigkeit.
-        wiggle = parameters.get("wiggle", {})
-        search = parameters.get("search", {})
-        memory = parameters.get("memory", {})
-        self.wiggle_power = wiggle.get("power", {}).get("default", self.wiggle_power)
-        self.wiggle_interval = wiggle.get("interval_seconds", {}).get("default", self.wiggle_interval)
-        self.escape_omega = search.get("escape_omega", {}).get("default", self.escape_omega)
-        self.inversion_cooldown = search.get("inversion_cooldown_seconds", {}).get(
-            "default", self.inversion_cooldown)
-        self.duck_memory_seconds = memory.get("duck_seconds", {}).get(
-            "default", self.duck_memory_seconds)
 
     # ==========================================
     # 2. ODOMETRIE & EINGANGSDATEN
@@ -258,100 +211,34 @@ class DuckAvoidanceNode:
         self.theta += dth
 
     def cb_ducks(self, msg):
-        # Extrahiere Boxen aus dem Polygon-Array (erwartet x1,y1,x2,y2 pro Ente)
-        new_bboxes = []
+        now = time.monotonic()
+        incoming_boxes = []
         if len(msg.points) >= 4:
             for i in range(0, len(msg.points), 4):
-                # Min/Max bestimmen für sauberes Rect
                 xs = [msg.points[i+j].x for j in range(4)]
                 ys = [msg.points[i+j].y for j in range(4)]
-                new_bboxes.append((int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))))
-
-        # Kurzes Positions-Gedaechtnis (wie tag_memory bei detect_apriltag_node):
-        # detect_ducks_node publiziert bewusst auch LEERE Nachrichten, sobald
-        # das Modell in einem Frame nichts findet - z.B. waehrend der Bot sich
-        # dreht und die Ente kurz aus dem (schmalen) Sichtfeld faellt, oder
-        # (WICHTIGER Fall) waehrend der Bot GERADEAUS auf die Ente zufaehrt und
-        # sie zu nah/im toten Winkel unterhalb des Kamera-Sichtfelds verschwindet
-        # - genau dann ist sie am gefaehrlichsten, nicht "frei". Ohne
-        # Gedaechtnis wuerde self.duck_bboxes SOFORT leer und die Zonen "frei"
-        # wirken, obwohl die Ente (als stationaeres Hindernis) mit hoher
-        # Wahrscheinlichkeit noch genau da ist oder sogar noch naeher.
-        #
-        # Reines Einfrieren der letzten BILDPOSITION waere dabei falsch: bei
-        # Drehung verschiebt sich die Ente im Bild, bei Vorwaertsfahrt wird sie
-        # groesser/naeher - ein eingefrorenes Pixel-Rechteck bildet keins von
-        # beidem ab. Stattdessen wird die reale Boden-Position der Ente EINMAL
-        # bei der Erkennung per inverser Homographie + aktueller Bot-Pose in
-        # Weltkoordinaten umgerechnet (_to_world_position) und dort gespeichert
-        # - Weltkoordinaten aendern sich nicht, wenn sich der Bot bewegt. Die
-        # Zonen-Pruefung (cb_image) transformiert diese Weltposition bei jedem
-        # Frame zurueck in die AKTUELLE Bot-Perspektive, das deckt Drehung UND
-        # Vorwaertsfahrt gleichermassen korrekt ab.
-        now = time.monotonic()
-        if new_bboxes:
-            self._remembered_world_positions = [
-                self._to_world_position(x1, x2, y2) for (x1, _y1, x2, y2) in new_bboxes]
-            self._remembered_world_positions = [p for p in self._remembered_world_positions if p is not None]
-            self._last_duck_seen_time = now
-            self.duck_bboxes = new_bboxes
-        elif now - self._last_duck_seen_time > self.duck_memory_seconds:
-            self._remembered_world_positions = []
-            self.duck_bboxes = []
-        else:
-            # Bildposition zeigt weiterhin die letzte ECHTE Erkennung (fuers
-            # Debug-Bild/duck_center_x) - die eigentliche Zonen-Gefahrenpruefung
-            # laeuft separat ueber _remembered_world_positions (siehe cb_image).
-            pass
-
-    def _to_world_position(self, x1, x2, y2):
-        # Bodenkontaktpunkt der Bounding Box (Mitte unten - dort beruehrt die
-        # Ente vermutlich den Boden) per inverser Homographie von Pixel- in
-        # bot-relative Meter-Koordinaten umrechnen, dann per aktueller Pose
-        # (self.x/self.y/self.theta) in feste Weltkoordinaten - so bleibt die
-        # gemerkte Position unabhaengig davon gueltig, wie der Bot sich seitdem
-        # gedreht oder bewegt hat.
-        if self.H_inv is None:
-            return None
-        u, v = (x1 + x2) / 2.0, float(y2)
-        vec = self.H_inv @ np.array([u, v, 1.0])
-        if abs(vec[2]) < 1e-9:
-            return None
-        local_x, local_y = vec[0] / vec[2], vec[1] / vec[2]
-        cos_t, sin_t = math.cos(self.theta), math.sin(self.theta)
-        world_x = self.x + local_x * cos_t - local_y * sin_t
-        world_y = self.y + local_x * sin_t + local_y * cos_t
-        return (world_x, world_y)
-
-    def _remembered_duck_zone_hits(self):
-        # Liefert die Indizes aller Zonen, in denen laut Gedaechtnis
-        # (Weltkoordinaten, siehe cb_ducks/_to_world_position) aktuell eine
-        # Ente steht - zurueckgerechnet in die AKTUELLE Bot-Perspektive.
-        if not self._remembered_world_positions:
-            return set()
-        cos_t, sin_t = math.cos(self.theta), math.sin(self.theta)
-        # Zone 0 beginnt erst bei X=0.1m - NAEHER als das existiert gar keine
-        # Zone, weil die Kamera dort prinzipbedingt nichts mehr sieht (toter
-        # Winkel). Eine Ente, die sich (laut Gedaechtnis) bis dorthin
-        # angenaehert hat, ist die gefaehrlichste Position ueberhaupt, nicht
-        # "keine Zone trifft zu -> frei" - wird deshalb explizit als Zone 0
-        # gewertet, wenn sie noch ungefaehr im Fahrschlauch liegt (gleiche
-        # Y-Breite wie die Nahkante von Zone 0).
-        near_x = min(pt[0] for pt in self.zones_3d_raw[0]) if self.zones_3d_raw else None
-        near_ys = [pt[1] for pt in self.zones_3d_raw[0]] if self.zones_3d_raw else []
-        hits = set()
-        for world_x, world_y in self._remembered_world_positions:
-            dx, dy = world_x - self.x, world_y - self.y
-            local_x = dx * cos_t + dy * sin_t
-            local_y = -dx * sin_t + dy * cos_t
-            if near_x is not None and 0.0 < local_x < near_x and min(near_ys) <= local_y <= max(near_ys):
-                hits.add(0)
-                continue
-            point = ShapelyPoint(local_x, local_y)
-            for i, zone_poly in enumerate(self.zones_3d_shapely):
-                if zone_poly.contains(point):
-                    hits.add(i)
-        return hits
+                x1, y1, x2, y2 = int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))
+                incoming_boxes.append((x1, y1, x2, y2, now))
+                
+        # Merge eingehende Boxen mit bestehenden (verhindert Flackern einzelner Enten)
+        updated_boxes = list(incoming_boxes)
+        for old_box in self.duck_bboxes:
+            cx_old = (old_box[0] + old_box[2]) / 2.0
+            cy_old = (old_box[1] + old_box[3]) / 2.0
+            matched = False
+            for new_box in incoming_boxes:
+                cx_new = (new_box[0] + new_box[2]) / 2.0
+                cy_new = (new_box[1] + new_box[3]) / 2.0
+                dist = math.hypot(cx_old - cx_new, cy_old - cy_new)
+                if dist < 50: # Boxen sind nah genug, also ist es dieselbe Ente
+                    matched = True
+                    break
+            
+            # Wenn nicht gematcht, aber noch frisch (< 0.3s), weiter am Leben erhalten!
+            if not matched and (now - old_box[4] < 0.3):
+                updated_boxes.append(old_box)
+                
+        self.duck_bboxes = updated_boxes
 
     # ==========================================
     # 3. VISION & PERCEPTION LOOP
@@ -382,23 +269,21 @@ class DuckAvoidanceNode:
         mask_white = cv2.inRange(hsv, np.array(self.hsv_limits['white']['lower']), np.array(self.hsv_limits['white']['upper']))
         mask_yellow = cv2.inRange(hsv, np.array(self.hsv_limits['yellow']['lower']), np.array(self.hsv_limits['yellow']['upper']))
 
+        now = time.monotonic()
+        # Alte BBoxes aufräumen, falls sie länger als 0.3s nicht bestätigt wurden
+        self.duck_bboxes = [b for b in self.duck_bboxes if now - b[4] < 1.0]
+
         # 2. Enten aus der Gelb-Maske stanzen (manipulieren)
-        for (x1, y1, x2, y2) in self.duck_bboxes:
+        for (x1, y1, x2, y2, t) in self.duck_bboxes:
             cv2.rectangle(mask_yellow, (x1, y1), (x2, y2), 0, -1) # Setzt BBox-Bereich in Maske auf 0 (Schwarz)
             cv2.rectangle(undistorted, (x1, y1), (x2, y2), (0, 255, 0), 2) # Grün im Debug-Bild
 
         # 3. Detaillierte Zonen evaluieren
         self.zones_status = [{"white": False, "yellow": False, "duck": False} for _ in range(3)]
-        remembered_hits = self._remembered_duck_zone_hits()
-
+        
         for i, (trap_pts, trap_poly) in enumerate(zip(self.trapezoids_2d, self.trapezoids_shapely)):
-            # A) Enten-Kollision: aktuell erkannte Boxen PLUS gemerkte Position
-            # (siehe cb_ducks) - z.B. waehrend der Bot geradeaus auf eine Ente
-            # zufaehrt und sie zu nah/im toten Winkel aus dem Bild verschwindet,
-            # zeigt die aktuelle Erkennung allein faelschlich "frei".
-            if i in remembered_hits:
-                self.zones_status[i]["duck"] = True
-            for (x1, y1, x2, y2) in self.duck_bboxes:
+            # A) Enten-Kollision
+            for (x1, y1, x2, y2, t) in self.duck_bboxes:
                 if trap_poly.intersects(ShapelyBox(x1, y1, x2, y2)):
                     self.zones_status[i]["duck"] = True
                     break
@@ -474,13 +359,13 @@ class DuckAvoidanceNode:
                     rospy.loginfo("Wegen Linie in Zone 0. Rotieren")
                     self.state = "ROTATING"
                     self.rotation_reason = "line"
-                    if z0["white"]:
+                    if z0 ["white"]:
                         self.escape_direction = 1.0
                         rospy.loginfo("Rotation nach links läuft...")
                     if z0["yellow"]:
                         self.escape_direction = -1.0
                         rospy.loginfo("Rotation nach rechts läuft...")
-
+                    
             # Trigger B: Ente in Zone 1
             elif z1["duck"]:
                 if self.state != "ROTATING":
@@ -505,11 +390,11 @@ class DuckAvoidanceNode:
             # PHASE 2: MOTOR-AKTIONEN (Ausführen, was der Zustand sagt)
             # WICHTIG: Das hier sind NEUE 'if'-Blöcke, keine 'elif' mehr!
             # ==========================================================
-
+            
             if self.state == "ROTATING":
                 current_time = time.monotonic()
                 #vor und zurück setzen um Rollmoment zu überwinden
-                if current_time - self.last_wiggle_time > self.wiggle_interval:
+                if current_time - self.last_wiggle_time > 0.06:
                     self.wiggle_direction *= -1.0
                     self.last_wiggle_time = current_time
                 cmd.v = 1.0*self.wiggle_power*self.wiggle_direction
@@ -517,12 +402,12 @@ class DuckAvoidanceNode:
                 # Invertierungsschutz
                 dt = current_time - self.last_inversion_time
                 rospy.logdebug(f"Inversion check dt={dt:.3f}s, escape={self.escape_direction}")
-
+                
                 # Unterscheidung: Gibt es aktuell eine Ente im Bild?
                 # (Wir nutzen .get(), damit der Code nicht abstürzt, falls "duck" entfernt wurde)
                 duck_in_sight = z0.get("duck", False) or z1.get("duck", False) or z2.get("duck", False)
-
-                if dt > self.inversion_cooldown:
+                
+                if dt > 1.0: 
                     if duck_in_sight:
                         # ENTEN-MODUS: Wir blicken voraus (z1), um beim Umfahren nicht in die Bande zu krachen.
                         if self.escape_direction == 1.0 and z1["yellow"]:
@@ -530,7 +415,7 @@ class DuckAvoidanceNode:
                             self.escape_direction = -1.0
                             self.last_inversion_time = current_time
                         
-                        elif self.escape_direction == -1.0 and z1["white"]:
+                        elif self.escape_direction == -1.0 and z2["white"]:
                             rospy.logwarn("Rechtsdrehung wegen WEISS (z1) auf LINKS wechseln")
                             self.escape_direction = 1.0
                             self.last_inversion_time = current_time
@@ -547,7 +432,7 @@ class DuckAvoidanceNode:
                             self.escape_direction = 1.0
                             self.last_inversion_time = current_time
 
-                cmd.omega = self.escape_omega * self.escape_direction
+                cmd.omega = 1.5 * self.escape_direction
 
             elif self.state == "DRIVING":
                 # Spurkorrektur in Zone 1
@@ -571,7 +456,7 @@ class DuckAvoidanceNode:
                         else:
                             cmd.omega = -1.3  
                 else:
-                    cmd.v = 0.2
+                    cmd.v = 0.15 # tempo wenn alles frei ist
                     cmd.omega = 0.0
 
             elif self.state == "DRIVE_FORWARD_DISTANCE":
@@ -602,55 +487,46 @@ class DuckAvoidanceNode:
             if self.display_image is not None:
                 # Wir machen eine Kopie, damit wir die Polygone für den nächsten Frame nicht zerstören
                 debug_frame = self.display_image.copy()
-                debug_frame = self._draw_debug_overlay(debug_frame)
+                debug_frame = self._draw_debug_overlay(debug_frame, cmd.v, cmd.omega)
                 cv2.imshow("Duck Avoidance Challange", debug_frame)
             cv2.waitKey(1)
                 
             rate.sleep()
 
-    def _state_action_text(self):
-        # Klartext-Beschreibung der tatsaechlichen FSM-Aktion statt einer
-        # reinen Ableitung aus den rohen Motorbefehlen (cmd.v/cmd.omega) -
-        # die sagten z.B. bei jedem Wackel-Tick "fahren", ohne erkennen zu
-        # lassen, OB gerade eine Luecke gesucht, ausgewichen oder normal
-        # gefahren wird.
-        if self.state == "ROTATING":
-            reason_txt = "Ente" if self.rotation_reason == "duck" else "Linie"
-            direction_txt = "links" if self.escape_direction == 1.0 else "rechts"
-            return f"Weiche aus wegen {reason_txt} ({direction_txt})"
-
-        if self.state == "DRIVE_FORWARD_DISTANCE":
-            return "Fahre an Ente vorbei"
-
-        if self.state == "DRIVING":
-            z1, z2 = self.zones_status[1], self.zones_status[2]
-            if (z1["white"] or z1["yellow"]) and not z1["duck"]:
-                return "Spurkorrektur"
-            if z2["duck"]:
-                return "Weiche entfernter Ente aus"
-            return "Freie Fahrt"
-
-        return self.state
-
-    def _draw_debug_overlay(self, img):
-        """Zeichnet die aktuelle Aktion des Bots (aus dem FSM-Zustand) ins Debug-Bild."""
+    def _draw_debug_overlay(self, img, cmd_v, cmd_omega):
+        """Zeichnet die aktuelle Absicht des Bots ins Debug-Bild."""
         if img is None:
             return img
 
-        intent_text = self._state_action_text()
+        # 1. Text für Translation (Vor/Zurück/Stehen)
+        if abs(cmd_v) < 0.08:
+            action_v = "stehen"
+        else:
+            action_v = "fahren"
 
-        # Hintergrund-Balken für bessere Lesbarkeit
+        # 2. Text für Rotation (Geradeaus/Links/Rechts)
+        if abs(cmd_omega) < 0.1:
+            action_w = "geradeaus"
+        elif cmd_omega > 0:
+            action_w = "links"
+        else:
+            action_w = "rechts"
+
+        # 3. String zusammensetzen
+        intent_text = f"Ich wuerde gerne: {action_v} und {action_w}"
+
+        # 4. Hintergrund-Balken für bessere Lesbarkeit
         overlay = img.copy()
         cv2.rectangle(overlay, (0, img.shape[0] - 40), (img.shape[1], img.shape[0]), (0, 0, 0), -1)
-
-        # Transparenz anwenden (Alpha-Blending)
+        
+        # 5. Transparenz anwenden (Alpha-Blending)
         alpha = 0.6
         cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
 
-        # Text auf das Bild zeichnen
-        cv2.putText(img, intent_text, (10, img.shape[0] - 15),
+        # 6. Text auf das Bild zeichnen
+        cv2.putText(img, intent_text, (10, img.shape[0] - 15), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-
+        
         return img
 
     def _on_shutdown(self):
