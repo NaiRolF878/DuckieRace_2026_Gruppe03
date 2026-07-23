@@ -261,7 +261,22 @@ ganz ohne Kamera-Bestätigung.
 **Publiziert:** `/graph/current_node`, `/graph/current_edge`,
 `/graph/visited_edges`, `/graph/gate_map`, `/graph/exit_directions`,
 `/graph/allowed_directions` (einzige Quelle für `switch_control_node`s
-Kreuzungs-Erkennung, siehe dort)
+Kreuzungs-Erkennung, siehe dort), `/graph/edge_durations`
+
+**Kantenzeit-Messung (`/graph/edge_durations`):** Misst, wie lange der Bot
+tatsächlich für jede einzelne Kante braucht, damit `path_planner_node` daraus
+die wirklich *schnellste* Route berechnen kann, statt nur die mit den
+wenigsten Kreuzungen (siehe dort). Gemessen wird die Zeit zwischen dem
+Phasenübergang `Turning → Lane` (Kante beginnt, Abbiegung fertig) und
+`Lane → Stopping` (Kante beendet, nächste Kreuzung erreicht) – reine
+Geradeausfahrt-Zeit auf der Kante selbst, ohne die Turning-Manöver-Zeit an
+den Kreuzungen (die für jede Richtung ungefähr gleich lang ist und die
+Kanten daher nicht sinnvoll unterscheiden würde). Schlüssel im Ergebnis ist
+`"{Startknoten}_{Tag}"` (gleiche Konvention wie `gate_map`); wird bei jeder
+Neumessung in `mapping_node.json` (Feld `"edge_durations"`) zurückgeschrieben
+und persistiert so über Neustarts hinweg – bereits gemessene Kanten werden
+bei erneutem Befahren einfach überschrieben (kein Mittelwert über mehrere
+Durchfahrten).
 
 **Notfall-Korrektur der Tor-Zuordnung:** `gate_map` wird bei jedem neu
 entdeckten Tor automatisch nach `mapping_node.json` (Feld `"gate_map"`)
@@ -340,6 +355,21 @@ vorliegt (sonst nur eine gedrosselte Warnung im Log). `delivery_start_node`/
 neu gelesen (nicht nur der beim Node-Start gecachte Stand) – eine
 Bearbeitung von `mapping_node.json`, während der Stack schon läuft, kommt
 so noch an.
+
+**Kantengewicht = gemessene Fahrzeit statt fester "1" pro Abbiegung
+(`/graph/edge_durations`, siehe `graph_state_node`):** Dijkstra optimiert
+damit die wirklich *schnellste* Route, nicht mehr nur die mit den wenigsten
+Kreuzungen – eine Kante mit z.B. einer langen Geraden kostet mehr als eine
+kurze, auch wenn beide als "1 Abbiegung" zählen. Noch nie gemessene Kanten
+(z.B. während/kurz nach der Erkundung, bevor jede Kante schon einmal befahren
+wurde) fallen auf `DEFAULT_EDGE_SECONDS` (3.0s) zurück, damit die Planung
+auch mit unvollständigen Messwerten nutzbar bleibt. Da die Kantengewichte
+jetzt echte (fraktionale) Sekunden statt einer festen ganzzahligen "1" sind,
+verfolgt Dijkstra intern zusätzlich zur Zeit-Distanz die exakte
+**Anzahl der Kreuzungs-Schritte** (`hops`) mit – die Pfad-Rückverfolgung in
+`_route_to_gate_edge()` braucht eine exakte Schrittzahl, um über `prev`
+zurückzulaufen, und kann sich dafür nicht mehr auf die (jetzt nicht mehr
+ganzzahlige) Zeit-Distanz selbst verlassen.
 
 **Wende-Verbot gilt für JEDE Route ab der aktuellen Position, nicht nur für
 das direkte Ziel:** Der aktuelle Einfahrt-Tag darf nicht als Ausfahrt
@@ -573,6 +603,7 @@ weiter, statt anzuhalten).
 | `/graph/reload_gate_map` | Bool | debug (Button) → graph_state (Notfall-Korrektur) |
 | `/graph/reset_exploration` | Bool | debug (Button) → graph_state, explore (Erkundung wiederholen) |
 | `/graph/bot_relocated` | Bool | debug (Button "Bot versetzt") → graph_state, path_planner (Position-Reset auf delivery_start_node) |
+| `/graph/edge_durations` | String (JSON) | graph_state → path_planner (Kantengewichte für Dijkstra) |
 | `/navigation/next_direction` | String (Wort) | explore / path_planner → switch_control |
 | `/navigation/phase` | String | explore / path_planner → alle |
 | `/navigation/exploration_done` | Bool | explore → debug |
@@ -599,6 +630,7 @@ weiter, statt anzuhalten).
 | `delivery_start_node` | Startknoten für die Delivery (darf abweichen) |
 | `path_planning.mode` | `"optimal"` (Brute-Force) oder `"nearest_neighbor"` (Greedy) |
 | `path_planning.fallback` | Modus, auf den bei >10 Toren automatisch gewechselt wird |
+| `edge_durations` | Gemessene Fahrzeit je Kante (Sekunden, Schlüssel `"Knoten_Tag"`) – wird von `graph_state_node` automatisch befüllt, dient `path_planner_node` als Dijkstra-Kantengewicht statt fester `1` |
 | `debug_layout.node_positions` | Pixel-Koordinaten je Knoten, `{}` = automatisches Kreislayout |
 
 ### control_intersection_node.json

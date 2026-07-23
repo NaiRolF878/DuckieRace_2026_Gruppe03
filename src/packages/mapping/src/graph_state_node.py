@@ -69,6 +69,16 @@ class GraphStateNode:
         self._pending_edge    = None   # von _advance_graph gesetzt, wird erst beim
                                         # Turning->Lane-Wechsel zu current_edge (s.u.)
         self.visited_edges    = []     # [[node, tag], ...] normalisiert
+        # Tatsaechlich gemessene Fahrzeit je Kante (Sekunden), damit
+        # path_planner_node die wirklich kuerzeste (statt nur die mit den
+        # wenigsten Abbiegungen) Route berechnen kann - Schluessel "node_tag"
+        # (z.B. "A_1"), JSON-vertraeglich (keine Tupel-Keys). Wird bei jeder
+        # Durchfahrt neu ueberschrieben (letzte Messung zaehlt), nicht
+        # gemittelt - haelt es einfach und passt sich an, falls sich z.B. die
+        # Fahrgeschwindigkeit spaeter aendert. Vorbelegt aus mapping_node.json
+        # (Feld "edge_durations"), damit fruehere Messungen erhalten bleiben.
+        self.edge_durations   = self._load_edge_durations_from_config()
+        self._edge_start_time = None
         # {"5": {"node":.., "tag":..}, ...} - vorbelegt aus mapping_node.json
         # (Feld "gate_map"), damit ein von Hand dort eingetragener/korrigierter
         # Eintrag nicht durch eine neue Live-Erkennung ueberschrieben wird
@@ -147,6 +157,11 @@ class GraphStateNode:
             f'/{self._vehicle_name}/graph/visited_edges', String, queue_size=1)
         self.pub_gate_map = rospy.Publisher(
             f'/{self._vehicle_name}/graph/gate_map', String, queue_size=1)
+        # Gemessene Fahrzeit je Kante (Sekunden) - fuer path_planner_node,
+        # damit die Routenplanung die tatsaechlich schnellste statt nur die
+        # kantenaermste Route waehlen kann (siehe cbPhase).
+        self.pub_edge_durations = rospy.Publisher(
+            f'/{self._vehicle_name}/graph/edge_durations', String, queue_size=1)
         self.pub_exit_directions = rospy.Publisher(
             f'/{self._vehicle_name}/graph/exit_directions', String, queue_size=1)
         # Vom Graph vorhergesagte erlaubte Richtungen (aus predicted_entry_tag
@@ -237,6 +252,42 @@ class GraphStateNode:
                 json.dump(config, f, indent=2)
         except Exception as e:
             rospy.logwarn(f"[graph_state] gate_map konnte nicht gespeichert werden: {e}")
+
+    def _load_edge_durations_from_config(self):
+        # Liest NUR das edge_durations-Feld frisch von der Platte - analog zu
+        # _load_gate_map_from_config, damit graph/mapping_start_node/etc.
+        # dabei unangetastet bleiben.
+        path = self._mapping_config_path()
+        try:
+            with open(path, 'r') as f:
+                config = json.load(f)
+            raw = config.get("edge_durations", {})
+        except Exception as e:
+            rospy.logwarn(f"[graph_state] edge_durations konnte nicht geladen werden: {e}")
+            return {}
+        durations = {}
+        for key, seconds in raw.items():
+            try:
+                durations[key] = float(seconds)
+            except (TypeError, ValueError):
+                rospy.logwarn(f"[graph_state] Ungueltiger edge_durations-Eintrag "
+                              f"fuer '{key}' ignoriert: {seconds}")
+        return durations
+
+    def _save_edge_durations(self):
+        # Neu gemessene Kantenzeit in mapping_node.json zurueckschreiben,
+        # damit sie auch nach einem Neustart erhalten bleibt und mit
+        # path_planner_node (das den gesamten Bestand einmalig beim Start
+        # liest) geteilt wird.
+        path = self._mapping_config_path()
+        try:
+            with open(path, 'r') as f:
+                config = json.load(f)
+            config["edge_durations"] = self.edge_durations
+            with open(path, 'w') as f:
+                json.dump(config, f, indent=2)
+        except Exception as e:
+            rospy.logwarn(f"[graph_state] edge_durations konnte nicht gespeichert werden: {e}")
 
     def _load_tag_directions(self):
         # Gleiche Datei/gleicher Schluessel wie detect_apriltag_node._load_tag_config
@@ -354,10 +405,19 @@ class GraphStateNode:
             # -> Tor-Erkennung (cbGateId) darf ihr ab jetzt zugeordnet werden.
             self.current_edge = self._pending_edge
             self._pending_edge = None
+            # Start der Zeitmessung fuer diese Kante (siehe edge_durations).
+            self._edge_start_time = rospy.Time.now().to_sec()
         elif phase == "Stopping" and self._last_phase == "Lane":
             # Naechste Kreuzung erreicht, Bot steht: die zuletzt befahrene Kante
             # ist vorbei -> current_edge leeren, damit ein hier faelschlich
             # erkanntes Tor nicht der alten Kante zugeordnet wird.
+            if self.current_edge is not None and self._edge_start_time is not None:
+                key = f'{self.current_edge["from"]}_{self.current_edge["tag"]}'
+                duration = rospy.Time.now().to_sec() - self._edge_start_time
+                self.edge_durations[key] = duration
+                self._save_edge_durations()
+                rospy.loginfo(f"[graph_state] Kante {key} in {duration:.2f}s befahren.")
+            self._edge_start_time = None
             self.current_edge = None
         self._last_phase = phase
 
@@ -483,6 +543,7 @@ class GraphStateNode:
                 String(data=json.dumps(self.current_edge) if self.current_edge else ""))
             self.pub_visited_edges.publish(String(data=json.dumps(self.visited_edges)))
             self.pub_gate_map.publish(String(data=json.dumps(self.gate_map)))
+            self.pub_edge_durations.publish(String(data=json.dumps(self.edge_durations)))
             self.pub_exit_directions.publish(String(data=json.dumps(self._compute_exit_directions())))
             self.pub_allowed_directions.publish(
                 String(data=",".join(self._predicted_allowed_directions())))

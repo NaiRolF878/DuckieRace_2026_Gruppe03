@@ -47,6 +47,11 @@ from std_msgs.msg import String, Bool, Int32
 
 
 class PathPlannerNode:
+    # Kantengewicht (Sekunden) fuer noch nie gemessene Kanten - haelt das
+    # Verhalten nutzbar, solange edge_durations noch unvollstaendig ist
+    # (z.B. waehrend/kurz nach der Erkundung).
+    DEFAULT_EDGE_SECONDS = 3.0
+
     def __init__(self, node_name):
         rospy.init_node(node_name)
         self._vehicle_name = os.environ['VEHICLE_NAME']
@@ -63,6 +68,14 @@ class PathPlannerNode:
         self.missing_gates = []
 
         self.gate_map          = {}
+        # Gemessene Fahrzeit je Kante (Sekunden, Schluessel "node_tag" - siehe
+        # graph_state_node.cbPhase) - Dijkstra nutzt das jetzt als Kantengewicht
+        # statt einer festen "1" pro Abbiegung, damit die "kuerzeste" Route
+        # tatsaechlich die schnellste ist, nicht nur die mit den wenigsten
+        # Kreuzungen. Noch nicht gemessene Kanten fallen auf
+        # DEFAULT_EDGE_SECONDS zurueck (z.B. waehrend der Erkundung, bevor
+        # jede Kante schon einmal befahren wurde).
+        self.edge_durations    = {}
         self.current_node      = None
         self.current_edge      = None
         # Tag-Bestaetigung fuer das aktuell dran befindliche Tor (remaining[0])
@@ -116,6 +129,8 @@ class PathPlannerNode:
                          String, self.cbGateOrder, queue_size=1)
         rospy.Subscriber(f'/{self._vehicle_name}/graph/bot_relocated',
                          Bool, self.cbBotRelocated, queue_size=1)
+        rospy.Subscriber(f'/{self._vehicle_name}/graph/edge_durations',
+                         String, self.cbEdgeDurations, queue_size=1)
 
         self.pub_next_direction = rospy.Publisher(
             f'/{self._vehicle_name}/navigation/next_direction', String, queue_size=1)
@@ -151,6 +166,12 @@ class PathPlannerNode:
             self.gate_map = json.loads(msg.data) if msg.data else {}
         except (ValueError, json.JSONDecodeError):
             rospy.logwarn("[path_planner] Ungueltiges gate_map-JSON")
+
+    def cbEdgeDurations(self, msg):
+        try:
+            self.edge_durations = json.loads(msg.data) if msg.data else {}
+        except (ValueError, json.JSONDecodeError):
+            rospy.logwarn("[path_planner] Ungueltiges edge_durations-JSON")
 
     def cbCurrentNode(self, msg):
         self.current_node = msg.data
@@ -285,10 +306,22 @@ class PathPlannerNode:
 
     # ── Dijkstra (nur heapq/collections/itertools) ──────────────────────────────
 
+    def _edge_weight(self, node, tag):
+        # Gemessene Fahrzeit (siehe graph_state_node.cbPhase), oder
+        # DEFAULT_EDGE_SECONDS solange diese Kante noch nie befahren wurde
+        # (z.B. waehrend/kurz nach der Erkundung).
+        return self.edge_durations.get(f"{node}_{tag}", self.DEFAULT_EDGE_SECONDS)
+
     def _dijkstra(self, start):
-        dist = {start: 0}
+        # dist: Zeit-Distanz (Sekunden, fuer die Kantenwahl massgeblich).
+        # hops: Anzahl Kreuzungs-Schritte auf demselben kuerzesten Pfad -
+        # getrennt mitgefuehrt, weil dist jetzt nicht mehr ganzzahlig ist und
+        # die Pfadrueckverfolgung in _route_to_gate_edge eine exakte Anzahl
+        # von prev-Schritten braucht (siehe dortiger Kommentar).
+        dist = {start: 0.0}
+        hops = {start: 0}
         prev = {}
-        pq = [(0, start)]
+        pq = [(0.0, start)]
         done = set()
         while pq:
             d, node = heapq.heappop(pq)
@@ -296,33 +329,37 @@ class PathPlannerNode:
                 continue
             done.add(node)
             for tag, (neighbor, _neighbor_tag) in self.graph.get(node, {}).items():
-                nd = d + 1
+                nd = d + self._edge_weight(node, tag)
                 if nd < dist.get(neighbor, float('inf')):
                     dist[neighbor] = nd
+                    hops[neighbor] = hops[node] + 1
                     prev[neighbor] = (node, tag)
                     heapq.heappush(pq, (nd, neighbor))
-        return dist, prev
+        return dist, prev, hops
 
     def _dijkstra_from_neighbors(self, start, excluded_edges):
         # Wie _dijkstra, aber OHNE die triviale Distanz 0 fuer start selbst:
         # normales Dijkstra wuerde bei einem Ziel direkt an start immer 0
-        # (bzw. +1 fuer den letzten Schritt) liefern, selbst wenn die EINZIGE
-        # direkte Kante dorthin ausgeschlossen waere (z.B. eine Wende, fuer
-        # die es kein Wort/keine Ausfuehrung gibt, oder die Kante eines noch
-        # nicht faelligen Tors bei vorgegebener Reihenfolge). Hier zaehlt nur
-        # ein echter Umweg ueber die UEBRIGEN Ausfahrten von start.
+        # (bzw. +Kantengewicht fuer den letzten Schritt) liefern, selbst wenn
+        # die EINZIGE direkte Kante dorthin ausgeschlossen waere (z.B. eine
+        # Wende, fuer die es kein Wort/keine Ausfuehrung gibt, oder die Kante
+        # eines noch nicht faelligen Tors bei vorgegebener Reihenfolge). Hier
+        # zaehlt nur ein echter Umweg ueber die UEBRIGEN Ausfahrten von start.
         # excluded_edges: Menge von (node, tag)-Paaren, die bei der Suche
         # nie als Ausfahrt genommen werden duerfen.
         dist = {}
+        hops = {}
         prev = {}
         pq = []
         for tag, (neighbor, _neighbor_tag) in self.graph.get(start, {}).items():
             if (start, tag) in excluded_edges:
                 continue
-            if 1 < dist.get(neighbor, float('inf')):
-                dist[neighbor] = 1
+            weight = self._edge_weight(start, tag)
+            if weight < dist.get(neighbor, float('inf')):
+                dist[neighbor] = weight
+                hops[neighbor] = 1
                 prev[neighbor] = (start, tag)
-                heapq.heappush(pq, (1, neighbor))
+                heapq.heappush(pq, (weight, neighbor))
         done = set()
         while pq:
             d, node = heapq.heappop(pq)
@@ -332,12 +369,13 @@ class PathPlannerNode:
             for tag, (neighbor, _neighbor_tag) in self.graph.get(node, {}).items():
                 if (node, tag) in excluded_edges:
                     continue
-                nd = d + 1
+                nd = d + self._edge_weight(node, tag)
                 if nd < dist.get(neighbor, float('inf')):
                     dist[neighbor] = nd
+                    hops[neighbor] = hops[node] + 1
                     prev[neighbor] = (node, tag)
                     heapq.heappush(pq, (nd, neighbor))
-        return dist, prev
+        return dist, prev, hops
 
     def _gate_entry_and_exit(self, gate_id):
         entry = self.gate_map[gate_id]
@@ -416,23 +454,28 @@ class PathPlannerNode:
             if forbidden is not None:
                 excluded.add((from_node, forbidden))
 
+        final_weight = self._edge_weight(entry_node, tag)
         if from_node == entry_node and (from_node, tag) not in excluded:
-            return tag, 1
+            return tag, final_weight
         if excluded:
-            dist, prev = self._dijkstra_from_neighbors(from_node, excluded)
+            dist, prev, hops = self._dijkstra_from_neighbors(from_node, excluded)
         else:
-            dist, prev = self._dijkstra(from_node)
+            dist, prev, hops = self._dijkstra(from_node)
         if entry_node not in dist:
             return None, None
+        # Pfad ueber hops (exakte Anzahl Kreuzungs-Schritte) zurueckverfolgen,
+        # NICHT ueber dist: seit Kantengewichte echte (fraktionale) Sekunden
+        # sind statt einer festen "1" pro Abbiegung, ist dist[entry_node]
+        # keine ganzzahlige Schrittzahl mehr.
         node, path_tags = entry_node, []
-        for _ in range(dist[entry_node]):
+        for _ in range(hops[entry_node]):
             p_node, t = prev[node]
             path_tags.append(t)
             node = p_node
         if not path_tags:
             return None, None
         path_tags.reverse()
-        return path_tags[0], dist[entry_node] + 1
+        return path_tags[0], dist[entry_node] + final_weight
 
     def _gate_distance(self, from_node, gate_id):
         best = None
