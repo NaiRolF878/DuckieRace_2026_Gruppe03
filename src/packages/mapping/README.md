@@ -628,6 +628,7 @@ weiter, statt anzuhalten).
 | `graph` | Stadtgraph: `{Knoten: {Tag: [Nachbar, Nachbar-Tag]}}` |
 | `mapping_start_node` | Startknoten für die Exploration (Phase 1) |
 | `delivery_start_node` | Startknoten für die Delivery (darf abweichen) |
+| `mapping_required` | Default `true` (volle DFS-Erkundung nötig). Auf `false` setzen, wenn eine frühere Erkundung nachweislich schon alle Kanten abgedeckt hat und der Stack seitdem neu gestartet wurde (`visited_edges` lebt nur im RAM, siehe `graph_state_node`) – `visited_edges` wird dann beim Start direkt mit allen Kanten vorbelegt, `exploration_done` springt sofort auf `true`, Phase 1 entfällt komplett. Vor der nächsten echten Erkundung wieder auf `true` zurückstellen. |
 | `path_planning.mode` | `"optimal"` (Brute-Force) oder `"nearest_neighbor"` (Greedy) |
 | `path_planning.fallback` | Modus, auf den bei >10 Toren automatisch gewechselt wird |
 | `edge_durations` | Gemessene Fahrzeit je Kante (Sekunden, Schlüssel `"Knoten_Tag"`) – wird von `graph_state_node` automatisch befüllt, dient `path_planner_node` als Dijkstra-Kantengewicht statt fester `1` |

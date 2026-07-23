@@ -141,6 +141,7 @@
   },
   "mapping_start_node": "B",
   "delivery_start_node": "C",
+  "mapping_required": true,
   "mapping_start_entry_tag": 1,
   "delivery_start_entry_tag": 2,
   "gate_map": {},

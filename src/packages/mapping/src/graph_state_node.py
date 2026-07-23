@@ -68,7 +68,12 @@ class GraphStateNode:
                                         # nach abgeschlossenem Turning, siehe cbPhase)
         self._pending_edge    = None   # von _advance_graph gesetzt, wird erst beim
                                         # Turning->Lane-Wechsel zu current_edge (s.u.)
-        self.visited_edges    = []     # [[node, tag], ...] normalisiert
+        # [[node, tag], ...] normalisiert. Startet leer (volle Erkundung noetig),
+        # ausser mapping_required==False (siehe _load_map/_all_edges) - dann
+        # gilt der komplette Graph von Anfang an als befahren, weil eine
+        # vorherige Erkundung das bereits nachgewiesen hat und der Stack nur
+        # neu gestartet wurde (visited_edges selbst wird nicht persistiert).
+        self.visited_edges = [] if self.mapping_required else self._all_edges()
         # Tatsaechlich gemessene Fahrzeit je Kante (Sekunden), damit
         # path_planner_node die wirklich kuerzeste (statt nur die mit den
         # wenigsten Abbiegungen) Route berechnen kann - Schluessel "node_tag"
@@ -195,6 +200,14 @@ class GraphStateNode:
                 config.get("mapping_start_entry_tag"))
             self.delivery_start_entry_tag = self._parse_start_entry_tag(
                 config.get("delivery_start_entry_tag"))
+            # Default True = bisheriges Verhalten (visited_edges startet leer,
+            # volle DFS-Erkundung erforderlich). Auf False setzen, wenn eine
+            # vorherige Erkundung bereits nachweislich alle Kanten abgedeckt
+            # hat und der Stack zwischen Mapping und Delivery neu gestartet
+            # wurde (visited_edges lebt sonst nur im RAM, siehe __init__) -
+            # der Bot soll dann direkt zu Phase 2/3 uebergehen koennen, ohne
+            # die komplette Strecke erneut abzufahren.
+            self.mapping_required = bool(config.get("mapping_required", True))
         except Exception as e:
             rospy.logerr(f"[graph_state] mapping_node.json konnte nicht geladen werden: {e}")
             raise
@@ -493,6 +506,25 @@ class GraphStateNode:
             normalized = endpoint_a if tag_a <= tag_b else endpoint_b
         if normalized not in self.visited_edges:
             self.visited_edges.append(normalized)
+
+    def _all_edges(self):
+        # Alle Kanten des Graphen, normalisiert wie _mark_visited (gleiche
+        # Regel: kleinerer Knotenname gewinnt, bei Selbstschleifen der
+        # kleinere Tag) - fuer mapping_required==False, um visited_edges
+        # direkt vollstaendig vorzubelegen.
+        seen = set()
+        result = []
+        for node, exits in self.graph.items():
+            for tag, (neighbor, neighbor_tag) in exits.items():
+                neighbor_tag = str(neighbor_tag)
+                if node != neighbor:
+                    normalized = (node, tag) if node <= neighbor else (neighbor, neighbor_tag)
+                else:
+                    normalized = (node, tag) if tag <= neighbor_tag else (neighbor, neighbor_tag)
+                if normalized not in seen:
+                    seen.add(normalized)
+                    result.append(list(normalized))
+        return result
 
     def _advance_graph(self):
         # Effektiven (live oder vorhergesagten) Tag verwenden, NICHT nur
