@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import cv2; print\\(cv2.__version__\\)\")",
+      "Bash(\"/c/Users/Flori/AppData/Local/Programs/Python/Python314/python\" --version)",
+      "Bash(\"/c/Users/Flori/AppData/Local/Programs/Python/Python314/python\" -c \"import cv2; print\\('cv2', cv2.__version__\\)\")",
+      "Bash(\"/c/Users/Flori/AppData/Local/Programs/Python/Python314/python\" -c \"import numpy; print\\('numpy', numpy.__version__\\)\")",
+      "Bash(\"/c/Users/Flori/AppData/Local/Programs/Python/Python314/python\" -m pip install --quiet opencv-python-headless)",
+      "Bash(\"/c/Users/Flori/AppData/Local/Programs/Python/Python314/python\" src/packages/ducks/src/calibrate_bev.py duck_original.png --cols 3 --rows 6 --square-cm 3.5)",
+      "Read(//c/Users/Flori/Documents/Florian/Master/02.Semester/04_Robogistics/02_Gruppenарбeit/**)",
+      "Bash(\"/c/Users/Flori/AppData/Local/Programs/Python/Python314/python\" src/packages/ducks/src/calibrate_bev.py duck_original.png --cols 6 --rows 3 --square-cm 3.5)",
+      "Bash(\"/c/Users/Flori/AppData/Local/Programs/Python/Python314/python\" -)",
+      "Bash(\"/c/Users/Flori/AppData/Local/Programs/Python/Python314/python\" src/packages/ducks/src/calibrate_bev.py duck_original.png --cols 4 --rows 6 --square-cm 3.5)",
+      "Bash(\"/c/Users/Flori/AppData/Local/Programs/Python/Python314/python\" src/packages/ducks/src/calibrate_bev.py duck_original.png --cols 4 --rows 6 --square-cm 3.5 --flip-y)"
+    ]
+  }
+}

@@ -21,7 +21,7 @@ ducks/
 ├── src/
 │   ├── detect_lane_node.py        # Kamera: BEV, weiße Linie, Zonen, Enten
 │   ├── control_lane_node.py       # PID-Spurregelung + Haltelinien-Automat
-│   ├── control_obstacle_node.py   # Ausweich-Zustandsautomat (6 Zustände)
+│   ├── control_obstacle_node.py   # Ausweich-Zustandsautomat (3 Zustände)
 │   ├── switch_control_node.py     # Umschaltung Lane ↔ Obstacle
 │   ├── camera_dashboard_node.py   # Debug-Visualisierung (2×2-Dashboard)
 │   ├── configuration_node.py      # Live-Parameter-GUI (tkinter)
@@ -83,52 +83,57 @@ Klebereste auf der Fahrbahn fallen automatisch raus, da sie nicht in den Farbber
 
 ### Ausweichen (`control_obstacle_node.py`)
 
-Enthält den **6-Zustands-Automaten**. Die drei Zonen (nah/mittel/fern) lösen
-bewusst **unterschiedliche** Reaktionen aus, statt wie früher alle gleich zu
-behandeln:
+Enthält den **3-Zustands-Automaten** (vereinfacht ggü. einer früheren
+6-Zustands-Version – siehe Kopfkommentar der Datei für die Begründung). Die
+drei Zonen (nah/mittel/fern) lösen weiterhin **unterschiedliche** Reaktionen aus:
 - **fern:** nur Beobachtung, kein Eingriff. Erkennung auf große Distanz ist
   weniger zuverlässig, und da der Korridor genau der Bot-Breite entspricht,
   gibt es ohnehin kein "sanftes" Teil-Ausweichen – jede Reaktion müsste
   praktisch dieselbe Stärke haben wie in der mittel-Zone, nur früher
   ausgelöst auf Basis unsichererer Daten.
-- **mittel:** normales Ausweichen (EVADE, PID-Offset).
+- **mittel:** kontinuierlicher PID-Offset – **kein eigener Zustand**, wird
+  bei jedem Tick neu berechnet, solange die Zone belegt ist.
 - **nah:** Notfall (EMERGENCY) – umgeht die PID komplett, feste Drehrate.
 
 ```
-                Zone nah         Zone mittel          NAH-Zone frei
-IDLE ────┬───────belegt───────► EMERGENCY ──────────────┐
-         │                                               │
-         └───────belegt───────► EVADE ──────────► PASS ◄─┘
-                                   │                 │  ↑
-                                Timeout        frei / Timeout
-                                   ▼                 │
-                                 WAIT (v=0) ──────────┘
-                                                       │
-                                                  Nachlauf ab
-                                                       ▼
-                                                    RETURN ──fertig──► IDLE
+                    Zone nah                NAH-Zone frei /
+IDLE ────────────────belegt────────► EMERGENCY ──Timeout────► RETURN ──fertig──► IDLE
+ (Zone mittel: kontinuierlicher                                  │
+  PID-Offset, kein Zustandswechsel)                    NAH-Zone wieder belegt
+                                                                  │
+                                                                  ▼
+                                                              EMERGENCY
 ```
 
-- **IDLE:** Normalbetrieb, kein Eingriff
+- **IDLE:** Normalbetrieb. Ist die mittel-Zone belegt, fließt trotzdem bei
+  jedem Tick ein frisch berechneter Ausweich-Offset ein (siehe unten) – ohne
+  Timeout, ohne Nachlauf, ohne Rückkehr-Logik, weil der Offset automatisch
+  auf 0 zurückfällt, sobald die Zone wieder frei ist.
 - **EMERGENCY:** nah-Zone – feste Drehrate (`emergency_omega_rad`) + Wiggle
   (v kippt im `wiggle_interval_secs`-Takt das Vorzeichen, gegen Standreibung
-  beim Drehen auf der Stelle), umgeht die PID komplett; `emergency_timeout_secs`
-  als Failsafe → WAIT, falls die nah-Zone nie stabil frei wird
-- **EVADE:** Ausweich-Offset aktiv, Encoder-Ticks werden akkumuliert
-- **WAIT:** Bot stoppt vollständig (Korridor blockiert, Stufe 6); Timeout erzwingt Weiterfahrt
-- **PASS:** Offset bleibt aktiv (Nachlauf), Ticks akkumulieren weiter
-- **RETURN:** Offset = 0, Encoder+Kamera-basierte Rückkehr (Stufe 5), zusätzlich
-  ein hartes `return_timeout_secs`-Failsafe gegen endloses Drehen
+  beim Drehen auf der Stelle), umgeht die PID komplett. Verlässt den Zustand,
+  sobald die nah-Zone `free_stable_frames` lang stabil frei ist, oder nach
+  `emergency_timeout_secs` als Failsafe.
+- **RETURN:** kurze, feste Geradeausfahrt (`return_forward_secs` bei
+  `return_forward_speed`), ebenfalls per PID-Bypass – löst den Bot physisch
+  vom Hindernis, bevor wieder normal gelenkt wird. Danach zurück zu IDLE.
 
-Die Node sendet **keine Fahrbefehle direkt** (außer im Notfall), sondern
+Gestrichen ggü. der früheren Version: der WAIT-Zustand (reiner
+Timeout-Fallback) und das Encoder-Rückkehr-Tracking (Ticks liefen während des
+Drehens auf der Stelle mit ein, obwohl Drehen kaum Vorwärtsbewegung erzeugt –
+das Rückkehr-Ziel war dadurch kein verlässliches Maß für die tatsächliche
+seitliche Auslenkung). RETURN nutzt stattdessen dieselbe feste, kurze
+Geradeausfahrt wie bei `avoid_ducks`' `DRIVE_FORWARD_DISTANCE`.
+
+Die Node sendet **keine Fahrbefehle direkt** (außer im PID-Bypass), sondern
 publiziert Steuersignale:
 - `error_offset` – verschiebt die wahrgenommene Spurmitte → PID lenkt automatisch
-- `return_omega` – überschreibt PID-omega während Encoder-Rückkehr
-- `stop` – setzt v=0 im WAIT-Zustand
-- `emergency_active` / `emergency_cmd` – im EMERGENCY-Zustand übernimmt
+- `emergency_active` / `emergency_cmd` – in EMERGENCY **und** RETURN übernimmt
   `control_lane_node` `emergency_cmd` (v+omega) 1:1, PID greift nicht ein
 
-**Ausweichrichtung + -stärke** wird beim Eintritt in EMERGENCY/EVADE einmalig eingefroren:
+**Ausweichrichtung + -stärke** wird bei **jedem Tick neu** berechnet (nicht
+mehr beim Zustandseintritt eingefroren) – reagiert dadurch auch während eines
+laufenden Manövers auf eine sich verändernde Lücke:
 - Primär aus `/detect/corridor_occupancy` (Lückenprofil über den Fahrkorridor,
   der genau der Bot-Breite entspricht): gewählt wird die Seite mit dem
   **größeren freien Abstand vom Korridorrand bis zum nächsten Hindernis**
@@ -149,22 +154,23 @@ publiziert Steuersignale:
 **Einzige Node**, die den Fahrbefehl an den Bot sendet. Priorität:
 
 ```
-1. emergency_active = True   →  v/omega = emergency_cmd  (NOTFALL, umgeht PID)
-2. obstacle/stop = True      →  v=0, omega=0             (WAIT-Zustand)
-3. Rote Haltelinie erkannt   →  v=0, omega=0             (Haltelinien-Automat)
-4. return_omega ≠ 0          →  v=PID, omega=return_omega (Encoder-Rückkehr)
-5. Normalbetrieb             →  v=PID, omega=PID
+1. emergency_active = True   →  v/omega = emergency_cmd  (NOTFALL + RÜCKKEHR, umgeht PID)
+2. Rote Haltelinie erkannt   →  v=0, omega=0             (Haltelinien-Automat)
+3. Normalbetrieb             →  v=PID (inkl. error_offset), omega=PID
 ```
 
 ### Umschaltung (`switch_control_node.py`)
 
-| Übergang | Auslöser |
-|----------|----------|
-| Lane → Obstacle | Zone **nah** oder **mittel** belegt (`/detect/zones`) |
-| Obstacle → Lane | Ausweichen abgeschlossen (`/obstacle/done`) |
+Seit der Vereinfachung von `control_obstacle_node.py` (kontinuierlicher
+Mittel-Zonen-Offset statt eigenem EVADE-Zustand, siehe oben) hört
+`control_obstacle_node` nicht mehr auf `/enable/obstacle` – die Node
+berechnet ihren Offset immer selbstständig, gesteuert nur noch über
+`evade.active` in der Config. `switch_control_node.py` läuft unverändert
+weiter (schadet nicht), sein `/enable/obstacle`-Publish hat aber aktuell
+keinen Abonnenten mehr.
 
-`/enable/lane` bleibt auch im Obstacle-Modus **immer aktiv**, weil
-`control_lane_node` die eigentliche Fahrt (inkl. addiertem Offset) ausführt.
+`/enable/lane` bleibt **immer aktiv**, weil `control_lane_node` die
+eigentliche Fahrt (inkl. addiertem Offset bzw. PID-Bypass) ausführt.
 
 ---
 
@@ -180,12 +186,12 @@ Alle Topics mit Prefix `/tick/` (Bot-Name).
 | `/tick/detect/zones` | `Float32MultiArray` | detect_lane → control_obstacle, switch_control |
 | `/tick/detect/corridor_occupancy` | `Float32MultiArray` | detect_lane → control_obstacle |
 | `/tick/obstacle/error_offset` | `Float64` | control_obstacle → control_lane |
-| `/tick/obstacle/return_omega` | `Float64` | control_obstacle → control_lane |
-| `/tick/obstacle/stop` | `Bool` | control_obstacle → control_lane |
 | `/tick/obstacle/done` | `Bool` | control_obstacle → switch_control |
-| `/tick/obstacle/state` | `String` | control_obstacle → detect_lane, camera_dashboard (Debug-Overlay: Idle/Evade/Wait/Pass/Return) |
+| `/tick/obstacle/state` | `String` | control_obstacle → detect_lane, camera_dashboard (Debug-Overlay: Idle/Emergency/Return) |
+| `/tick/obstacle/emergency_active` | `Bool` | control_obstacle → control_lane (PID-Bypass, EMERGENCY **und** RETURN) |
+| `/tick/obstacle/emergency_cmd` | `Twist2DStamped` | control_obstacle → control_lane (v/omega bei aktivem Bypass) |
 | `/tick/enable/lane` | `Bool` | switch_control → control_lane |
-| `/tick/enable/obstacle` | `Bool` | switch_control → control_obstacle |
+| `/tick/enable/obstacle` | `Bool` | switch_control → *(kein Abonnent mehr – control_obstacle_node läuft seit der Vereinfachung selbstständig, gesteuert nur noch über `evade.active` in der Config)* |
 | `/tick/car_cmd_switch_node/cmd` | `Twist2DStamped` | control_lane → Bot |
 
 Debug-Bilder (`CompressedImage`): `/tick/debug/original`, `/tick/debug/annotated`,
@@ -219,26 +225,23 @@ Wichtige Stellschrauben:
   Linie begrenzt wird (Standard: 20 px)
 
 **`control_obstacle_node.json`**
-- `evade.evade_offset` – maximale Stärke des Ausweich-Offsets, nur ein schmaler
-  Rest des Korridors frei (Standard: 0.6)
+- `evade.active` – Gesamte Ausweichlogik ein (1) / aus (0)
+- `evade.evade_offset` – maximale Stärke des kontinuierlichen Ausweich-Offsets
+  (mittel-Zone), nur ein schmaler Rest des Korridors frei (Standard: 0.6)
 - `evade.evade_offset_min` – minimale Stärke, fast der ganze Korridor frei
   (Standard: 0.25)
-- `evade.nachlauf_secs` – Nachlauf nach letzter Objekt-Sichtung (Standard: 1.5 s)
-- `evade.return_omega` – Drehrate bei Encoder-Rückkehr (Standard: 0.5 rad/s)
-- `evade.evade_timeout_secs` – Max. Zeit im EVADE bevor WAIT (Standard: 5.0 s)
-- `evade.wait_timeout_secs` – Max. Wartezeit im WAIT (Standard: 3.0 s)
-- `evade.free_stable_frames` – wie viele Frames der Korridor **hintereinander** frei
-  sein muss, bevor EMERGENCY/EVADE/WAIT wirklich verlassen wird (Standard: 5, gegen Flackern)
-- `evade.active` – Gesamte Ausweichlogik ein (1) / aus (0)
-- `evade.return_timeout_secs` – hartes Zeitlimit für RETURN, falls weder Kamera
-  noch Encoder je "fertig" melden (Failsafe gegen endloses Drehen, Standard: 5.0 s)
+- `evade.free_stable_frames` – wie viele Frames die nah-Zone **hintereinander**
+  frei sein muss, bevor EMERGENCY wirklich verlassen wird (Standard: 5, gegen Flackern)
 - `evade.emergency_omega_rad` – feste Drehrate im NOTFALL (nah-Zone), umgeht die
   PID (Standard: 1.6 rad/s)
 - `evade.emergency_timeout_secs` – hartes Zeitlimit für NOTFALL, falls die
-  nah-Zone nie stabil frei wird (Failsafe → WAIT, Standard: 5.0 s)
+  nah-Zone nie stabil frei wird (Failsafe → RETURN, Standard: 5.0 s)
 - `evade.wiggle_interval_secs` – wie oft `v` im NOTFALL das Vorzeichen wechselt,
   gegen Standreibung beim Drehen auf der Stelle (Standard: 0.06 s)
 - `evade.wiggle_power` – Stärke des Wiggle-Ausschlags (Standard: 0.07)
+- `evade.return_forward_secs` – Dauer der festen Geradeausfahrt in RETURN, um
+  sich physisch vom Hindernis zu lösen (Standard: 1.0 s)
+- `evade.return_forward_speed` – Geschwindigkeit während RETURN (Standard: 0.15 m/s)
 
 **`control_lane_node.json`**
 - `pid.p / i / d` – PID-Faktoren für Spurfolgen
@@ -272,10 +275,11 @@ Wichtige Stellschrauben:
 5. **Ausweichstärke einstellen.** `evade_offset` bestimmt, wie weit der Bot
    ausweicht. Zu niedrig → streift Ente; zu hoch → verlässt Fahrbahn.
 
-6. **Entprellung einstellen.** `free_stable_frames` so wählen, dass der Zustand
-   nicht bei kurzem Flackern der Farberkennung sofort wieder verlässt (Standard 5
-   Frames ≈ 0,5 s bei 10 Hz); euer `Zustand:`-Overlay im `duck_bev`-Bild bzw. im
-   Dashboard zeigt live, ob EVADE stabil bleibt.
+6. **Entprellung einstellen.** `free_stable_frames` so wählen, dass EMERGENCY
+   nicht bei kurzem Flackern der Farberkennung in der nah-Zone sofort wieder
+   verlassen wird (Standard 5 Frames ≈ 0,5 s bei 10 Hz); euer `Zustand:`-Overlay
+   im `duck_bev`-Bild bzw. im Dashboard zeigt live, ob EMERGENCY stabil bleibt.
 
-7. **Rückkehr einstellen.** `return_omega` und `return_threshold` so wählen,
-   dass der Bot nach dem Manöver sauber zurück auf die weiße Linie findet.
+7. **Rückkehr einstellen.** `return_forward_secs`/`return_forward_speed` so
+   wählen, dass der Bot nach dem Notfall-Manöver das Hindernis sicher hinter
+   sich lässt, bevor die normale PID-Spurführung wieder übernimmt.

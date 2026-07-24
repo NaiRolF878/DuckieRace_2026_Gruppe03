@@ -3,21 +3,16 @@
     "parameters": {
         "default": {
             "evade": {
-                "active":               { "default": 1,    "min": 0,   "max": 1    },
-                "evade_offset":         { "default": 0.6,  "min": 0.0, "max": 2.0  },
-                "evade_offset_min":     { "default": 0.25, "min": 0.0, "max": 2.0  },
-                "nachlauf_secs":        { "default": 1.5,  "min": 0.0, "max": 10.0 },
-                "evade_timeout_secs":   { "default": 5.0,  "min": 1.0, "max": 30.0 },
-                "return_threshold":     { "default": 0.25, "min": 0.0, "max": 1.0  },
-                "return_stable_frames": { "default": 5,    "min": 1,   "max": 30   },
-                "return_omega":         { "default": 0.5,  "min": 0.0, "max": 3.0  },
-                "wait_timeout_secs":    { "default": 3.0,  "min": 0.5, "max": 15.0 },
-                "free_stable_frames":   { "default": 5,    "min": 1,   "max": 30   },
-                "return_timeout_secs":  { "default": 5.0,  "min": 1.0, "max": 30.0 },
+                "active":                { "default": 1,    "min": 0,   "max": 1    },
+                "evade_offset":          { "default": 0.6,  "min": 0.0, "max": 2.0  },
+                "evade_offset_min":      { "default": 0.25, "min": 0.0, "max": 2.0  },
+                "free_stable_frames":    { "default": 5,    "min": 1,   "max": 30   },
                 "emergency_omega_rad":   { "default": 1.6,  "min": 0.0, "max": 5.0  },
                 "emergency_timeout_secs": { "default": 5.0, "min": 1.0, "max": 30.0 },
                 "wiggle_interval_secs":  { "default": 0.06, "min": 0.0, "max": 1.0  },
-                "wiggle_power":          { "default": 0.07, "min": 0.0, "max": 1.0  }
+                "wiggle_power":          { "default": 0.07, "min": 0.0, "max": 1.0  },
+                "return_forward_secs":   { "default": 1.0,  "min": 0.0, "max": 5.0  },
+                "return_forward_speed":  { "default": 0.15, "min": 0.0, "max": 1.0  }
             }
         }
     }

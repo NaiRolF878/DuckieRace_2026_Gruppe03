@@ -5,14 +5,16 @@
 #
 # Challenge 1 (Lane Following + rote Haltelinie) als Basis.
 # Challenge-3-Erweiterung: additiver Ausweich-Offset von control_obstacle_node
-# (Stufe 4b, mittel-Zone), sowie ein kompletter PID-Bypass im NOTFALL
-# (Stufe 4a, nah-Zone: /obstacle/emergency_active + /obstacle/emergency_cmd,
-# hoechste Prioritaet in run()).
+# (mittel-Zone, kontinuierlich), sowie ein kompletter PID-Bypass, den
+# control_obstacle_node fuer BEIDE Faelle nutzt, in denen die PID nicht
+# geeignet waere - Notfall-Drehung (nah-Zone) und die anschliessende kurze
+# Rueckkehr-Geradeausfahrt (/obstacle/emergency_active + /obstacle/
+# emergency_cmd, hoechste Prioritaet in run()).
 #
 # Diese Node bleibt die EINZIGE Stelle, die PID rechnet, Geschwindigkeit
 # reduziert und den Haltelinien-Automaten hält. control_obstacle_node liefert
-# nur /obstacle/error_offset, der hier zum Spurfehler addiert wird (bzw. im
-# Notfall v/omega direkt vorgibt).
+# nur /obstacle/error_offset, der hier zum Spurfehler addiert wird (bzw. per
+# emergency_active/emergency_cmd v/omega direkt vorgibt).
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
@@ -60,20 +62,13 @@ class ControlLaneNode:
             stop_line_topic, Bool, self.cbStopLine, queue_size=1)
 
         # Challenge 3: additiver Ausweich-Offset von control_obstacle_node
+        # (kontinuierlich, mittel-Zone)
         self.error_offset  = 0.0
-        self.return_omega  = 0.0    # Stufe 5: Encoder-Rückkehr überschreibt PID-omega
-        self.obstacle_stop = False  # Stufe 6: WAIT-Zustand → v=0
         self.sub_error_offset = rospy.Subscriber(
             f'/{self._vehicle_name}/obstacle/error_offset',
             Float64, self.cbErrorOffset, queue_size=1)
-        self.sub_return_omega = rospy.Subscriber(
-            f'/{self._vehicle_name}/obstacle/return_omega',
-            Float64, self.cbReturnOmega, queue_size=1)
-        self.sub_obstacle_stop = rospy.Subscriber(
-            f'/{self._vehicle_name}/obstacle/stop',
-            Bool, self.cbObstacleStop, queue_size=1)
 
-        # Stufe 4a: NOTFALL (nah-Zone) - control_obstacle_node uebernimmt
+        # NOTFALL + RÜCKKEHR (nah-Zone) - control_obstacle_node uebernimmt
         # v/omega komplett, PID wird dabei ignoriert (siehe run()).
         self.emergency_active = False
         self.emergency_cmd    = Twist2DStamped()
@@ -111,12 +106,6 @@ class ControlLaneNode:
 
     def cbErrorOffset(self, msg):
         self.error_offset = msg.data
-
-    def cbReturnOmega(self, msg):
-        self.return_omega = msg.data
-
-    def cbObstacleStop(self, msg):
-        self.obstacle_stop = msg.data
 
     def cbEmergencyActive(self, msg):
         self.emergency_active = msg.data
@@ -184,17 +173,12 @@ class ControlLaneNode:
                 twist = Twist2DStamped()
                 twist.header.stamp = rospy.Time.now()
 
-                # Stufe 4a: NOTFALL – control_obstacle_node uebernimmt v/omega
-                # komplett (Wiggle + feste Drehrate), PID wird hier ignoriert.
-                # Hoechste Prioritaet, auch vor der roten Haltelinie.
+                # NOTFALL + RÜCKKEHR – control_obstacle_node uebernimmt v/omega
+                # komplett (Wiggle+Drehung bzw. feste Geradeausfahrt), PID wird
+                # hier ignoriert. Hoechste Prioritaet, auch vor der roten Haltelinie.
                 if self.emergency_active:
                     twist.v     = self.emergency_cmd.v
                     twist.omega = self.emergency_cmd.omega
-
-                # Stufe 6: WAIT-Signal von control_obstacle_node → vollständiger Stopp
-                elif self.obstacle_stop:
-                    twist.v     = 0.0
-                    twist.omega = 0.0
 
                 elif self.stop_state == StopState.Stopping:
                     elapsed = (rospy.Time.now() - self.stop_start_time).to_sec()
@@ -207,8 +191,7 @@ class ControlLaneNode:
                         self.stop_start_time = rospy.Time.now()
                         self.integral        = 0
                         twist.v     = self.v
-                        # Stufe 5: Encoder-Rückkehr überschreibt PID-omega
-                        twist.omega = self.return_omega if self.return_omega != 0.0 else self.a
+                        twist.omega = self.a
 
                 elif self.stop_state == StopState.Cooldown:
                     elapsed = (rospy.Time.now() - self.stop_start_time).to_sec()
@@ -216,12 +199,11 @@ class ControlLaneNode:
                         rospy.loginfo("Cooldown beendet – Haltelinien-Erkennung wieder aktiv.")
                         self.stop_state = StopState.Driving
                     twist.v     = self.v
-                    twist.omega = self.return_omega if self.return_omega != 0.0 else self.a
+                    twist.omega = self.a
 
                 else:
                     twist.v     = self.v
-                    # Stufe 5: Encoder-Rückkehr überschreibt PID-omega (nur im RETURN-Zustand aktiv)
-                    twist.omega = self.return_omega if self.return_omega != 0.0 else self.a
+                    twist.omega = self.a
 
                 self.pub_cmd_vel.publish(twist)
 
