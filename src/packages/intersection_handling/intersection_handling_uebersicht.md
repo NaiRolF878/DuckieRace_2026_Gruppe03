@@ -1,6 +1,6 @@
 # Challenge 2 – Intersection Handling: Architektur-Übersicht
 
-Kurzfassung für die Präsentation. Erklärt, welche Node was tut, was sie
+Erklärt, welche Node was tut, was sie
 rausgibt, und wo welche Entscheidung getroffen wird.
 
 ---

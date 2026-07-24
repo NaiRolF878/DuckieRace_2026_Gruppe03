@@ -57,8 +57,9 @@ class CameraDashboardNode:
         self._enable_obstacle     = False
         self._chosen_direction    = '-'      # gewuerfelte Abbiegerichtung (FSM)
         self._phase               = 'Lane'   # aktuelle FSM-Phase
-        # Haltelinien-Detektionszone: untere 15% des Bildes (identisch zu detect_lane_node default)
-        self.red_detection_zone   = 0.65  # entspricht grob h*0.65 im Originalbild
+        # Haltelinien-Detektionszone fürs Zeichnen der ROI-Box – Fallback-Wert,
+        # identisch zum aktuellen detect_lane_node-Default (siehe detect_lane_node.json)
+        self.red_detection_zone   = 0.95
 
         # ── Bild-Subscriber ───────────────────────────────────────────────────
         rospy.Subscriber(f'/{self._vehicle_name}/debug/original',
@@ -212,8 +213,8 @@ class CameraDashboardNode:
 
         # ── 3. Rote Haltelinie: Bounding-Box am unteren Bildrand ─────────────
         if self._stop_line:
-            # Roter Kasten über die volle Breite im unteren Drittel des Originalbilds
-            box_top = int(h * self.red_detection_zone) if hasattr(self, 'red_detection_zone') else int(h * 0.65)
+            # Roter Kasten über die volle Breite im unteren Bildbereich (red_detection_zone)
+            box_top = int(h * self.red_detection_zone)
             cv2.rectangle(annotated, (0, box_top), (w - 1, h - 1), (0, 0, 255), 3)
             label_y = box_top - 6 if box_top > 20 else box_top + 18
             cv2.rectangle(annotated, (0, label_y - 18), (170, label_y + 4), (0, 0, 0), -1)

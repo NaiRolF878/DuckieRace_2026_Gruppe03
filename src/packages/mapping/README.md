@@ -34,7 +34,6 @@ Graph-/Pfadplanungs-Logik vorgegeben.
 - [Nodes](#nodes)
 - [Topics](#topics)
 - [Konfigurationsparameter](#konfigurationsparameter)
-- [Setup & Starten](#setup--starten)
 - [Vor dem Challenge-Tag](#vor-dem-challenge-tag)
 - [Bekannte Einschränkungen](#bekannte-einschränkungen)
 
@@ -54,10 +53,10 @@ Graph-/Pfadplanungs-Logik vorgegeben.
 | `path_planner_node.py` | Node | **Neu.** Phase 2+3: Dijkstra + TSP-Planung, fährt die Tore ab |
 | `debug_graph_node.py` | Node | **Neu.** tkinter-Dashboard: Karte, Bot-Position, Delivery-Pfad, Start-Button |
 | `configuration_node.py` | Node | Live-Kalibrierungs-GUI (überspringt jetzt Configs ohne `parameters`-Block) |
-| `camera_dashboard_node.py` | Node | Kamera-Debug-Dashboard (unverändert) |
-| `util.py` | Hilfsfunktionen | Parameter laden, default+Bot mergen, live updaten |
+| `camera_dashboard_node.py` | Node | Kamera-Debug-Dashboard, um Tor-Tag-Statuszeile (`/detect/gate/id`) erweitert |
+| `util.py` | Hilfsfunktionen | Parameter laden, live updaten – kein Bot-spezifisches Merging mehr, alle Bots teilen sich den `default`-Block |
 | `config/mapping_node.json` | Config | **Neu.** Graph, Start-Knoten, Layout, Planungsmodus |
-| `config/*.json` | Config | je Node ein Parameter-Satz (nur `default` + `track`) |
+| `config/*.json` | Config | je Node ein Parameter-Satz (nur `default`, keine Bot-spezifischen Blöcke mehr) |
 
 ---
 
@@ -492,9 +491,6 @@ neben der json-Datei ab.
 ### detect_lane_node / control_lane_node (Neuaufbau)
 Ersetzt die Challenge-2-Implementierung, weil die Spurführung auf dieser
 Strecke unzuverlässig war (Spur verloren, unerklärliches Stehenbleiben) –
-neu aufgebaut nach dem Vorbild eines anderen Teams. Übernommen wurde bewusst
-**nur** die Wahrnehmungs-/Regelungs-Ebene, nicht deren Navigationskonzept
-(dort ein vorab berechneter Plan statt Live-Graph-Verfolgung) –
 `graph_state_node`, `explore_control_node`, `path_planner_node`,
 `control_intersection_node` und `switch_control_node` bleiben unverändert,
 die Topic-Schnittstellen (`/detect/lane`, `/detect/stop_line`, `/enable/lane`)
@@ -519,9 +515,9 @@ ebenfalls.
 
 ### detect_apriltag_node (Erweiterung)
 Zusätzlich zur unveränderten Kreuzungs-Tag-Logik (1–4) wird jeder erkannte
-Tag im Bereich 5–13 als Tor-Tag ausgewertet (nur Mindestflächen-Filter, keine
-Positions-/Stabilitäts-Filterung wie bei den Kreuzungs-Tags, da Tore an
-beliebiger Stelle im Bild auftauchen können).
+Tag im Bereich 5–13 als Tor-Tag ausgewertet (Mindestflächen- **und**
+Stabilitäts-Filter wie bei den Kreuzungs-Tags, aber **keine** Positions-
+Filterung, da Tore an beliebiger Stelle im Bild auftauchen können).
 
 **Hamming-Filter (`tag.hamming == 0`):** akzeptiert nur exakt dekodierte Tags,
 für Kreuzungs- **und** Tor-Tags. Ein Tag, der nur mit Bitfehler-Korrektur
@@ -674,31 +670,6 @@ weiter, statt anzuhalten).
 | `white.*` / `yellow.*` | HSV-Schwellen der beiden Linienfarben |
 | `red1.*` / `red2.*` | HSV-Schwellen für Rot (Haltelinie, liegt an zwei Stellen des Hue-Kreises) |
 | `detection.thresh` | Rot-Pixel-Schwellwert in der ROI, ab dem die Haltelinie als erkannt gilt |
-
----
-
-## Setup & Starten
-
-```bash
-source /opt/ros/noetic/setup.bash
-source devel/setup.bash
-export ROS_MASTER_URI=http://track.local:11311
-export VEHICLE_NAME=track
-
-# Alles über den Launcher starten (empfohlen):
-launchers/mapping.sh
-
-# Oder einzeln (je ein Terminal):
-rosrun mapping detect_lane_node.py
-rosrun mapping detect_apriltag_node.py
-rosrun mapping graph_state_node.py
-rosrun mapping switch_control_node.py
-rosrun mapping explore_control_node.py
-rosrun mapping path_planner_node.py
-rosrun mapping control_lane_node.py
-rosrun mapping control_intersection_node.py
-rosrun mapping debug_graph_node.py
-```
 
 ---
 

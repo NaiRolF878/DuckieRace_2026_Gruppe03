@@ -64,9 +64,8 @@ def init_parameters(node_name, callback_update_parameters):
     with open(path, 'r') as f:
         config = json.load(f)
 
-    # Bug-Fix: callback_update_parameters wurde im Original immer aufgerufen,
-    # auch wenn die Message für eine andere Node bestimmt war.
-    # Korrigiert: Callback nur aufrufen wenn msg['node'] == node_name.
+    # Nur aufrufen, wenn die Nachricht für DIESE Node bestimmt ist – sonst
+    # würde jede Node auf jedes Parameter-Update jeder anderen Node reagieren.
     def callback_wrapper(msg):
         data = json.loads(msg.data)
         if data['node'] == node_name:

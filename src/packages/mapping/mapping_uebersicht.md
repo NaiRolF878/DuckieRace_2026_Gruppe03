@@ -1,6 +1,6 @@
 # Challenge 4 – Mapping & Path Finding: Architektur-Übersicht
 
-Kurzfassung für die Präsentation. Erklärt, welche Node was tut, was sie
+Erklärt, welche Node was tut, was sie
 rausgibt, und wo welche Entscheidung getroffen wird.
 
 ---
@@ -168,7 +168,7 @@ publiziert nur den Start-Delivery-Knopfdruck zurueck.
 
 ---
 
-## Die wichtigsten Design-Entscheidungen (gut für Nachfragen)
+## Die wichtigsten Design-Entscheidungen
 
 **Warum eine eigene Node nur fürs Graph-Gedächtnis?**
 Damit `explore_control_node` und `path_planner_node` (die zwei "Phasen-Gehirne")

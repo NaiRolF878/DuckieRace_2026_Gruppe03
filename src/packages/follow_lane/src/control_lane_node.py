@@ -57,7 +57,7 @@ class ControlLaneNode:
         self.v = 0               # Geschwindigkeit
         self.a = 0               # Winkelgeschwindigkeit (Lenkung)
 
-        # NEU: Zustandsvariablen für die Haltelinien-Logik
+        # Zustandsvariablen für die Haltelinien-Logik
         # Drei Zustände: StopState.Driving, StopState.Stopping, StopState.Cooldown
         self.stop_state      = StopState.Driving
         self.STOP_DURATION     = 3.0  # Startwert – wird durch cbUpdateParameters aus JSON überschrieben
@@ -93,7 +93,6 @@ class ControlLaneNode:
         self.STOP_DURATION     = parameters["stop_line"]["stop_duration"]["default"]
         self.COOLDOWN_DURATION = parameters["stop_line"]["cooldown_duration"]["default"]
 
-    # NEU: Callback für rote Haltelinie
     def cbStopLine(self, msg):
         # Im Cooldown-Modus: erneutes Erkennen ignorieren
         if self.stop_state == StopState.Cooldown:

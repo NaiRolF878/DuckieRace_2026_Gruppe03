@@ -12,6 +12,7 @@ from geometry_msgs.msg import Polygon as RosPolygon
 from duckietown_msgs.msg import Twist2DStamped, WheelEncoderStamped
 import time
 from collections import deque
+import util
 
 
 class DuckAvoidanceNode:
@@ -42,7 +43,7 @@ class DuckAvoidanceNode:
         self.hsv_limits = {}
         self._load_hsv_config()
         self.pixel_threshold_white = 150 # Ab wann gilt ein Trapez als durch Linien blockiert?
-        self.pixel_threshold_yellow = 300
+        self.pixel_threshold_yellow = 800
         # --- ODOMETRIE ---
         self.theta = 0.0
         self.ticks_left = None
@@ -64,17 +65,24 @@ class DuckAvoidanceNode:
         self.zones_status = [{"white": False, "yellow": False, "duck": False} for _ in range(3)] # Status für Zone 1, 2, 3
         self.duck_bboxes = [] # Eingehende Enten [(x1,y1,x2,y2), ...]
         self.display_image = None
-        self.buffer_size = 9 #17
+        self.buffer_size = 9
         # Puffer exklusiv für Zone 2
         self.z2_yellow_history = deque(maxlen=self.buffer_size)
         self.wiggle_direction = -1.0
         self.last_wiggle_time = time.monotonic()
-        self.wiggle_power = 0.08 #0.66 # mit 0.8 ist der wiggel sichtbar und effektiv, aber es ist halt weniger schön, je nach akkustand sinnvoll
+        # Defaults, bevor util.init_parameters() sie sofort per cbUpdateParameters
+        # ueberschreibt (siehe dort) - Live-Tuning ueber config/duck_avoidance_node.json
+        self.wiggle_power               = 0.08
+        self.wiggle_interval_seconds    = 0.06
+        self.escape_omega               = 1.5
+        self.inversion_cooldown_seconds = 1.0
+        self.duck_memory_seconds        = 0.5
         # Tracking für Rotationsursache und Inversions-Schutz
         self.rotation_reason = None
         # use monotonic wall-clock for inversion cooldown (robust to /use_sim_time)
         self.last_inversion_time = time.monotonic()
 
+        util.init_parameters(node_name, self.cbUpdateParameters)
 
         # --- ROS INTERFACES ---
         self.pub_cmd = rospy.Publisher(f"/{self._v}/car_cmd_switch_node/cmd", Twist2DStamped, queue_size=1)
@@ -93,6 +101,13 @@ class DuckAvoidanceNode:
     # ==========================================
     # 1. INITIALISIERUNG & SETUP
     # ==========================================
+    def cbUpdateParameters(self, parameters):
+        self.wiggle_power               = parameters["wiggle"]["power"]["default"]
+        self.wiggle_interval_seconds    = parameters["wiggle"]["interval_seconds"]["default"]
+        self.escape_omega               = parameters["search"]["escape_omega"]["default"]
+        self.inversion_cooldown_seconds = parameters["search"]["inversion_cooldown_seconds"]["default"]
+        self.duck_memory_seconds        = parameters["memory"]["duck_seconds"]["default"]
+
     def _load_intrinsics(self):
         try:
             with open(self.path_intrinsics, 'r') as f:
@@ -234,8 +249,8 @@ class DuckAvoidanceNode:
                     matched = True
                     break
             
-            # Wenn nicht gematcht, aber noch frisch (< 0.3s), weiter am Leben erhalten!
-            if not matched and (now - old_box[4] < 0.3):
+            # Wenn nicht gematcht, aber noch frisch (< duck_memory_seconds), weiter am Leben erhalten!
+            if not matched and (now - old_box[4] < self.duck_memory_seconds):
                 updated_boxes.append(old_box)
                 
         self.duck_bboxes = updated_boxes
@@ -270,8 +285,8 @@ class DuckAvoidanceNode:
         mask_yellow = cv2.inRange(hsv, np.array(self.hsv_limits['yellow']['lower']), np.array(self.hsv_limits['yellow']['upper']))
 
         now = time.monotonic()
-        # Alte BBoxes aufräumen, falls sie länger als 0.3s nicht bestätigt wurden
-        self.duck_bboxes = [b for b in self.duck_bboxes if now - b[4] < 1.0]
+        # Alte BBoxes aufräumen, falls sie länger als duck_memory_seconds nicht bestätigt wurden
+        self.duck_bboxes = [b for b in self.duck_bboxes if now - b[4] < self.duck_memory_seconds]
 
         # 2. Enten aus der Gelb-Maske stanzen (manipulieren)
         for (x1, y1, x2, y2, t) in self.duck_bboxes:
@@ -296,11 +311,11 @@ class DuckAvoidanceNode:
             raw_white = cv2.countNonZero(cv2.bitwise_and(mask_white, trap_mask))
             raw_yellow = cv2.countNonZero(cv2.bitwise_and(mask_yellow, trap_mask))
             
-            # --- HYBRID-FILTER LOGIK (Jetzt mit Median für Gelb) ---
-            if i == 2: 
-                # Zone 2 Gelb: In den Puffer schieben und Median berechnen
+            # --- HYBRID-FILTER LOGIK ---
+            if i == 2:
+                # Zone 2 Gelb: In den Puffer schieben, Minimum als robusten Wert nehmen
                 self.z2_yellow_history.append(raw_yellow)
-                eval_yellow = np.min(self.z2_yellow_history) #np.median
+                eval_yellow = np.min(self.z2_yellow_history)
             else:
                 # Zone 0, 1 und 3 Gelb: Harte Echtzeit
                 eval_yellow = raw_yellow
@@ -375,7 +390,7 @@ class DuckAvoidanceNode:
                     self.escape_direction = -1.0 if duck_center_x < IMAGE_CENTER_X else 1.0
 
             # Trigger C: Abbruch der Rotation (Alles frei)
-            elif self.state == "ROTATING" and not z1["duck"] and not z0["yellow"] and not z0["white"]: #z1 yellow z1 white davor and not z2["duck"]
+            elif self.state == "ROTATING" and not z1["duck"] and not z0["yellow"] and not z0["white"]:
                 if self.rotation_reason == "duck":
                     rospy.loginfo("Korridor frei. An Ente vorbei fahren.")
                     self._drive_target_distance = 0.15
@@ -388,13 +403,13 @@ class DuckAvoidanceNode:
 
             # ==========================================================
             # PHASE 2: MOTOR-AKTIONEN (Ausführen, was der Zustand sagt)
-            # WICHTIG: Das hier sind NEUE 'if'-Blöcke, keine 'elif' mehr!
+            # WICHTIG: eigenständige 'if'-Blöcke, nicht an die Trigger-'elif'-Kette oben gekoppelt!
             # ==========================================================
             
             if self.state == "ROTATING":
                 current_time = time.monotonic()
                 #vor und zurück setzen um Rollmoment zu überwinden
-                if current_time - self.last_wiggle_time > 0.06:
+                if current_time - self.last_wiggle_time > self.wiggle_interval_seconds:
                     self.wiggle_direction *= -1.0
                     self.last_wiggle_time = current_time
                 cmd.v = 1.0*self.wiggle_power*self.wiggle_direction
@@ -407,7 +422,7 @@ class DuckAvoidanceNode:
                 # (Wir nutzen .get(), damit der Code nicht abstürzt, falls "duck" entfernt wurde)
                 duck_in_sight = z0.get("duck", False) or z1.get("duck", False) or z2.get("duck", False)
                 
-                if dt > 1.0: 
+                if dt > self.inversion_cooldown_seconds:
                     if duck_in_sight:
                         # ENTEN-MODUS: Wir blicken voraus (z1), um beim Umfahren nicht in die Bande zu krachen.
                         if self.escape_direction == 1.0 and z1["yellow"]:
@@ -432,7 +447,7 @@ class DuckAvoidanceNode:
                             self.escape_direction = 1.0
                             self.last_inversion_time = current_time
 
-                cmd.omega = 1.5 * self.escape_direction
+                cmd.omega = self.escape_omega * self.escape_direction
 
             elif self.state == "DRIVING":
                 # Spurkorrektur in Zone 1
@@ -487,46 +502,53 @@ class DuckAvoidanceNode:
             if self.display_image is not None:
                 # Wir machen eine Kopie, damit wir die Polygone für den nächsten Frame nicht zerstören
                 debug_frame = self.display_image.copy()
-                debug_frame = self._draw_debug_overlay(debug_frame, cmd.v, cmd.omega)
+                debug_frame = self._draw_debug_overlay(debug_frame)
                 cv2.imshow("Duck Avoidance Challange", debug_frame)
             cv2.waitKey(1)
                 
             rate.sleep()
 
-    def _draw_debug_overlay(self, img, cmd_v, cmd_omega):
-        """Zeichnet die aktuelle Absicht des Bots ins Debug-Bild."""
+    def _state_action_text(self):
+        """Beschreibt die aktuelle FSM-Aktion in Klartext (statt roher Motorbefehle)."""
+        direction_word = "links" if self.escape_direction > 0 else "rechts"
+
+        if self.state == "ROTATING":
+            if self.rotation_reason == "duck":
+                return f"Weiche aus wegen Ente ({direction_word})"
+            return f"Rotiere wegen Linie ({direction_word})"
+
+        if self.state == "DRIVE_FORWARD_DISTANCE":
+            return "Fahre an Ente vorbei"
+
+        if self.state == "DRIVING":
+            z1 = self.zones_status[1]
+            z2 = self.zones_status[2]
+            if (z1["white"] or z1["yellow"]) and not z1["duck"]:
+                return "Spurkorrektur"
+            if z2["duck"]:
+                return "Weiche Ente in Zone 2 aus"
+            return "Freie Fahrt"
+
+        return self.state
+
+    def _draw_debug_overlay(self, img):
+        """Zeichnet die aktuelle FSM-Aktion ins Debug-Bild."""
         if img is None:
             return img
 
-        # 1. Text für Translation (Vor/Zurück/Stehen)
-        if abs(cmd_v) < 0.08:
-            action_v = "stehen"
-        else:
-            action_v = "fahren"
+        intent_text = f"Aktion: {self._state_action_text()}"
 
-        # 2. Text für Rotation (Geradeaus/Links/Rechts)
-        if abs(cmd_omega) < 0.1:
-            action_w = "geradeaus"
-        elif cmd_omega > 0:
-            action_w = "links"
-        else:
-            action_w = "rechts"
-
-        # 3. String zusammensetzen
-        intent_text = f"Ich wuerde gerne: {action_v} und {action_w}"
-
-        # 4. Hintergrund-Balken für bessere Lesbarkeit
+        # Hintergrund-Balken für bessere Lesbarkeit
         overlay = img.copy()
         cv2.rectangle(overlay, (0, img.shape[0] - 40), (img.shape[1], img.shape[0]), (0, 0, 0), -1)
-        
-        # 5. Transparenz anwenden (Alpha-Blending)
+
+        # Transparenz anwenden (Alpha-Blending)
         alpha = 0.6
         cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
 
-        # 6. Text auf das Bild zeichnen
-        cv2.putText(img, intent_text, (10, img.shape[0] - 15), 
+        cv2.putText(img, intent_text, (10, img.shape[0] - 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-        
+
         return img
 
     def _on_shutdown(self):

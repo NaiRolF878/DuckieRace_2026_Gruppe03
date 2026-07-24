@@ -117,7 +117,8 @@ class DetectLaneNode:
         self.lightness_red_h  = parameters["red"]["vh"]["default"]
         # Mindestanzahl roter Pixel im ROI
         self.red_pixel_threshold  = parameters["red"]["pixel_threshold"]["default"]
-        # Vertikale ROI: 0.85 = nur unterste 15% des Bildes prüfen
+        # Vertikale ROI: Anteil des Bildes von oben, der ausgeblendet wird
+        # (z.B. 0.95 = nur unterste 5% werden geprüft)
         self.red_detection_zone    = parameters["red"]["detection_zone"]["default"]
         # Horizontale ROI: 0.4 = nur rechte 60% prüfen (Gegenspur ignorieren)
         self.red_detection_x_start = parameters["red"]["detection_x_start"]["default"]
@@ -125,7 +126,6 @@ class DetectLaneNode:
         # (z.B. wenn rechts vom Bot Störungen wie rote Markierungen am Wendeplatz liegen)
         self.red_detection_x_end   = parameters["red"]["detection_x_end"]["default"]
 
-        # Gegenspurfilter entfernt – kein min_lane_width mehr
         # Frame-Tracking: maximaler Pixelsprung zwischen Frames (gilt für beide Linien)
         self.max_frame_jump = parameters["white"]["max_frame_jump"]["default"]
 
@@ -311,8 +311,8 @@ class DetectLaneNode:
             yellow_alternative, self.max_frame_jump, label='Yellow')
 
         # ── Weiße Linie ───────────────────────────────────────────────────────
-        # Kein Spatial Filter mehr – das last_known-basierte Edge-Picking und
-        # Frame-Tracking verhindern Sprünge zur Gegenspur in engen Kurven.
+        # last_known-basiertes Edge-Picking + Frame-Tracking verhindern Sprünge
+        # zur Gegenspur in engen Kurven.
         center_white_raw = self.get_x_for_driving(
             mask_white, distance, left_line=False,
             last_known=self.last_white_position)

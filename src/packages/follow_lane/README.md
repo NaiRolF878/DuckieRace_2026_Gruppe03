@@ -277,7 +277,7 @@ So kann jeder Bot eigene HSV- und PID-Werte haben, ohne die anderen zu stören.
 | `white` | `max_frame_jump` | max. Pixelsprung pro Frame (beide Linien) |
 | `red` | hl, hh, hl2, hh2, sl, sh, vl, vh | HSV (Rot, zwei Hue-Bereiche) |
 | `red` | `pixel_threshold` | Mindest-Pixelzahl für Erkennung |
-| `red` | `detection_zone` | schneidet oben ab (0.85 = unterste 15%) |
+| `red` | `detection_zone` | schneidet oben ab (0.95 = unterste 5%) |
 | `red` | `detection_x_start` | schneidet links ab (0.4 = rechte 60%) |
 | `red` | `detection_x_end` | schneidet rechts ab (1.0 = bis Rand) |
 

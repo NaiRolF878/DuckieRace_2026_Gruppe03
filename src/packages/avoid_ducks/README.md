@@ -4,14 +4,6 @@ Dieses Paket implementiert das autonome Ausweichen von Hindernissen – speziell
 
 **Herkunft:** Das Grundgerüst dieses Pakets (Homographie-Zonenmodell, YOLO-Integration, Zustandsautomat) stammt von Magnusneumann. Wir haben uns bewusst für dieses Paket als unsere Lösung für die Enten-Ausweichung entschieden (statt unserer eigenen `ducks`-Package-Logik) und bauen es seither weiter aus (siehe "Änderungen" unten).
 
-## Starten (Launcher)
-
-Das autonome Fahren inklusive Kollisionsvermeidung wird gestartet über:
-```bash
-./launchers/avoid_ducks.sh
-```
-Dieser Launcher startet die Objekterkennungs-Inferenz (`detect_ducks_node.py`), die Kamera-Kalibrierung sowie den hochintegrierten `duck_avoidance_node.py`, der sowohl lenkt als auch ausweicht.
-
 ## Architektur & Technische Funktionsweise
 
 Die Herausforderung besteht hier darin, klassische Bildverarbeitung (Linien-Tracking) mit neuronalen Netzen in Echtzeit zu kombinieren, ohne dass sich die Steuerungssignale widersprechen. Statt einer simplen P-Regelung nutzt dieses System ein projiziertes Vogelperspektiven-Modell (Homographie).
@@ -60,17 +52,11 @@ Alle Wackel-/Such-Parameter waren vorher fest im Code (`wiggle_power = 0.08` usw
 ### Debug-Overlay zeigt die tatsächliche FSM-Aktion
 Der Text im Debug-Fenster kam vorher direkt aus den rohen Motorbefehlen ("Ich würde gerne: fahren und links" – bei jedem Wackel-Tick praktisch identisch, unabhängig vom Zustand). Jetzt zeigt `_state_action_text()` die tatsächliche Aktion in Klartext: "Freie Fahrt", "Spurkorrektur", "Weiche aus wegen Ente (rechts)", "Fahre an Ente vorbei".
 
-### Kurzes Positions-Gedächtnis für Enten in Weltkoordinaten (`cb_ducks`/`_to_world_position`/`_remembered_duck_zone_hits`)
-`detect_ducks_node` publiziert bewusst auch **leere** Nachrichten, sobald das YOLO-Modell in einem Frame nichts findet. Ohne Gedächtnis wurde die Zonen-Gefahrenprüfung dadurch bei jedem verpassten Frame sofort "frei" – zwei Fälle sind hier relevant:
-- Der Bot **dreht sich** (`ROTATING`) und die Ente fällt kurz aus dem schmalen Sichtfeld oder das Bild verwackelt.
-- Der Bot **fährt geradeaus auf die Ente zu** und sie verschwindet, weil sie zu nah bzw. im toten Winkel unterhalb des Kamera-Sichtfelds ist – **genau dann ist sie am gefährlichsten**, nicht "frei". Da Enten in dieser Challenge stationäre Hindernisse sind, bedeutet ihr Verschwinden während der Annäherung fast immer "jetzt näher/im toten Winkel", nicht "weggefahren".
+### Kurzes Positions-Gedächtnis für Enten (`cb_ducks`)
+`detect_ducks_node` publiziert bewusst auch **leere** Nachrichten, sobald das YOLO-Modell in einem Frame nichts findet. Ohne Gedächtnis würde die Zonen-Gefahrenprüfung dadurch bei jedem verpassten Frame sofort "frei" melden, obwohl die Ente nur kurz nicht erkannt wurde (Bild verwackelt, kurzzeitige Verdeckung).
 
-Ein einfaches Einfrieren der letzten **Bildposition** hätte beide Fälle nicht sauber abgedeckt: bei Drehung verschiebt sich die Ente im Bild seitlich, bei Vorwärtsfahrt wird sie größer/näher – ein eingefrorenes Pixel-Rechteck bildet keins von beidem ab. Stattdessen wird die reale Bodenposition der Ente bei der Erkennung **einmalig** per inverser Homographie (`self.H_inv`) und der aktuellen Bot-Pose (`self.x`/`self.y`/`self.theta`, aus der Radodometrie) in feste **Weltkoordinaten** umgerechnet (`_to_world_position`) und dort gespeichert – Weltkoordinaten ändern sich nicht, wenn der Bot sich bewegt. Bei jedem Kamera-Frame wird diese Weltposition zurück in die aktuelle Bot-Perspektive transformiert und gegen die Zonen (jetzt zusätzlich in echten Metern definiert, `zones_3d_shapely`) geprüft (`_remembered_duck_zone_hits`) – das deckt Drehung **und** Vorwärtsfahrt gleichermaßen korrekt ab. Zuletzt bekannte Position bleibt `memory.duck_seconds` (Standard 0.5s) lang gültig, bevor sie wirklich als "weg" gilt – gleiches Prinzip wie `tag_memory` bei `detect_apriltag_node` im `mapping`-Package.
+`cb_ducks` matcht eingehende Bounding-Boxen gegen die zuletzt bekannten (Bildpixel-Abstand < 50px = dieselbe Ente) und hält eine unbestätigte, aber noch frische Box am Leben, statt sie sofort zu verwerfen. `cb_image` räumt zusätzlich bei jedem Frame Boxen auf, die zu lange nicht mehr bestätigt wurden. Beide Fenster nutzen denselben konfigurierbaren Wert `memory.duck_seconds` (Standard 0.5s, siehe Parameter-Tabelle oben).
 
-Mit simulierter Odometrie getestet und bestätigt: sowohl reine Vorwärtsfahrt (Ente "wandert" korrekt in eine nähere Zone, ohne dass sie je erneut erkannt wurde) als auch reine Drehung (Ente verlässt korrekt die schmalen Zonen).
-
-**Toter Winkel (näher als Zone 0):** Die Zonen selbst beginnen erst bei X=0.1m – näher als das existiert **keine** Zone, weil die Kamera dort prinzipbedingt nichts mehr sieht. Ohne Sonderbehandlung hätte `_remembered_duck_zone_hits` eine Ente, die sich laut Gedächtnis bis in diesen Bereich angenähert hat, fälschlich als "keine Zone trifft zu → frei" gemeldet – genau umgekehrt zur Absicht, da das die gefährlichste Position überhaupt ist. Eine gemerkte Position näher als die Nahkante von Zone 0 (und noch ungefähr im Fahrschlauch, gleiche Y-Breite wie Zone 0) wird deshalb explizit als Zone-0-Treffer gewertet. Mit Simulation bestätigt: Ente wandert beim Weiterfahren erst korrekt in Zone 0, bleibt auch beim weiteren Vorrücken in den toten Winkel als Gefahr erkannt (statt zu "verschwinden"), während seitlich weit versetzte, aber nahe Punkte weiterhin korrekt nicht als Gefahr gelten.
-
-**Grenzen der Näherung:** geht von einer stillstehenden Ente aus (keine Eigenbewegung erkennbar) und nutzt nur den Bodenkontaktpunkt der Bounding Box (Mitte unten), nicht ihre volle Ausdehnung.
+**Kurzzeitig ausprobiert und wieder verworfen:** Eine Variante mit Positions-Gedächtnis in echten **Weltkoordinaten** (inverse Homographie, Odometrie-Korrektur bei Bot-Drehung, Sonderbehandlung für den toten Winkel näher als Zone 0) wurde gebaut und mit simulierter Odometrie erfolgreich getestet, im Refactor vom 2026-07-23 aber zugunsten der einfacheren Bildkoordinaten-Variante wieder zurückgebaut.
 
 **Kurzzeitig ausprobiert und wieder verworfen:** Ein Zustand, der vor der Richtungs-Entscheidung erst kurz nach links UND rechts testet (statt sofort per Heuristik zu entscheiden), hat sich in der Praxis nicht bewährt und wurde wieder entfernt – die Ausweichrichtung wird weiterhin direkt aus der Heuristik (Entenposition/Linienfarbe) plus nachträglichem Inversions-Check bestimmt, wie ursprünglich.

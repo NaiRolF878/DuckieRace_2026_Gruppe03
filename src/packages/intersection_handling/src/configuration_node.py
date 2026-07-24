@@ -177,7 +177,11 @@ class ConfigurationNode:
 
     def save_parameters(self):
         # Aktuelle Parameter in die JSON-Datei zurückschreiben.
-
+        # Unterscheidet zwischen alter Struktur (flach) und neuer Struktur (default + bot-spezifisch):
+        #
+        #   Alte Struktur: config['parameters'] = { "pid": {...}, ... }
+        #     → self.parameters direkt überschreiben
+        #
         #   Neue Struktur: config['parameters'] = { "default": {...}, "dorette": {...}, ... }
         #     → nur den bot-spezifischen Block aktualisieren
         #     → default und andere Bots bleiben unverändert
@@ -189,12 +193,12 @@ class ConfigurationNode:
                 config = json.load(f)
 
             if 'default' in config['parameters']:
-                # Nur bot-spezifischen Block aktualisieren
+                # Neue Struktur: nur bot-spezifischen Block aktualisieren
                 # → default und andere Bots bleiben unverändert
                 config['parameters'][vehicle_name] = self.parameters
                 print(f"Saved bot-specific parameters for '{vehicle_name}' to {path}")
             else:
-                # Parameters direkt überschreiben
+                # Alte Struktur: parameters direkt überschreiben
                 config['parameters'] = self.parameters
                 print(f"Saved parameters to {path}")
 

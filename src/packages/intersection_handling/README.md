@@ -21,7 +21,6 @@ steuert den Ablauf, das Abbiegen besteht aus einer frei definierbaren
 - [Konfigurationsparameter](#konfigurationsparameter)
 - [Bot-spezifische Parameter](#bot-spezifische-parameter)
 - [Tag-Mapping](#tag-mapping)
-- [Setup & Starten](#setup--starten)
 - [Kalibrierung](#kalibrierung)
 - [Mögliche Optimierungen](#mögliche-optimierungen)
 - [Bekannte Probleme & Lösungen](#bekannte-probleme--lösungen)
@@ -179,7 +178,8 @@ gewählte Abbiegerichtung. Greifen nicht ins Fahren ein.
 | `/detect/lane` | Float64 | detect_lane -> control_lane |
 | `/detect/stop_line` | Bool | detect_lane -> FSM |
 | `/detect/apriltag/direction` | String | detect_apriltag -> FSM |
-| `/detect/apriltag/id` | Int32 | detect_apriltag -> (Dashboard) |
+| `/detect/apriltag/id` | Int32 | detect_apriltag -> (kein Subscriber) |
+| `/detect/apriltag` | Int32 | detect_apriltag -> Dashboard (separate Kopie der Tag-ID fürs Dashboard) |
 | `/intersection/phase` | String | FSM -> control_intersection, Dashboard |
 | `/intersection/direction` | String | FSM -> control_intersection, detect_apriltag, Dashboard |
 | `/intersection/turn_done` | Bool | control_intersection -> FSM |
@@ -263,36 +263,6 @@ Bot). `control_intersection` und `switch_control` sind flach bzw. haben nur
 | 4 | geradeaus, rechts |
 
 Anpassbar in `config/detect_apriltag_node.json` unter `tag_directions`.
-
----
-
-## Setup & Starten
-
-```bash
-# ROS-Umgebung + Bot setzen (Beispiel: track)
-source /opt/ros/noetic/setup.bash
-source devel/setup.bash
-export ROS_MASTER_URI=http://track.local:11311
-export VEHICLE_NAME=track
-
-# Alles über den Launcher starten (empfohlen):
-launchers/intersection_handling.sh
-
-# Oder einzeln (je ein Terminal):
-rosrun intersection_handling detect_lane_node.py
-rosrun intersection_handling detect_apriltag_node.py
-rosrun intersection_handling switch_control_node.py
-rosrun intersection_handling control_lane_node.py
-rosrun intersection_handling control_intersection_node.py
-rosrun intersection_handling configuration_node.py     # Kalibrierungs-GUI
-rosrun intersection_handling camera_dashboard_node.py  # Debug-Ansicht
-```
-
-`ROS_IP` muss auf die eigene IP zeigen (nicht die Docker-Bridge `172.17.x.x`).
-Empfehlung im `netzwerk.sh`:
-```bash
-export ROS_IP=$(ip route get <BOT-IP> | grep -oP 'src \K[0-9.]+')
-```
 
 ---
 

@@ -50,10 +50,10 @@ class DetectDucksNode:
             rospy.logerr(f"Konnte Intrinsics nicht laden: {e}")
 
     def cb_image(self, msg):
-        # Frame-Skipping (Nur jedes 3. Bild verarbeiten, um CPU zu schonen)
+        # Frame-Skipping (Nur jedes 2. Bild verarbeiten, um CPU zu schonen)
         self.frame_counter += 1
         if self.frame_counter % 2 != 0:
-            return  
+            return
             
         np_arr = np.frombuffer(msg.data, np.uint8)
         img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)

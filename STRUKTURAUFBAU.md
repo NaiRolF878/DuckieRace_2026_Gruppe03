@@ -7,7 +7,7 @@ DuckieRace_2026_Gruppe03/
 │   ├── intersection_handling.sh
 │   ├── ducks.sh
 │   ├── mapping.sh
-│   └── full_system.sh
+│   └── avoid_ducks.sh
 |
 └── src/packages/
     │

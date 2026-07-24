@@ -227,10 +227,9 @@ class DetectLaneNode:
             return raw, raw
 
         # Fall C: Detektion + Anker → Sprung prüfen
-        # BUGFIX: Früher wurde der Sprung nur geloggt, aber trotzdem voll übernommen
-        # (return raw, raw) → Ursache für "springt an der Kreuzung auf die falsche Linie".
-        # Jetzt wird die Bewegung sanft auf max_jump begrenzt: die Position darf sich pro
-        # Frame höchstens um max_jump Pixel Richtung neuem Wert bewegen.
+        # Bewegung wird sanft auf max_jump begrenzt statt den Sprung voll zu übernehmen:
+        # die Position darf sich pro Frame höchstens um max_jump Pixel Richtung neuem
+        # Wert bewegen (verhindert Sprung zur Gegenspur an der Kreuzung).
         jump = raw - last_known
         if abs(jump) > max_jump:
             clamped = last_known + np.sign(jump) * max_jump
