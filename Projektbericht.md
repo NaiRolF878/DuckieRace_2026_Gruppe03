@@ -31,6 +31,15 @@ unter ROS 1 (Noetic) auf Ubuntu 20.04 in Python 3, organisiert als
 Catkin-Workspace, in dem jede Challenge ein eigenes ROS-Package bildet
 (`follow_lane`, `intersection_handling`, `avoid_ducks`/`ducks`, `mapping`).
 
+Als Ausgangspunkt diente ein von der Veranstaltung bereitgestelltes
+Vorlagen-Repository
+(https://github.com/DuckieBotIRAS/DuckieRace_2026), das bereits die
+Grundstruktur des Catkin-Workspace sowie Teile der Bildverarbeitung für
+Challenge 1 mitbrachte – Bird's-Eye-View-Transformation und HSV-Farbmaskierung
+in `detect_lane_node.py` waren dort schon funktionsfähig vorhanden. PID-Regler
+und Haltelinien-Erkennung in Challenge 1 sowie alles ab Challenge 2 haben wir
+selbst entwickelt.
+
 ### 1.1 Gemeinsame Grundarchitektur
 
 Wir haben von Anfang an versucht, nicht für jede Challenge bei null
@@ -98,7 +107,9 @@ erweitern, ohne die Bildverarbeitung noch einmal anzufassen.
 `detect_lane_node.py` ist das Herzstück der Wahrnehmung und läuft komplett in
 einer Node – ein Bild-Decode und eine Perspektivtransformation pro Frame
 reichen, statt das auf mehrere Nodes zu verteilen und Rechenzeit auf dem Bot
-zu verschwenden:
+zu verschwenden. Die BEV-Transformation und die HSV-Farbmaskierung (Punkte 1
+und 2) waren bereits im Vorlagen-Repository der Veranstaltung funktionsfähig
+enthalten; die rote Haltelinie (Punkt 5) haben wir selbst ergänzt:
 
 1. **Bird's-Eye-View (BEV):** Das Kamerabild wird per
    `cv2.getPerspectiveTransform`/`warpPerspective` in eine 400×400-Pixel
@@ -114,13 +125,13 @@ zu verschwenden:
 4. **Frame-Tracking:** Springt die erkannte Position zwischen zwei Frames zu
    stark (`max_frame_jump`), behalten wir die alte Position, statt der
    fehlerhaften Momentaufnahme zu vertrauen.
-5. **Rote Haltelinie:** Zwei HSV-Bereiche decken den roten Farbton ab (Rot
-   liegt an zwei gegenüberliegenden Stellen des Hue-Kreises), ausgewertet in
-   einer ROI im unteren Bilddrittel.
+5. **Rote Haltelinie (von uns ergänzt):** Zwei HSV-Bereiche decken den roten
+   Farbton ab (Rot liegt an zwei gegenüberliegenden Stellen des Hue-Kreises),
+   ausgewertet in einer ROI im unteren Bilddrittel.
 
 `control_lane_node.py` ist die einzige Node, die tatsächlich Fahrbefehle
-sendet. Sie berechnet aus dem Spurversatz `error ∈ [-1, +1]` per PID-Regler
-die Lenkung:
+sendet. Den PID-Regler, der aus dem Spurversatz `error ∈ [-1, +1]` die
+Lenkung berechnet, haben wir selbst geschrieben:
 
 ```
 P = kp · error
@@ -184,7 +195,7 @@ offiziellen Duckietown-Pipeline orientiert:
 - Der AprilTag liefert die Richtung – er sagt *welche* Abbiegungen erlaubt
   sind.
 - Eine zentrale Zustandsmaschine (`switch_control_node.py`) führt beide
-  Signale zusammen und entscheidet, *was* der Bot tut.
+  Signale zusammen und entscheidet, *was* der Bot macht.
 
 ```mermaid
 flowchart LR
@@ -199,7 +210,7 @@ flowchart LR
     CI -->|turn_done| SW
 ```
 
-Eine Kreuzung lösen wir nur aus, wenn rote Linie und eine bekannte
+Eine Kreuzung löst nur aus, wenn rote Linie und eine bekannte
 Tag-Richtung gleichzeitig vorliegen; eine rote Linie ohne Tag ignoriert das
 System komplett (der Bot fährt einfach weiter) – ein sicheres Default, falls
 der Tag z.B. mal nicht erkannt wird.
@@ -535,10 +546,7 @@ mit einem Ausschnitt aus jeder Challenge:
 3. **Challenge 3 (ca. 45 s):** Anfahrt auf eine Ente, Ausweichmanöver,
    Rückkehr auf die Spur – idealerweise inklusive kurzem Blick auf das
    Debug-Dashboard (Zonen-Overlay).
-4. **Challenge 4 (ca. 90 s):** Ausschnitt aus der autonomen Erkundung
-   (Zeitraffer möglich), das Debug-Dashboard mit wachsender grüner Karte,
-   der Knopfdruck "Bot versetzt"/"Delivery starten" und die anschließende
-   Fahrt durch die Tore in der festgelegten Reihenfolge.
+4. **Challenge 4 (ca. 90 s):** Ausschnitt aus der autonomen Erkundung, das Debug-Dashboard mit wachsender grüner Karte, der Knopfdruck "Bot versetzt"/"Delivery starten" und die anschließende Fahrt durch die Tore in der festgelegten Reihenfolge.
 
 ---
 
